@@ -13,6 +13,10 @@ class ModelConfig(BaseModel):
     num_layers: int = 4
     hidden_size: int = 32
     vocab_size: int = 256
+    device: str = "auto"
+    torch_dtype: str = "auto"
+    max_length: int = 2048
+    trust_remote_code: bool = False
 
 
 class DataConfig(BaseModel):

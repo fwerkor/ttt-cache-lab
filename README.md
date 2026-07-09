@@ -18,7 +18,7 @@ This is a scaffold for the first feasibility study. It contains:
 - CLI entry points and experiment config templates;
 - pytest coverage for the non-model components.
 
-The heavy HuggingFace/vLLM/Ascend integrations are intentionally isolated behind backend interfaces and are not required for CI.
+The HuggingFace backend is optional and isolated behind backend interfaces, so CI does not download model weights. vLLM/Ascend integrations are future backends.
 
 ## Research questions
 
@@ -45,15 +45,36 @@ tests/         unit tests for the scaffold
 
 ## Quick start
 
+Toy run, no model download:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 pytest
 python -m ttt_cache_lab.cli run --config configs/feasibility_toy.yaml
+python -m ttt_cache_lab.cli summarize --input runs/feasibility-toy/summary.csv
 ```
 
-The toy experiment writes JSONL and CSV summaries under `runs/`.
+Tiny HuggingFace smoke run:
+
+```bash
+pip install -e '.[dev,hf]'
+python -m ttt_cache_lab.cli run --config configs/feasibility_hf_tiny.yaml
+python -m ttt_cache_lab.cli summarize --input runs/feasibility-hf-tiny/summary.csv
+```
+
+Small real-model feasibility run:
+
+```bash
+pip install -e '.[dev,hf]'
+python -m ttt_cache_lab.cli run --config configs/feasibility_hf_qwen_0_5b.yaml
+python -m ttt_cache_lab.cli summarize --input runs/feasibility-hf-qwen-0-5b/summary.csv
+```
+
+See [`docs/runbook.md`](docs/runbook.md) for detailed instructions.
+
+The experiments write JSONL and CSV summaries under `runs/`.
 
 ## First feasibility target
 

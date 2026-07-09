@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import numpy as np
 
@@ -14,7 +15,8 @@ def relative_error(reference: np.ndarray, candidate: np.ndarray, *, eps: float =
 def _softmax(logits: np.ndarray) -> np.ndarray:
     shifted = logits - np.max(logits, axis=-1, keepdims=True)
     exp = np.exp(shifted)
-    return exp / np.sum(exp, axis=-1, keepdims=True)
+    result = exp / np.sum(exp, axis=-1, keepdims=True)
+    return cast(np.ndarray, result)
 
 
 def kl_divergence(reference_logits: np.ndarray, candidate_logits: np.ndarray, *, eps: float = 1e-12) -> float:

@@ -122,6 +122,9 @@ class ToyBackend:
             return 2.0 * base
         return 1.0 * base
 
+    def restore_after_update(self) -> None:
+        return None
+
     def _target_drift(self, target: UpdateTarget, update_norm: float) -> dict[str, np.ndarray]:
         seed = hash((target.kind.value, target.layer, round(update_norm, 8), self.seed)) % (2**32)
         rng = np.random.default_rng(seed)

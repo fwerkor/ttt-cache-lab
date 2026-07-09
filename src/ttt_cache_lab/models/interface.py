@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -16,6 +16,7 @@ class BackendOutput:
     cache_tensor: np.ndarray
     hidden_tensor: np.ndarray
     parameter_version: int
+    extras: dict[str, Any] | None = None
 
 
 class ModelBackend(Protocol):
@@ -37,3 +38,7 @@ class ModelBackend(Protocol):
     ) -> BackendOutput: ...
 
     def score_answer(self, sample: TaskSample, output: BackendOutput) -> float: ...
+
+    def estimate_latency(self, decision: StrategyDecision, *, context_length: int) -> float: ...
+
+    def restore_after_update(self) -> None: ...

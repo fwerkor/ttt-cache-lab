@@ -7,7 +7,7 @@ from ttt_cache_lab.configs import ExperimentConfig
 from ttt_cache_lab.data.synthetic import SyntheticTaskFactory
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
-from ttt_cache_lab.models.toy import ToyBackend
+from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.updates.targets import parse_update_target
 
 
@@ -23,15 +23,7 @@ class ExperimentRunner:
             context_length=self.config.data.context_length,
             answer_length=self.config.data.answer_length,
         )
-        if self.config.model.backend != "toy":
-            raise NotImplementedError("The first scaffold only ships the toy backend in CI.")
-
-        backend = ToyBackend(
-            num_layers=self.config.model.num_layers,
-            hidden_size=self.config.model.hidden_size,
-            vocab_size=self.config.model.vocab_size,
-            seed=self.config.seed,
-        )
+        backend = build_backend(self.config.model, seed=self.config.seed)
         strategies = [
             build_strategy(name, refresh_period=self.config.cache.refresh_period)
             for name in self.config.cache.strategies
@@ -76,5 +68,6 @@ class ExperimentRunner:
                             reason=decision.reason,
                         )
                     )
+                backend.restore_after_update()
 
         return write_records(records, self.config.output_dir)
