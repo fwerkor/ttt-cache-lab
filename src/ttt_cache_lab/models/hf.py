@@ -173,8 +173,9 @@ class HuggingFaceBackend:
             return full
         if decision.action in {CacheAction.PARTIAL_RECOMPUTE, CacheAction.DELTA_CORRECT}:
             # Placeholder behavior for first-stage HF feasibility: the planner can
-            # decide these actions, but the real layer-wise cache surgery is not
-            # implemented yet. Returning full keeps the metric an upper bound.
+            # decide these actions, but real layer-wise cache surgery and delta
+            # correction are not implemented yet. Returning full keeps accuracy
+            # metrics as an upper bound; estimate_latency charges full recompute.
             return full
         if decision.action in {CacheAction.REUSE_STALE, CacheAction.REUSE_FROZEN}:
             return self._reuse_old_prefix_cache(baseline)
@@ -191,10 +192,8 @@ class HuggingFaceBackend:
             return self._last_prefill_s or 1.0
         if decision.action in {CacheAction.REUSE_STALE, CacheAction.REUSE_FROZEN}:
             return self._last_stale_s or max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
-        if decision.action is CacheAction.PARTIAL_RECOMPUTE:
-            return max(1e-6, (self._last_prefill_s or 1.0) * 0.5)
-        if decision.action is CacheAction.DELTA_CORRECT:
-            return max(1e-6, (self._last_prefill_s or 1.0) * 0.2)
+        if decision.action in {CacheAction.PARTIAL_RECOMPUTE, CacheAction.DELTA_CORRECT}:
+            return self._last_prefill_s or 1.0
         return max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
 
     def restore_after_update(self) -> None:
