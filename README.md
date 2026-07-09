@@ -1,143 +1,308 @@
 # TTT Cache Lab
 
-Experimental framework for studying **KV cache consistency and reuse under inference-time parameter evolution** in long-context language models.
+TTT Cache Lab is an experiment framework for studying **versioned KV cache management under inference-time adapter evolution**.
 
-The repository is intentionally structured around the paper question rather than around a single model implementation:
+The project focuses on the following setting:
 
-> When model parameters change during inference-time training or online adaptation, which KV cache blocks remain valid, which ones can be reused under frozen-evidence semantics, which ones can be approximately corrected, and which ones must be recomputed?
+```text
+adapter version v0
+  -> train/update during inference
+adapter version v1
+  -> train/update again
+adapter version v2
+  -> ...
+```
 
-## Current status
+A KV cache block is produced by a specific model/adaptor version. Once the adapter changes, the old cache may be exact, approximately usable, stale-but-tolerable, or invalid. This repository provides the code structure needed to measure that drift and evaluate cache-maintenance strategies.
 
-This is a scaffold for the first feasibility study. It contains:
+The framework supports both HuggingFace/CUDA-style runs and Ascend 910B runs through torch-npu. The current configs include an Ascend path because that hardware is readily available for the planned experiments.
 
-- synthetic long-context task generators;
-- update-target and cache-semantics abstractions;
-- cache strategy interfaces and an adaptive planner skeleton;
-- tensor-level metrics for cache/logit drift;
-- a lightweight toy backend so CI can run without downloading large models;
-- CLI entry points and experiment config templates;
-- pytest coverage for the non-model components.
+## Research question
 
-The HuggingFace backend is optional and isolated behind backend interfaces, so CI does not download model weights. vLLM/Ascend integrations are future backends.
+> During inference-time adapter training, when an adapter evolves from `v0` to `v1`, `v2`, and later versions, which KV cache blocks can be reused, which can be corrected, which should be refreshed, and which must be recomputed?
 
-## Research questions
+The project is not just about Q-only qTTT. Existing work already covers parts of static adapter reuse and multi-LoRA serving. This repository targets the dynamic case where the **same adapter keeps changing during inference**.
 
-1. How do Q/K/V/O/MLP/Norm/LoRA updates invalidate KV cache under different semantics?
-2. Is there useful update space beyond Q-only qTTT that can be maintained cheaper than full recomputation?
-3. Can parameter-aware planning choose between exact reuse, frozen reuse, stale reuse, partial recomputation, delta correction, and full recomputation?
-4. How do the trade-offs scale with context length, update step count, and update norm?
+## Current implementation status
+
+Implemented:
+
+- synthetic long-context tasks: passkey and key-value retrieval;
+- update-target taxonomy: Q/K/V/O/MLP/Norm/output head and LoRA variants;
+- cache validity semantics and strategy abstractions;
+- adaptive planner skeleton;
+- single-step feasibility runner;
+- multi-step versioned runner for adapter-version drift experiments;
+- toy backend for CI and dry runs;
+- HuggingFace backend for real `past_key_values` experiments;
+- Ascend HuggingFace backend using torch-npu (`model.backend: ascend_hf`);
+- simple LoRA wrapper and online LoRA update path for `torch.nn.Linear` projections;
+- result summaries, first feasibility tables, Markdown reports, and SVG trend plots;
+- E1-E7 experiment templates from the project plan;
+- CI with linting, type checking, and tests.
+
+Not implemented yet:
+
+- real delta KV correction on HuggingFace/Ascend;
+- real layer-wise partial recomputation on HuggingFace/Ascend;
+- MindSpeed tensor-parallel backend;
+- full reproduction of aLoRA/LRAgent/ForkKV-style baselines;
+- final paper plots and real 910B experiment results.
 
 ## Repository layout
 
 ```text
 src/ttt_cache_lab/
-  cache/        cache validity semantics, strategies, and planner
-  data/         synthetic long-context tasks
-  experiments/ experiment runner and result schemas
-  metrics/     cache/logit/task metrics
-  models/      backend interfaces and toy backend
-  updates/     parameter-update target taxonomy and updater interfaces
-configs/       YAML experiment templates
-docs/          experiment plan and design notes
-scripts/       convenience launch scripts
-tests/         unit tests for the scaffold
+  cache/         cache validity semantics, strategies, and planner
+  data/          synthetic long-context tasks
+  experiments/  single-step runner, versioned runner, sweep, summaries, reports
+  metrics/      cache/logit/task metrics
+  models/       toy, HuggingFace, Ascend torch-npu backends
+  updates/      parameter-update target taxonomy
+configs/
+  feasibility_*.yaml          early single-step configs
+  sweep_*.yaml                sweep configs
+  experiments/                E1-E7 and Ascend experiment configs
+docs/
+  project_plan.md             full research and experiment roadmap
+  ascend.md                   Ascend 910B runbook
+  runbook.md                  general run instructions
+scripts/
+  run_toy_study.sh            run all E1-E7 toy templates
+  run_ascend_*.sh             Ascend smoke/single/parallel launchers
+tests/
+  unit tests for configs, runners, metrics, planner, reports, and backends
 ```
 
-## Quick start
+## Install
 
-Toy run, no model download:
+For local development and toy experiments:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
+```
+
+For HuggingFace / Ascend experiments:
+
+```bash
+pip install -e '.[dev,hf]'
+```
+
+`torch-npu` is not pinned in `pyproject.toml` because it must match the server's CANN and PyTorch versions. Install torch-npu according to the Ascend server environment.
+
+## Validate the repository
+
+```bash
+ruff check src tests
+mypy src tests
 pytest
+```
+
+The CI runs the same checks without downloading model weights.
+
+## Ascend 910B quick start
+
+Check the NPU environment first:
+
+```bash
+python - <<'PY'
+import torch
+import torch_npu
+print('torch', torch.__version__)
+print('npu available', torch.npu.is_available())
+print('device count', torch.npu.device_count())
+PY
+```
+
+Run the Ascend smoke test:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_smoke.sh
+```
+
+Expected outputs:
+
+```text
+runs/ascend_smoke_qwen_0_5b/summary.csv
+runs/ascend_smoke_qwen_0_5b/version_summary.csv
+runs/ascend_smoke_qwen_0_5b/report/report.md
+runs/ascend_smoke_qwen_0_5b/report/*.svg
+```
+
+Run the first real E2 version-drift experiment on Qwen2.5-1.5B:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_e2_single.sh \
+  configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
+```
+
+Run the 7B template:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_e2_single.sh \
+  configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
+```
+
+Use the 8-card machine as parallel experiment workers first:
+
+```bash
+scripts/run_ascend_e2_parallel.sh
+```
+
+This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Multi-card model parallelism is not implemented yet.
+
+## Toy experiments
+
+Toy experiments are useful for validating the pipeline without model downloads.
+
+Run one versioned experiment:
+
+```bash
+python -m ttt_cache_lab.cli versioned-run \
+  --config configs/experiments/e2_version_drift_toy.yaml \
+  --version-summary
+```
+
+Generate the report:
+
+```bash
+python -m ttt_cache_lab.cli version-report \
+  --input runs/e2_version_drift/summary.csv \
+  --output-dir runs/e2_version_drift/report
+```
+
+Run all E1-E7 toy templates:
+
+```bash
+scripts/run_toy_study.sh
+```
+
+## Single-step feasibility commands
+
+The original single-step runner is still available for quick checks.
+
+```bash
 python -m ttt_cache_lab.cli run --config configs/feasibility_toy.yaml
 python -m ttt_cache_lab.cli summarize --input runs/feasibility-toy/summary.csv
 python -m ttt_cache_lab.cli first-table --input runs/feasibility-toy/summary.csv
 ```
 
-Tiny HuggingFace smoke run:
-
-```bash
-pip install -e '.[dev,hf]'
-python -m ttt_cache_lab.cli run --config configs/feasibility_hf_tiny.yaml
-python -m ttt_cache_lab.cli summarize --input runs/feasibility-hf-tiny/summary.csv
-```
-
-Small real-model feasibility run:
-
-```bash
-pip install -e '.[dev,hf]'
-python -m ttt_cache_lab.cli run --config configs/feasibility_hf_qwen_0_5b.yaml
-python -m ttt_cache_lab.cli summarize --input runs/feasibility-hf-qwen-0-5b/summary.csv
-```
-
-Sweep run:
+Sweep example:
 
 ```bash
 python -m ttt_cache_lab.cli sweep --config configs/sweep_toy_update_norm.yaml
 python -m ttt_cache_lab.cli first-table --input runs/sweep-toy-update-norm/merged_records.csv
 ```
 
-See [`docs/runbook.md`](docs/runbook.md) for detailed instructions.
+## Main experiment groups
 
-Project direction and full experiment plan: [`docs/project_plan.md`](docs/project_plan.md).
+The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable templates currently cover:
 
-The experiments write JSONL and CSV summaries under `runs/`.
+| Group | Purpose | Example config |
+|---|---|---|
+| E1 | Static-adapter baseline alignment | `configs/experiments/e1_static_adapter_baseline_toy.yaml` |
+| E2 | Adapter-version drift characterization | `configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml` |
+| E3 | Update-target × version-gap failure map | `configs/experiments/e3_failure_map_toy.yaml` |
+| E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_toy.yaml` |
+| E5 | Delta correction / base+delta cache experiment | `configs/experiments/e5_delta_correction_toy.yaml` |
+| E6 | Context-length and model-scale scaling | `configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml` |
+| E7 | Ablations and failure boundaries | `configs/experiments/e7_ablation_failure_toy.yaml` |
 
-## First feasibility target
+Ascend-specific configs:
 
-The first table to produce is:
+```text
+configs/experiments/ascend_smoke_qwen_0_5b.yaml
+configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
+configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
+configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
+configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
+```
 
-| Update target | Full recompute score | Stale cache score | Frozen reuse score | Layer-wise recompute score | Latency vs full |
-|---|---:|---:|---:|---:|---:|
-| Q | | | | | |
-| K | | | | | |
-| V | | | | | |
-| O | | | | | |
-| MLP-late | | | | | |
-| LoRA-Q | | | | | |
-| LoRA-K | | | | | |
-| LoRA-V | | | | | |
-| LoRA-MLP-late | | | | | |
+## Output files
 
-A positive result is a region where an update target is more useful than Q-only while cache maintenance is substantially cheaper than full recomputation.
+Most experiment runs write:
+
+```text
+runs/<experiment>/records.jsonl          raw records
+runs/<experiment>/summary.csv            flat CSV records
+runs/<experiment>/version_summary.csv    grouped means by version/target/strategy
+runs/<experiment>/report/report.md       Markdown report
+runs/<experiment>/report/*.svg           metric-vs-version plots
+```
+
+Important columns include:
+
+```text
+experiment_id
+update_target
+cache_strategy
+action
+adapter_version
+cached_version
+version_gap
+accumulated_update_norm
+task_score
+logits_kl
+top1_agreement
+relative_error
+latency_units
+```
+
+## Backends
+
+| Backend | Config value | Purpose |
+|---|---|---|
+| Toy | `toy` | CI, dry runs, pipeline validation |
+| HuggingFace | `hf` | CUDA/CPU fallback and optional validation |
+| Ascend HuggingFace | `ascend_hf` | Real experiment backend on Ascend 910B through torch-npu |
+
+## Example config fragment
+
+```yaml
+model:
+  backend: ascend_hf
+  model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  device: npu:0
+  torch_dtype: bfloat16
+  max_length: 4096
+  trust_remote_code: true
+
+adapter:
+  update_mode: lora_train
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+
+version_steps: [0, 1, 2, 4, 8]
+```
+
+## Documentation
+
+- [`docs/project_plan.md`](docs/project_plan.md): complete research plan, experiment dependency graph, deliverables, and decision gates.
+- [`docs/ascend.md`](docs/ascend.md): Ascend 910B environment and runbook.
+- [`docs/runbook.md`](docs/runbook.md): detailed command reference.
+- [`docs/design.md`](docs/design.md): cache semantics and strategy design notes.
+- [`docs/experiment_plan.md`](docs/experiment_plan.md): earlier feasibility experiment plan.
+
+## Current recommended next step
+
+Run the Ascend smoke test on the 8×910B server:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_smoke.sh
+```
+
+If that passes, run E2 on Qwen2.5-1.5B and generate the report:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_e2_single.sh \
+  configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
+```
 
 ## License
 
 MIT.
-
-
-## Versioned experiment examples
-
-Run one planned experiment template:
-
-```bash
-python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_toy.yaml   --version-summary
-```
-
-Run all toy templates for E1-E7:
-
-```bash
-scripts/run_toy_study.sh
-```
-
-Run the first real LoRA drift template on GPU:
-
-```bash
-pip install -e '.[dev,hf]'
-CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_qwen_0_5b.yaml   --version-summary
-```
-
-
-## Ascend 910B primary platform
-
-Real paper experiments should use the Ascend backend:
-
-```bash
-pip install -e '.[dev,hf]'
-ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_smoke.sh
-```
-
-See [`docs/ascend.md`](docs/ascend.md).

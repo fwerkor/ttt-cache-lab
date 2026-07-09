@@ -197,6 +197,6 @@ configs/experiments/e2_version_drift_qwen_7b.yaml
 ```
 
 
-## 11. Ascend primary platform
+## 11. Ascend support
 
-Future real experiments should use `model.backend: ascend_hf` on the 8xAscend 910B server. See [`ascend.md`](ascend.md).
+Ascend runs use `model.backend: ascend_hf` on the 8xAscend 910B server. See [`ascend.md`](ascend.md).

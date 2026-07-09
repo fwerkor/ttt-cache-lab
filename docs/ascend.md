@@ -1,6 +1,6 @@
 # Ascend 910B runbook
 
-This project treats Ascend 910B as the primary experiment platform. CUDA/HF remains as a fallback, but real paper runs should use `model.backend: ascend_hf`.
+This document describes how to run the experiment framework on Ascend 910B through torch-npu. CUDA/HuggingFace support remains available separately; Ascend runs use `model.backend: ascend_hf`.
 
 ## 1. Environment expectation
 
