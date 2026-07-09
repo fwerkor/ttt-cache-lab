@@ -22,7 +22,7 @@ class ModelConfig(BaseModel):
 
 
 class DataConfig(BaseModel):
-    task: Literal["passkey", "key_value"] = "passkey"
+    task: Literal["passkey", "key_value", "multi_needle", "variable_tracking"] = "passkey"
     num_samples: int = 16
     context_length: int = 512
     answer_length: int = 4
