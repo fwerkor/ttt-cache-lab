@@ -102,8 +102,10 @@ class HuggingFaceBackend:
         reset_peak_memory(self.torch, self.device)
         synchronize(self.torch, self.device)
         start = time.perf_counter()
+        self._set_lora_capture(True)
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
+            self._set_lora_capture(False)
             probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
         synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
@@ -115,6 +117,7 @@ class HuggingFaceBackend:
             extras={
                 "past_key_values": prefill.past_key_values,
                 "prompt_state": state,
+                "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
             },
         )
@@ -145,8 +148,10 @@ class HuggingFaceBackend:
         reset_peak_memory(self.torch, self.device)
         synchronize(self.torch, self.device)
         start = time.perf_counter()
+        self._set_lora_capture(True)
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
+            self._set_lora_capture(False)
             probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
         synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
@@ -158,6 +163,7 @@ class HuggingFaceBackend:
             extras={
                 "past_key_values": prefill.past_key_values,
                 "prompt_state": state,
+                "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
             },
         )
@@ -231,6 +237,8 @@ class HuggingFaceBackend:
             if not any(part in lower for part in filters):
                 continue
             if is_lora_linear(module):
+                if not getattr(module, "lora_name", ""):
+                    module.lora_name = module_name
                 if id(module) not in seen_active:
                     self._activate_lora_module(module)
                     seen_active.add(id(module))
@@ -238,6 +246,7 @@ class HuggingFaceBackend:
                 continue
             if isinstance(module, nn.Linear):
                 wrapped = make_lora_linear(self.torch, nn, module, rank=rank, alpha=alpha)
+                wrapped.lora_name = module_name
                 wrapped.to(self.device)
                 setattr(parent, child_name, wrapped)
                 self._lora_modules.append(wrapped)
@@ -253,6 +262,21 @@ class HuggingFaceBackend:
             )
         self._lora_target_key = target_key
         return replaced
+
+    def prepare_update_target(
+        self,
+        target: UpdateTarget,
+        *,
+        rank: int,
+        alpha: float,
+        freeze_base_model: bool = True,
+    ) -> int:
+        return self.setup_lora(
+            target,
+            rank=rank,
+            alpha=alpha,
+            freeze_base_model=freeze_base_model,
+        )
 
     def train_lora_step(
         self,
@@ -376,6 +400,8 @@ class HuggingFaceBackend:
             past=merged_past,
             cache_tensor=self._summarize_past(merged_past),
             hidden_tensor=hidden,
+            lora_cache=full.extras.get("lora_cache", {}),
+            extra_metadata={"partial_mode": "past_key_values_layer_splice"},
         )
         self._last_partial_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
         return result
@@ -387,22 +413,28 @@ class HuggingFaceBackend:
         full: BackendOutput,
         decision: StrategyDecision,
     ) -> BackendOutput:
-        if not baseline.extras or not full.extras:
-            raise ValueError("Delta correction requires cached HF states from baseline and full outputs")
+        del full
+        if not baseline.extras:
+            raise ValueError("Delta correction requires cached HF state from the baseline output")
         split_layer = decision.first_invalid_layer or 0
-        alpha = 0.75
-        corrected_past = self._blend_past(
+        corrected_past, corrected_lora_cache = self._apply_lora_weight_delta_to_past(
             baseline.extras["past_key_values"],
-            full.extras["past_key_values"],
+            baseline.extras.get("lora_cache", {}),
             split_layer=split_layer,
-            alpha=alpha,
         )
-        hidden = self._blend_summary(baseline.hidden_tensor, full.hidden_tensor, split_layer=split_layer, alpha=alpha)
+        if corrected_past is None:
+            result = self._reuse_old_prefix_cache(baseline)
+            if result.extras is not None:
+                result.extras["delta_mode"] = "unavailable_weight_delta_fallback_to_stale"
+            self._last_delta_s = self._last_stale_s
+            return result
         result = self._probe_with_past(
             baseline=baseline,
             past=corrected_past,
             cache_tensor=self._summarize_past(corrected_past),
-            hidden_tensor=hidden,
+            hidden_tensor=baseline.hidden_tensor,
+            lora_cache=corrected_lora_cache,
+            extra_metadata={"delta_mode": "lora_weight_delta"},
         )
         self._last_delta_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
         return result
@@ -414,6 +446,8 @@ class HuggingFaceBackend:
         past: Any,
         cache_tensor: np.ndarray,
         hidden_tensor: np.ndarray,
+        lora_cache: dict[str, Any] | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> BackendOutput:
         if not baseline.extras:
             raise ValueError("Baseline output does not contain prompt state")
@@ -424,18 +458,152 @@ class HuggingFaceBackend:
             probe = self.model(input_ids=state.probe_ids, past_key_values=past, use_cache=True)
         synchronize(self.torch, self.device)
         latency = time.perf_counter() - start
+        extras = {
+            "past_key_values": past,
+            "prompt_state": state,
+            "lora_cache": lora_cache if lora_cache is not None else baseline.extras.get("lora_cache", {}),
+            "memory_allocated": memory_allocated(self.torch, self.device),
+            "strategy_latency": latency,
+        }
+        if extra_metadata:
+            extras.update(extra_metadata)
         return BackendOutput(
             logits=self._to_numpy(probe.logits[:, -1, :]),
             cache_tensor=cache_tensor,
             hidden_tensor=hidden_tensor,
             parameter_version=self.parameter_version,
-            extras={
-                "past_key_values": past,
-                "prompt_state": state,
-                "memory_allocated": memory_allocated(self.torch, self.device),
-                "strategy_latency": latency,
-            },
+            extras=extras,
         )
+
+    def _set_lora_capture(self, enabled: bool) -> None:
+        for module in self._lora_modules:
+            if hasattr(module, "capture_lora_input"):
+                module.capture_lora_input = enabled
+                if enabled:
+                    module.cached_lora_input = None
+
+    def _snapshot_lora_cache(self) -> dict[str, Any]:
+        cache: dict[str, Any] = {}
+        for module in self._lora_modules:
+            name = str(getattr(module, "lora_name", ""))
+            if not name or not hasattr(module, "lora_state"):
+                continue
+            state = module.lora_state()
+            cached_input = getattr(module, "cached_lora_input", None)
+            if cached_input is not None:
+                state["input"] = cached_input.detach()
+            state["name"] = name
+            state["layer"] = self._module_layer(name)
+            state["projection"] = self._module_projection(name)
+            cache[name] = state
+        return cache
+
+    def _apply_lora_weight_delta_to_past(
+        self,
+        past_key_values: Any,
+        old_lora_cache: Any,
+        *,
+        split_layer: int,
+    ) -> tuple[Any | None, dict[str, Any]]:
+        if not isinstance(old_lora_cache, dict) or not old_lora_cache:
+            return None, {}
+        module_by_name = {
+            str(getattr(module, "lora_name", "")): module
+            for module in self._lora_modules
+            if getattr(module, "lora_name", "")
+        }
+        layers = [tuple(layer) for layer in past_key_values]
+        corrected = [list(layer) for layer in layers]
+        new_lora_cache: dict[str, Any] = {}
+        applied = False
+        for name, old_state in old_lora_cache.items():
+            if not isinstance(old_state, dict):
+                continue
+            module = module_by_name.get(str(name))
+            if module is None or not hasattr(module, "lora_delta_output"):
+                continue
+            projection = str(old_state.get("projection", ""))
+            if projection not in {"k", "v"}:
+                continue
+            layer = old_state.get("layer")
+            if not isinstance(layer, int) or layer < split_layer or layer >= len(corrected):
+                continue
+            cached_input = old_state.get("input")
+            if cached_input is None:
+                continue
+            delta = module.lora_delta_output(cached_input, old_state)
+            item_index = 0 if projection == "k" else 1
+            if item_index >= len(corrected[layer]):
+                continue
+            projected = self._reshape_projection_delta(delta, corrected[layer][item_index])
+            if projected is None:
+                continue
+            corrected[layer][item_index] = corrected[layer][item_index] + projected.to(
+                device=corrected[layer][item_index].device,
+                dtype=corrected[layer][item_index].dtype,
+            )
+            state = module.lora_state()
+            state["input"] = cached_input.detach()
+            state["name"] = name
+            state["layer"] = layer
+            state["projection"] = projection
+            new_lora_cache[str(name)] = state
+            applied = True
+        if not applied:
+            return None, {}
+        for name, old_state in old_lora_cache.items():
+            if str(name) not in new_lora_cache and isinstance(old_state, dict):
+                module = module_by_name.get(str(name))
+                if module is not None and hasattr(module, "lora_state"):
+                    state = module.lora_state()
+                    if "input" in old_state:
+                        state["input"] = old_state["input"]
+                    state["name"] = name
+                    state["layer"] = old_state.get("layer")
+                    state["projection"] = old_state.get("projection")
+                    new_lora_cache[str(name)] = state
+        return tuple(tuple(layer) for layer in corrected), new_lora_cache
+
+    def _reshape_projection_delta(self, delta: Any, target_past: Any) -> Any | None:
+        if not hasattr(delta, "reshape") or not hasattr(target_past, "shape"):
+            return None
+        if delta.ndim != 3 or target_past.ndim != 4:
+            return None
+        batch, seq_len, features = delta.shape
+        if int(target_past.shape[0]) != int(batch):
+            return None
+        if int(target_past.shape[2]) == int(seq_len):
+            heads = int(target_past.shape[1])
+            head_dim = int(target_past.shape[3])
+            if features != heads * head_dim:
+                return None
+            return delta.reshape(batch, seq_len, heads, head_dim).transpose(1, 2).contiguous()
+        if int(target_past.shape[1]) == int(seq_len):
+            heads = int(target_past.shape[2])
+            head_dim = int(target_past.shape[3])
+            if features != heads * head_dim:
+                return None
+            return delta.reshape(batch, seq_len, heads, head_dim).contiguous()
+        return None
+
+    def _module_layer(self, name: str) -> int | None:
+        import re
+
+        for pattern in (r"layers\.(\d+)", r"h\.(\d+)", r"blocks?\.(\d+)", r"decoder\.(\d+)"):
+            match = re.search(pattern, name)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _module_projection(self, name: str) -> str:
+        lower = name.lower()
+        if "k_proj" in lower or ".key" in lower or lower.endswith("key"):
+            return "k"
+        if "v_proj" in lower or ".value" in lower or lower.endswith("value"):
+            return "v"
+        if "q_proj" in lower or ".query" in lower or lower.endswith("query"):
+            return "q"
+        return "unknown"
 
     def _select_parameters(self, target: UpdateTarget) -> list[Any]:
         filters = self._target_filters(target.kind)

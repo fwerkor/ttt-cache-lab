@@ -72,6 +72,7 @@ class VersionedExperimentRunner:
             for target_name in self.config.updates.targets:
                 target = parse_update_target(target_name, num_layers=self.config.model.num_layers)
                 backend.restore_after_update()
+                self._prepare_backend_for_target(backend, target)
                 cached_v0 = backend.prefill(sample.prompt)
                 strategy_caches = {
                     str(strategy.name): _StrategyCache(output=cached_v0, cached_version=0) for strategy in strategies
@@ -120,6 +121,19 @@ class VersionedExperimentRunner:
                 backend.restore_after_update()
 
         return write_records(records, self.config.output_dir)
+
+    def _prepare_backend_for_target(self, backend: ModelBackend, target: UpdateTarget) -> None:
+        if self.config.adapter.update_mode != "lora_train":
+            return
+        prepare = getattr(backend, "prepare_update_target", None)
+        if not callable(prepare):
+            return
+        prepare(
+            target,
+            rank=self.config.adapter.lora_rank,
+            alpha=self.config.adapter.lora_alpha,
+            freeze_base_model=self.config.adapter.freeze_base_model,
+        )
 
     def _update_one_version(
         self,
