@@ -171,3 +171,27 @@ CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run \
 ```
 
 The HF LoRA path currently supports `torch.nn.Linear` projections, which covers Qwen/LLaMA-style projection layers. GPT-2-style fused `Conv1D` modules are not wrapped by the current LoRA implementation.
+
+
+## 10. Generate experiment reports
+
+After any `versioned-run`, generate Markdown and SVG plots:
+
+```bash
+python -m ttt_cache_lab.cli version-report   --input runs/e2_version_drift/summary.csv   --output-dir runs/e2_version_drift/report
+```
+
+The report directory contains:
+
+- `report.md`
+- `logits_kl_by_version.svg`
+- `relative_error_by_version.svg`
+- `task_score_by_version.svg`
+- `latency_units_by_version.svg`
+
+Larger Qwen templates are available for GPU runs:
+
+```bash
+configs/experiments/e2_version_drift_qwen_1_5b.yaml
+configs/experiments/e2_version_drift_qwen_7b.yaml
+```

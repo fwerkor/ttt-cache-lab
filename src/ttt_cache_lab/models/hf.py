@@ -73,6 +73,7 @@ class HuggingFaceBackend:
         self._last_prefill_s = 0.0
         self._last_stale_s = 0.0
         self._lora_modules: list[Any] = []
+        self._active_lora_modules: list[Any] = []
         self._lora_target_key: str | None = None
 
     def _resolve_device(self, device: str) -> str:
@@ -199,16 +200,19 @@ class HuggingFaceBackend:
         from ttt_cache_lab.models.lora import is_lora_linear, make_lora_linear
 
         target_key = f"{target.kind.value}:{target.layer}:{rank}:{alpha}"
-        if self._lora_target_key == target_key and self._lora_modules:
-            self.reset_lora_adapters()
-            return len(self._lora_modules)
 
         if freeze_base_model:
             for param in self.model.parameters():
                 param.requires_grad_(False)
 
+        self._active_lora_modules = []
+        for module in self._lora_modules:
+            for param in module.lora_parameters():
+                param.requires_grad_(False)
+
         filters = self._target_filters(target.kind)
         replaced = 0
+        seen_active: set[int] = set()
         for parent, child_name, module_name, module in list(self._iter_named_modules_with_parent()):
             lower = module_name.lower()
             if target.layer is not None and not self._name_matches_layer(lower, target.layer):
@@ -216,14 +220,18 @@ class HuggingFaceBackend:
             if not any(part in lower for part in filters):
                 continue
             if is_lora_linear(module):
-                self._lora_modules.append(module)
-                replaced += 1
+                if id(module) not in seen_active:
+                    self._activate_lora_module(module)
+                    seen_active.add(id(module))
+                    replaced += 1
                 continue
             if isinstance(module, nn.Linear):
                 wrapped = make_lora_linear(self.torch, nn, module, rank=rank, alpha=alpha)
                 wrapped.to(self.device)
                 setattr(parent, child_name, wrapped)
                 self._lora_modules.append(wrapped)
+                self._activate_lora_module(wrapped)
+                seen_active.add(id(wrapped))
                 replaced += 1
         if replaced == 0 and target.layer is not None:
             return self.setup_lora(
@@ -266,7 +274,7 @@ class HuggingFaceBackend:
         loss.backward()
         total_norm = 0.0
         with self.torch.no_grad():
-            for module in self._lora_modules:
+            for module in self._active_lora_modules:
                 for param in module.lora_parameters():
                     if param.grad is None:
                         continue
@@ -283,6 +291,14 @@ class HuggingFaceBackend:
         for module in self._lora_modules:
             if hasattr(module, "reset_lora"):
                 module.reset_lora()
+            for param in module.lora_parameters():
+                param.requires_grad_(False)
+        self._active_lora_modules = []
+
+    def _activate_lora_module(self, module: Any) -> None:
+        for param in module.lora_parameters():
+            param.requires_grad_(True)
+        self._active_lora_modules.append(module)
 
     def _iter_named_modules_with_parent(self) -> list[tuple[Any, str, str, Any]]:
         items: list[tuple[Any, str, str, Any]] = []

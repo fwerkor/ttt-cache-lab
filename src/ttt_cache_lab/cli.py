@@ -6,6 +6,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig
+from ttt_cache_lab.experiments.report import generate_report
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.summarize import (
     first_table_markdown,
@@ -44,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     version_summary = subparsers.add_parser("version-summary", help="Summarize a versioned records CSV")
     version_summary.add_argument("--input", required=True, type=Path)
     version_summary.add_argument("--output", required=True, type=Path)
+
+    version_report = subparsers.add_parser(
+        "version-report", help="Generate Markdown and SVG report from versioned records"
+    )
+    version_report.add_argument("--input", required=True, type=Path)
+    version_report.add_argument("--output-dir", required=True, type=Path)
 
     subparsers.add_parser("list-targets", help="List supported update target names")
     return parser
@@ -87,6 +94,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "version-summary":
         write_version_summary(args.input, args.output)
         console.print(f"Wrote {args.output}")
+        return
+    if args.command == "version-report":
+        report = generate_report(args.input, args.output_dir)
+        console.print(f"Wrote {report}")
         return
     if args.command == "list-targets":
         for item in ModuleKind:
