@@ -22,6 +22,12 @@ class _StrategyCache:
     cached_version: int
 
 
+@dataclass(frozen=True)
+class _VersionUpdate:
+    output: BackendOutput
+    update_norm: float
+
+
 class VersionedExperimentRunner:
     """Run multi-step adapter-version experiments.
 
@@ -82,15 +88,9 @@ class VersionedExperimentRunner:
                     )
 
                 for step in range(1, max_version + 1):
-                    update_norm = self._update_one_version(backend, sample.prompt, target, current)
-                    accumulated_update_norm += update_norm
-                    current = BackendOutput(
-                        logits=current.logits,
-                        cache_tensor=current.cache_tensor,
-                        hidden_tensor=current.hidden_tensor,
-                        parameter_version=step,
-                        extras=current.extras,
-                    )
+                    version_update = self._update_one_version(backend, sample.prompt, target, current)
+                    accumulated_update_norm += version_update.update_norm
+                    current = version_update.output
                     if step not in target_steps:
                         continue
                     full = backend.full_recompute(sample.prompt, current)
@@ -118,7 +118,7 @@ class VersionedExperimentRunner:
         prompt: str,
         target: UpdateTarget,
         current: BackendOutput,
-    ) -> float:
+    ) -> _VersionUpdate:
         if self.config.adapter.update_mode == "lora_train" and hasattr(backend, "train_lora_step"):
             norms = []
             for _ in range(self.config.adapter.train_steps_per_version):
@@ -131,9 +131,19 @@ class VersionedExperimentRunner:
                     freeze_base_model=self.config.adapter.freeze_base_model,
                 )
                 norms.append(float(norm))
-            return sum(norms)
-        backend.simulate_update(current, target, update_norm=self.config.updates.update_norm)
-        return self.config.updates.update_norm
+            next_version = int(getattr(backend, "parameter_version", current.parameter_version + 1))
+            return _VersionUpdate(
+                output=BackendOutput(
+                    logits=current.logits,
+                    cache_tensor=current.cache_tensor,
+                    hidden_tensor=current.hidden_tensor,
+                    parameter_version=next_version,
+                    extras=current.extras,
+                ),
+                update_norm=sum(norms),
+            )
+        updated = backend.simulate_update(current, target, update_norm=self.config.updates.update_norm)
+        return _VersionUpdate(output=updated, update_norm=self.config.updates.update_norm)
 
     def _record_step(
         self,
