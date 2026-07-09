@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ttt_cache_lab.cache.planner import CachePlanner, PlannerDecision
+from ttt_cache_lab.cache.planner import CachePlanner, PlannerDecision, PlannerPolicy
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.updates.targets import UpdateTarget
 
@@ -129,7 +129,24 @@ class AdaptiveStrategy(CacheStrategy):
         )
 
 
-def build_strategy(name: str, *, refresh_period: int = 4) -> CacheStrategy:
+class DeltaCorrectionStrategy(CacheStrategy):
+    name = StrategyName.DELTA_CORRECTION
+
+    def __init__(self, update_norm_threshold: float = 0.05) -> None:
+        self.planner = CachePlanner(PlannerPolicy(update_norm_threshold=update_norm_threshold))
+
+    def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
+        decision: PlannerDecision = self.planner.plan(target, update_norm=update_norm)
+        return StrategyDecision(
+            self.name,
+            decision.action,
+            decision.state,
+            decision.first_invalid_layer,
+            f"Delta-correction baseline: {decision.reason}",
+        )
+
+
+def build_strategy(name: str, *, refresh_period: int = 4, update_norm_threshold: float = 0.05) -> CacheStrategy:
     parsed = StrategyName(name)
     if parsed is StrategyName.FULL_RECOMPUTE:
         return FullRecomputeStrategy()
@@ -144,5 +161,5 @@ def build_strategy(name: str, *, refresh_period: int = 4) -> CacheStrategy:
     if parsed is StrategyName.ADAPTIVE:
         return AdaptiveStrategy()
     if parsed is StrategyName.DELTA_CORRECTION:
-        return AdaptiveStrategy()
+        return DeltaCorrectionStrategy(update_norm_threshold=update_norm_threshold)
     raise ValueError(f"Unsupported cache strategy: {name}")
