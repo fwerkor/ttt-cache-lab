@@ -189,13 +189,13 @@ The report directory contains:
 - `task_score_by_version.svg`
 - `latency_units_by_version.svg`
 
-Larger Qwen and cross-family templates are available for GPU runs:
+Cross-family and manual large-model templates are available for GPU/NPU runs:
 
 ```bash
 configs/experiments/e2_version_drift_qwen_1_5b.yaml
-configs/experiments/e2_version_drift_qwen_7b.yaml
-configs/experiments/e2_version_drift_llama_3_1_8b.yaml
-configs/experiments/e2_version_drift_mistral_7b_v0_3.yaml
+configs/experiments/e2_version_drift_llama_3_2_1b.yaml
+configs/experiments/e2_version_drift_qwen_7b.yaml        # manual large-model template
+configs/experiments/e2_version_drift_mistral_7b_v0_3.yaml # manual large-model template
 ```
 
 

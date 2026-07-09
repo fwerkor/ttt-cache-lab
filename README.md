@@ -141,7 +141,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_e2_single.sh \
   configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 ```
 
-Run the 7B template:
+Run a manual large-model template after checking memory headroom:
 
 ```bash
 ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_e2_single.sh \
@@ -154,7 +154,7 @@ Use the 8-card machine as parallel experiment workers first:
 scripts/run_ascend_e2_parallel.sh
 ```
 
-This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Each Ascend launcher resolves the configured ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before running. Distributed model-parallel execution is optional future work, not required for the current experiment path.
+This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. By default it runs Qwen2.5-0.5B, Qwen2.5-1.5B, and Llama-3.2-1B. Qwen2.5-7B and Mistral-7B templates remain available for manual runs only until a distributed backend or shorter-context validation path is added. Each Ascend launcher resolves the configured ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before running.
 
 ## Toy experiments
 
@@ -207,7 +207,7 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 |---|---|---|
 | E1 | Static-adapter baseline alignment | `configs/experiments/e1_static_adapter_baseline_toy.yaml` |
 | E2 | Adapter-version drift characterization | `configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml` |
-| E2 cross-family | Qwen/LLaMA/Mistral family generality | `configs/experiments/ascend_e2_version_drift_llama_3_1_8b.yaml`, `configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml` |
+| E2 cross-family | Qwen/LLaMA family generality and manual Mistral check | `configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml`; Mistral 7B remains a manual large-model template |
 | E3 | Update-target × version-gap failure map | `configs/experiments/e3_failure_map_toy.yaml` |
 | E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_toy.yaml` |
 | E5 | Delta correction / base+delta cache experiment | `configs/experiments/e5_delta_correction_toy.yaml` |
@@ -220,10 +220,10 @@ Ascend-specific configs:
 configs/experiments/ascend_smoke_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
-configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
-configs/experiments/ascend_e2_version_drift_llama_3_1_8b.yaml
-configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml
-configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
+configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
+configs/experiments/ascend_e2_version_drift_qwen_7b.yaml        # manual large-model template
+configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml # manual large-model template
+configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml          # manual scaling template
 ```
 
 ## Output files

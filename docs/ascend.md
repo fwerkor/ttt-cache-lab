@@ -53,7 +53,7 @@ Use the eight cards as independent experiment workers for configs/seeds/targets.
 scripts/run_ascend_e2_parallel.sh
 ```
 
-This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Each process resolves its ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before loading Transformers.
+This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVICES` values. The default set is Qwen2.5-0.5B, Qwen2.5-1.5B, and Llama-3.2-1B. Qwen2.5-7B and Mistral-7B are intentionally left out of this launcher and should be run manually only after checking memory headroom. Each process resolves its ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before loading Transformers.
 
 ## 6. Main configs
 
@@ -61,10 +61,10 @@ This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVIC
 configs/experiments/ascend_smoke_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
-configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
-configs/experiments/ascend_e2_version_drift_llama_3_1_8b.yaml
-configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml
-configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
+configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
+configs/experiments/ascend_e2_version_drift_qwen_7b.yaml        # manual large-model template
+configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml # manual large-model template
+configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml          # manual scaling template
 ```
 
 ## 7. Current limitations
@@ -72,5 +72,5 @@ configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
 - `ascend_hf` uses torch-npu through HuggingFace Transformers.
 - Ascend scripts use `model.modelscope_model_id` for ModelScope downloads and then load the local snapshot path.
 - Multi-card model parallelism is optional future work and should only be added if single-card runs cannot cover the target model/context scale.
-- The recommended first use of 8x910B is parallel sweeps, one process per visible NPU.
+- The recommended first use of 8x910B is parallel sweeps over small/default-safe configs, one process per visible NPU.
 - Real delta KV correction and real layer-wise partial recomputation are still future work; current placeholders are charged as full recomputation latency.
