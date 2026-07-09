@@ -185,7 +185,7 @@ class HuggingFaceBackend:
         logits = output.logits[0]
         top_token = int(np.argmax(logits))
         decoded = self.tokenizer.decode([top_token]).strip()
-        return 1.0 if sample.answer and sample.answer.startswith(decoded) else 0.0
+        return 1.0 if decoded and sample.answer and sample.answer.startswith(decoded) else 0.0
 
     def estimate_latency(self, decision: StrategyDecision, *, context_length: int) -> float:
         if decision.action is CacheAction.FULL_RECOMPUTE:
