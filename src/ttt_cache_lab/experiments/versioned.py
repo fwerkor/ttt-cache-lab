@@ -5,8 +5,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ttt_cache_lab.cache.semantics import CacheAction
-from ttt_cache_lab.cache.strategies import CacheStrategy, build_strategy
+from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
+from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.synthetic import SyntheticTaskFactory
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
@@ -165,10 +165,18 @@ class VersionedExperimentRunner:
             decision = strategy.decide(
                 target,
                 step=adapter_version,
-                update_norm=max(accumulated_update_norm, self.config.updates.update_norm),
+                update_norm=accumulated_update_norm,
             )
             cache_key = str(decision.strategy)
             cached = strategy_caches[cache_key]
+            if adapter_version == cached.cached_version and decision.action is not CacheAction.FULL_RECOMPUTE:
+                decision = StrategyDecision(
+                    decision.strategy,
+                    CacheAction.REUSE_EXACT,
+                    CacheBlockState.VALID_EXACT,
+                    None,
+                    "Cache version matches adapter version; reuse is exact.",
+                )
             approx = backend.apply_cache_strategy(
                 baseline=cached.output,
                 full=full,
