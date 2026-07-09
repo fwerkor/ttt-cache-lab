@@ -12,7 +12,11 @@ for i in "${!configs[@]}"; do
   (
     export ASCEND_RT_VISIBLE_DEVICES=$i
     echo "==> device=$ASCEND_RT_VISIBLE_DEVICES config=$cfg"
-    python -m ttt_cache_lab.cli versioned-run --config "$cfg" --version-summary
+    resolved_config=$(python scripts/prepare_modelscope_config.py \
+      --config "$cfg" \
+      --cache-dir "${MODELSCOPE_CACHE_DIR:-models/modelscope}" \
+      --output-dir "${TTT_CACHE_CONFIG_DIR:-runs/modelscope_configs}")
+    python -m ttt_cache_lab.cli versioned-run --config "$resolved_config" --version-summary
   ) >"$log" 2>&1 &
   echo "started $cfg on visible device $i, log=$log"
 done

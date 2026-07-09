@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 class ModelConfig(BaseModel):
     backend: Literal["toy", "hf", "ascend_hf"] = "toy"
     model_name_or_path: str | None = None
+    modelscope_model_id: str | None = None
     num_layers: int = 4
     hidden_size: int = 32
     vocab_size: int = 256

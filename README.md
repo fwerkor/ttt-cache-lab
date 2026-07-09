@@ -36,6 +36,7 @@ Implemented:
 - toy backend for CI and dry runs;
 - HuggingFace backend for real `past_key_values` experiments;
 - Ascend HuggingFace backend using torch-npu (`model.backend: ascend_hf`);
+- ModelScope download preparation for Ascend runs;
 - simple LoRA wrapper and online LoRA update path for `torch.nn.Linear` projections;
 - result summaries, first feasibility tables, Markdown reports, and SVG trend plots;
 - E1-E7 experiment templates from the project plan;
@@ -70,7 +71,8 @@ docs/
   runbook.md                  general run instructions
 scripts/
   run_toy_study.sh            run all E1-E7 toy templates
-  run_ascend_*.sh             Ascend smoke/single/parallel launchers
+  run_ascend_*.sh             Ascend smoke/single/parallel launchers; use ModelScope by default
+  prepare_modelscope_config.py  resolve ModelScope weights and emit local-path configs
 tests/
   unit tests for configs, runners, metrics, planner, reports, and backends
 ```
@@ -88,10 +90,10 @@ pip install -e '.[dev]'
 For HuggingFace / Ascend experiments:
 
 ```bash
-pip install -e '.[dev,hf]'
+pip install -e '.[dev,hf,modelscope]'
 ```
 
-`torch-npu` is not pinned in `pyproject.toml` because it must match the server's CANN and PyTorch versions. Install torch-npu according to the Ascend server environment.
+`modelscope` is used by the Ascend launcher scripts to download weights into a local snapshot directory before Transformers loads the model. `torch-npu` is not pinned in `pyproject.toml` because it must match the server's CANN and PyTorch versions. Install torch-npu according to the Ascend server environment.
 
 ## Validate the repository
 
@@ -152,7 +154,7 @@ Use the 8-card machine as parallel experiment workers first:
 scripts/run_ascend_e2_parallel.sh
 ```
 
-This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Distributed model-parallel execution is optional future work, not required for the current experiment path.
+This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Each Ascend launcher resolves the configured ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before running. Distributed model-parallel execution is optional future work, not required for the current experiment path.
 
 ## Toy experiments
 
@@ -257,7 +259,7 @@ latency_units
 |---|---|---|
 | Toy | `toy` | CI, dry runs, pipeline validation |
 | HuggingFace | `hf` | CUDA/CPU fallback and optional validation |
-| Ascend HuggingFace | `ascend_hf` | Real experiment backend on Ascend 910B through torch-npu |
+| Ascend HuggingFace | `ascend_hf` | Real experiment backend on Ascend 910B through torch-npu; launcher scripts prepare local model snapshots through ModelScope |
 
 ## Example config fragment
 

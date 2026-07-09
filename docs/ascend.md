@@ -20,10 +20,10 @@ PY
 
 ```bash
 git pull
-pip install -e '.[dev,hf]'
+pip install -e '.[dev,hf,modelscope]'
 ```
 
-The project does not pin torch-npu in `pyproject.toml` because torch-npu must match the server CANN/PyTorch version.
+Ascend launchers download model snapshots through ModelScope and rewrite a temporary config under `${TTT_CACHE_CONFIG_DIR:-runs/modelscope_configs}`. Use `MODELSCOPE_CACHE_DIR` to choose the shared model cache location. The project does not pin torch-npu in `pyproject.toml` because torch-npu must match the server CANN/PyTorch version.
 
 ## 3. Smoke test
 
@@ -53,7 +53,7 @@ Use the eight cards as independent experiment workers for configs/seeds/targets.
 scripts/run_ascend_e2_parallel.sh
 ```
 
-This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVICES` values.
+This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Each process resolves its ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before loading Transformers.
 
 ## 6. Main configs
 
@@ -68,6 +68,7 @@ configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
 ## 7. Current limitations
 
 - `ascend_hf` uses torch-npu through HuggingFace Transformers.
+- Ascend scripts use `model.modelscope_model_id` for ModelScope downloads and then load the local snapshot path.
 - Multi-card model parallelism is optional future work and should only be added if single-card runs cannot cover the target model/context scale.
 - The recommended first use of 8x910B is parallel sweeps, one process per visible NPU.
 - Real delta KV correction and real layer-wise partial recomputation are still future work; current placeholders are charged as full recomputation latency.

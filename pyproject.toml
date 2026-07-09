@@ -30,6 +30,9 @@ hf = [
   "accelerate>=0.33",
   "datasets>=2.20",
 ]
+modelscope = [
+  "modelscope>=1.17",
+]
 
 [project.scripts]
 ttt-cache-lab = "ttt_cache_lab.cli:main"
