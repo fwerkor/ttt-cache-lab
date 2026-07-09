@@ -1,0 +1,36 @@
+name: feasibility-toy
+seed: 7
+output_dir: runs/feasibility-toy
+model:
+  backend: toy
+  num_layers: 4
+  hidden_size: 32
+  vocab_size: 256
+data:
+  task: passkey
+  num_samples: 16
+  context_length: 512
+  answer_length: 4
+updates:
+  targets:
+    - attention.q
+    - attention.k
+    - attention.v
+    - attention.o
+    - mlp.late
+    - lora.q
+    - lora.k
+    - lora.v
+    - lora.mlp_late
+  step_count: 2
+  update_norm: 0.01
+cache:
+  strategies:
+    - full_recompute
+    - stale_reuse
+    - frozen_reuse
+    - layerwise_recompute
+    - adaptive
+metrics:
+  compute_tensor_metrics: true
+  compute_task_metrics: true
