@@ -195,3 +195,8 @@ Larger Qwen templates are available for GPU runs:
 configs/experiments/e2_version_drift_qwen_1_5b.yaml
 configs/experiments/e2_version_drift_qwen_7b.yaml
 ```
+
+
+## 11. Ascend primary platform
+
+Future real experiments should use `model.backend: ascend_hf` on the 8xAscend 910B server. See [`ascend.md`](ascend.md).

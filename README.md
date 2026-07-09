@@ -129,3 +129,15 @@ Run the first real LoRA drift template on GPU:
 pip install -e '.[dev,hf]'
 CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_qwen_0_5b.yaml   --version-summary
 ```
+
+
+## Ascend 910B primary platform
+
+Real paper experiments should use the Ascend backend:
+
+```bash
+pip install -e '.[dev,hf]'
+ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_smoke.sh
+```
+
+See [`docs/ascend.md`](docs/ascend.md).

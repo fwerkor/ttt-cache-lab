@@ -1,0 +1,35 @@
+name: ascend-smoke-qwen-0-5b
+output_dir: runs/ascend_smoke_qwen_0_5b
+experiment_id: ascend_smoke
+seed: 7
+model:
+  backend: ascend_hf
+  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  device: npu:0
+  torch_dtype: bfloat16
+  max_length: 1024
+  trust_remote_code: true
+data:
+  task: passkey
+  num_samples: 1
+  context_length: 1024
+  answer_length: 4
+updates:
+  targets:
+    - lora.q
+  step_count: 1
+  update_norm: 0.00001
+cache:
+  strategies:
+    - full_recompute
+    - stale_reuse
+    - adaptive
+  refresh_period: 2
+adapter:
+  update_mode: lora_train
+  lora_rank: 4
+  lora_alpha: 8.0
+  learning_rate: 0.0005
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps: [0, 1]

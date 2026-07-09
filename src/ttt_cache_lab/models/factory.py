@@ -26,4 +26,17 @@ def build_backend(config: ModelConfig, *, seed: int) -> ModelBackend:
             trust_remote_code=config.trust_remote_code,
             seed=seed,
         )
+    if config.backend == "ascend_hf":
+        from ttt_cache_lab.models.ascend import AscendHuggingFaceBackend
+
+        if not config.model_name_or_path:
+            raise ValueError("model.model_name_or_path is required for the ascend_hf backend")
+        return AscendHuggingFaceBackend(
+            model_name_or_path=config.model_name_or_path,
+            device=config.device,
+            torch_dtype=config.torch_dtype,
+            max_length=config.max_length,
+            trust_remote_code=config.trust_remote_code,
+            seed=seed,
+        )
     raise ValueError(f"Unsupported model backend: {config.backend}")

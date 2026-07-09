@@ -9,6 +9,7 @@ import numpy as np
 from ttt_cache_lab.cache.semantics import CacheAction
 from ttt_cache_lab.cache.strategies import StrategyDecision
 from ttt_cache_lab.data.synthetic import TaskSample
+from ttt_cache_lab.models.accelerator import memory_allocated, reset_peak_memory, resolve_device, synchronize
 from ttt_cache_lab.models.interface import BackendOutput
 from ttt_cache_lab.updates.targets import ModuleKind, UpdateTarget
 
@@ -77,11 +78,7 @@ class HuggingFaceBackend:
         self._lora_target_key: str | None = None
 
     def _resolve_device(self, device: str) -> str:
-        if device != "auto":
-            return device
-        if self.torch.cuda.is_available():
-            return "cuda"
-        return "cpu"
+        return resolve_device(self.torch, device)
 
     def _resolve_dtype(self, dtype: str) -> Any | None:
         if dtype == "auto":
@@ -101,17 +98,24 @@ class HuggingFaceBackend:
     def prefill(self, prompt: str) -> BackendOutput:
         state = self._encode_prompt(prompt)
         self._last_state = state
+        reset_peak_memory(self.torch, self.device)
+        synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True)
             probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
+        synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
         return BackendOutput(
             logits=self._to_numpy(probe.logits[:, -1, :]),
             cache_tensor=self._summarize_past(prefill.past_key_values),
             hidden_tensor=np.zeros((1, 1), dtype=np.float64),
             parameter_version=self.parameter_version,
-            extras={"past_key_values": prefill.past_key_values, "prompt_state": state},
+            extras={
+                "past_key_values": prefill.past_key_values,
+                "prompt_state": state,
+                "memory_allocated": memory_allocated(self.torch, self.device),
+            },
         )
 
     def simulate_update(self, baseline: BackendOutput, target: UpdateTarget, *, update_norm: float) -> BackendOutput:
@@ -137,17 +141,24 @@ class HuggingFaceBackend:
 
     def full_recompute(self, prompt: str, updated: BackendOutput) -> BackendOutput:
         state = self._encode_prompt(prompt)
+        reset_peak_memory(self.torch, self.device)
+        synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True)
             probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
+        synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
         return BackendOutput(
             logits=self._to_numpy(probe.logits[:, -1, :]),
             cache_tensor=self._summarize_past(prefill.past_key_values),
             hidden_tensor=np.zeros((1, 1), dtype=np.float64),
             parameter_version=self.parameter_version,
-            extras={"past_key_values": prefill.past_key_values, "prompt_state": state},
+            extras={
+                "past_key_values": prefill.past_key_values,
+                "prompt_state": state,
+                "memory_allocated": memory_allocated(self.torch, self.device),
+            },
         )
 
     def apply_cache_strategy(
@@ -336,9 +347,11 @@ class HuggingFaceBackend:
             raise ValueError("Baseline output does not contain cached HF state")
         past = baseline.extras["past_key_values"]
         state = baseline.extras["prompt_state"]
+        synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
             probe = self.model(input_ids=state.probe_ids, past_key_values=past, use_cache=True)
+        synchronize(self.torch, self.device)
         self._last_stale_s = time.perf_counter() - start
         return BackendOutput(
             logits=self._to_numpy(probe.logits[:, -1, :]),

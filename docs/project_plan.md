@@ -714,11 +714,13 @@ Use smaller GPUs for development and sweeps:
 
 - 4x T10: smoke tests, 0.5B/1.5B, short contexts, config sweeps.
 
-Use larger GPUs for main experiments:
+Use Ascend as the primary platform for real experiments:
 
-- 6x A6000: 7B/14B, 16K/32K/64K, multi-step LoRA updates.
+- 8x Ascend 910B: primary paper platform for Qwen2.5-1.5B/7B/14B, 16K/32K contexts, and multi-step LoRA updates.
+- Use the eight cards first as parallel sweep workers, one process per visible NPU.
+- Multi-card model parallelism can be added later if 14B/32K+ runs require it.
 
-Do not rely on 4x T10 for main 7B+ long-context experiments unless memory-saving implementation is ready.
+CUDA GPUs can remain as optional validation, but they are no longer required for the main story.
 
 ## 16. Minimal viable paper experiment set
 

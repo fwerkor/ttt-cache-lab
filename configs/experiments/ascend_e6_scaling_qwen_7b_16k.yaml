@@ -1,0 +1,39 @@
+name: ascend-e6-scaling-qwen-7b-16k
+output_dir: runs/ascend_e6_scaling_qwen_7b_16k
+experiment_id: e6_scaling
+seed: 7
+model:
+  backend: ascend_hf
+  model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  device: npu:0
+  torch_dtype: bfloat16
+  max_length: 16384
+  trust_remote_code: true
+data:
+  task: passkey
+  num_samples: 4
+  context_length: 16384
+  answer_length: 4
+updates:
+  targets:
+    - lora.q
+    - lora.k
+    - lora.v
+    - lora.mlp_late
+  step_count: 1
+  update_norm: 0.00001
+cache:
+  strategies:
+    - full_recompute
+    - stale_reuse
+    - periodic_refresh
+    - adaptive
+  refresh_period: 4
+adapter:
+  update_mode: lora_train
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps: [0, 1, 2, 4, 8]

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 class ModelConfig(BaseModel):
-    backend: Literal["toy", "hf"] = "toy"
+    backend: Literal["toy", "hf", "ascend_hf"] = "toy"
     model_name_or_path: str | None = None
     num_layers: int = 4
     hidden_size: int = 32
