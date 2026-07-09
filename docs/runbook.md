@@ -95,7 +95,7 @@ The main columns are:
 
 ## 6. Current limitations
 
-The HF backend currently implements actual full recomputation and stale/frozen prefix-cache reuse. Layer-wise recomputation and delta correction are planner-level actions but use full recomputation as an upper-bound placeholder in the HF backend. Implementing actual per-layer cache surgery is the next major step.
+The HF backend currently implements actual full recomputation and stale/frozen prefix-cache reuse. Layer-wise recomputation and delta correction are planner-level actions but use full recomputation as an upper-bound placeholder in the HF backend. Their latency is charged as full recomputation until real per-layer cache surgery exists. Implementing actual per-layer cache surgery is the next major step.
 
 
 ## 7. Sweep run

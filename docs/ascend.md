@@ -70,4 +70,4 @@ configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
 - `ascend_hf` uses torch-npu through HuggingFace Transformers.
 - Multi-card model parallelism is optional future work and should only be added if single-card runs cannot cover the target model/context scale.
 - The recommended first use of 8x910B is parallel sweeps, one process per visible NPU.
-- Real delta KV correction and real layer-wise partial recomputation are still future work.
+- Real delta KV correction and real layer-wise partial recomputation are still future work; current placeholders are charged as full recomputation latency.

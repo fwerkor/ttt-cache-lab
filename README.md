@@ -45,6 +45,7 @@ Not implemented yet:
 
 - real delta KV correction on HuggingFace/Ascend;
 - real layer-wise partial recomputation on HuggingFace/Ascend;
+- HF/Ascend placeholders for those actions are charged as full recompute latency until implemented;
 - optional distributed backend for larger models, if single-card torch-npu is insufficient;
 - full reproduction of aLoRA/LRAgent/ForkKV-style baselines;
 - final paper plots and real 910B experiment results.
