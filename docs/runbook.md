@@ -112,3 +112,7 @@ python -m ttt_cache_lab.cli first-table --input runs/sweep-toy-update-norm/merge
 The sweep file has a `base` experiment plus `axes`. Each `axes[*].path` is a dotted
 path into the experiment config, for example `updates.update_norm` or
 `data.context_length`.
+
+## Project direction
+
+The full project plan and experiment blueprint are in [`project_plan.md`](project_plan.md).

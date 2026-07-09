@@ -82,6 +82,8 @@ python -m ttt_cache_lab.cli first-table --input runs/sweep-toy-update-norm/merge
 
 See [`docs/runbook.md`](docs/runbook.md) for detailed instructions.
 
+Project direction and full experiment plan: [`docs/project_plan.md`](docs/project_plan.md).
+
 The experiments write JSONL and CSV summaries under `runs/`.
 
 ## First feasibility target
