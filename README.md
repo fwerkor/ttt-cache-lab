@@ -207,6 +207,7 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 |---|---|---|
 | E1 | Static-adapter baseline alignment | `configs/experiments/e1_static_adapter_baseline_toy.yaml` |
 | E2 | Adapter-version drift characterization | `configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml` |
+| E2 cross-family | Qwen/LLaMA/Mistral family generality | `configs/experiments/ascend_e2_version_drift_llama_3_1_8b.yaml`, `configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml` |
 | E3 | Update-target × version-gap failure map | `configs/experiments/e3_failure_map_toy.yaml` |
 | E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_toy.yaml` |
 | E5 | Delta correction / base+delta cache experiment | `configs/experiments/e5_delta_correction_toy.yaml` |
@@ -220,6 +221,8 @@ configs/experiments/ascend_smoke_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
+configs/experiments/ascend_e2_version_drift_llama_3_1_8b.yaml
+configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml
 configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
 ```
 

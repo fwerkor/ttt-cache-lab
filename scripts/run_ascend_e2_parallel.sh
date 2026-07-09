@@ -4,6 +4,8 @@ configs=(
   configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
   configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
   configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
+  configs/experiments/ascend_e2_version_drift_llama_3_1_8b.yaml
+  configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml
 )
 for i in "${!configs[@]}"; do
   cfg=${configs[$i]}
