@@ -42,7 +42,11 @@ class VersionedExperimentRunner:
         )
         backend = build_backend(self.config.model, seed=self.config.seed)
         strategies = [
-            build_strategy(name, refresh_period=self.config.cache.refresh_period)
+            build_strategy(
+                name,
+                refresh_period=self.config.cache.refresh_period,
+                update_norm_threshold=self.config.cache.update_norm_threshold,
+            )
             for name in self.config.cache.strategies
         ]
         max_version = max(self.config.version_steps or [0])

@@ -159,7 +159,7 @@ def build_strategy(name: str, *, refresh_period: int = 4, update_norm_threshold:
     if parsed is StrategyName.LAYERWISE_RECOMPUTE:
         return LayerwiseRecomputeStrategy()
     if parsed is StrategyName.ADAPTIVE:
-        return AdaptiveStrategy()
+        return AdaptiveStrategy(CachePlanner(PlannerPolicy(update_norm_threshold=update_norm_threshold)))
     if parsed is StrategyName.DELTA_CORRECTION:
         return DeltaCorrectionStrategy(update_norm_threshold=update_norm_threshold)
     raise ValueError(f"Unsupported cache strategy: {name}")
