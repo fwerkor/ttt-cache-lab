@@ -1,0 +1,37 @@
+name: e4-planner-main-toy
+output_dir: runs/e4_planner_main
+experiment_id: e4_planner_main
+seed: 7
+model:
+  backend: toy
+  num_layers: 4
+  hidden_size: 32
+  vocab_size: 256
+data:
+  task: passkey
+  num_samples: 8
+  context_length: 512
+  answer_length: 4
+updates:
+  targets:
+    - lora.q
+    - lora.k
+    - lora.v
+    - lora.mlp_late
+    - norm
+  step_count: 1
+  update_norm: 0.01
+cache:
+  strategies:
+    - full_recompute
+    - stale_reuse
+    - periodic_refresh
+    - adaptive
+  refresh_period: 4
+adapter:
+  update_mode: random
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.01
+  train_steps_per_version: 1
+version_steps: [0, 1, 2, 4, 8, 16]

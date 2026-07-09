@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from ttt_cache_lab.configs import ExperimentConfig, SweepConfig
+from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.summarize import (
     first_table_markdown,
@@ -14,6 +14,7 @@ from ttt_cache_lab.experiments.summarize import (
     write_summary,
 )
 from ttt_cache_lab.experiments.sweep import run_sweep
+from ttt_cache_lab.experiments.versioned import VersionedExperimentRunner, write_version_summary
 from ttt_cache_lab.updates.targets import ModuleKind
 
 console = Console()
@@ -35,6 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sweep = subparsers.add_parser("sweep", help="Run a YAML-defined sweep")
     sweep.add_argument("--config", required=True, type=Path)
+
+    versioned = subparsers.add_parser("versioned-run", help="Run a multi-step versioned adapter experiment")
+    versioned.add_argument("--config", required=True, type=Path)
+    versioned.add_argument("--version-summary", action="store_true")
+
+    version_summary = subparsers.add_parser("version-summary", help="Summarize a versioned records CSV")
+    version_summary.add_argument("--input", required=True, type=Path)
+    version_summary.add_argument("--output", required=True, type=Path)
 
     subparsers.add_parser("list-targets", help="List supported update target names")
     return parser
@@ -64,6 +73,20 @@ def main(argv: list[str] | None = None) -> None:
         artifacts = run_sweep(sweep_config)
         console.print(f"Wrote {artifacts.merged_records_csv}")
         console.print(f"Wrote {artifacts.grouped_csv}")
+        return
+    if args.command == "versioned-run":
+        versioned_config = VersionedExperimentConfig.from_yaml(args.config)
+        versioned_artifacts = VersionedExperimentRunner(versioned_config).run()
+        console.print(f"Wrote {versioned_artifacts.jsonl_path}")
+        console.print(f"Wrote {versioned_artifacts.csv_path}")
+        if args.version_summary:
+            output = versioned_config.output_dir / "version_summary.csv"
+            write_version_summary(versioned_artifacts.csv_path, output)
+            console.print(f"Wrote {output}")
+        return
+    if args.command == "version-summary":
+        write_version_summary(args.input, args.output)
+        console.print(f"Wrote {args.output}")
         return
     if args.command == "list-targets":
         for item in ModuleKind:

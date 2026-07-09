@@ -116,3 +116,58 @@ path into the experiment config, for example `updates.update_norm` or
 ## Project direction
 
 The full project plan and experiment blueprint are in [`project_plan.md`](project_plan.md).
+
+
+## 8. Planned E1-E7 experiment templates
+
+Toy templates exist for all planned experiment groups under `configs/experiments/`.
+
+```bash
+scripts/run_toy_study.sh
+```
+
+Run a single template:
+
+```bash
+python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_toy.yaml   --version-summary
+```
+
+The first real HF LoRA template is:
+
+```bash
+pip install -e '.[dev,hf]'
+CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_qwen_0_5b.yaml   --version-summary
+```
+
+Current implementation note: the HF path implements real LoRA wrapping for `torch.nn.Linear` projections and real gradient steps. GPT-2 style `Conv1D` projections still fall back to perturbation-style experiments unless a Linear target is available.
+
+## 9. Implemented experiment coverage
+
+The current code implements runnable templates for all planned experiment groups:
+
+| Group | Toy config | Main output |
+|---|---|---|
+| E1 static-adapter baseline | `configs/experiments/e1_static_adapter_baseline_toy.yaml` | `runs/e1_static_adapter_baseline/version_summary.csv` |
+| E2 version drift | `configs/experiments/e2_version_drift_toy.yaml` | `runs/e2_version_drift/version_summary.csv` |
+| E3 failure map | `configs/experiments/e3_failure_map_toy.yaml` | `runs/e3_failure_map/version_summary.csv` |
+| E4 planner main | `configs/experiments/e4_planner_main_toy.yaml` | `runs/e4_planner_main/version_summary.csv` |
+| E5 delta correction | `configs/experiments/e5_delta_correction_toy.yaml` | `runs/e5_delta_correction/version_summary.csv` |
+| E6 scaling | `configs/experiments/e6_scaling_toy.yaml` | `runs/e6_scaling/version_summary.csv` |
+| E7 ablation/failure | `configs/experiments/e7_ablation_failure_toy.yaml` | `runs/e7_ablation_failure/version_summary.csv` |
+
+Run all toy templates:
+
+```bash
+scripts/run_toy_study.sh
+```
+
+Run the first real LoRA drift template:
+
+```bash
+pip install -e '.[dev,hf]'
+CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run \
+  --config configs/experiments/e2_version_drift_qwen_0_5b.yaml \
+  --version-summary
+```
+
+The HF LoRA path currently supports `torch.nn.Linear` projections, which covers Qwen/LLaMA-style projection layers. GPT-2-style fused `Conv1D` modules are not wrapped by the current LoRA implementation.

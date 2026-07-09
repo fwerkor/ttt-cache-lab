@@ -110,3 +110,33 @@ def _set_dotted(payload: dict[str, Any], dotted: str, value: Any) -> None:
             current[part] = child
         current = child
     current[parts[-1]] = value
+
+
+class AdapterConfig(BaseModel):
+    update_mode: Literal["random", "lora_train"] = "random"
+    lora_rank: int = 8
+    lora_alpha: float = 16.0
+    learning_rate: float = 1e-3
+    train_steps_per_version: int = 1
+    freeze_base_model: bool = True
+
+
+class VersionedExperimentConfig(BaseModel):
+    name: str
+    seed: int = 0
+    output_dir: Path = Path("runs/versioned")
+    experiment_id: str = "versioned"
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    data: DataConfig = Field(default_factory=DataConfig)
+    updates: UpdateConfig = Field(default_factory=UpdateConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    adapter: AdapterConfig = Field(default_factory=AdapterConfig)
+    version_steps: list[int] = Field(default_factory=lambda: [1, 2, 4, 8, 16])
+    cached_version: int = 0
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> VersionedExperimentConfig:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle)
+        return cls.model_validate(payload)

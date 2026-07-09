@@ -72,6 +72,8 @@ class HuggingFaceBackend:
         self._last_state: _PromptState | None = None
         self._last_prefill_s = 0.0
         self._last_stale_s = 0.0
+        self._lora_modules: list[Any] = []
+        self._lora_target_key: str | None = None
 
     def _resolve_device(self, device: str) -> str:
         if device != "auto":
@@ -112,7 +114,6 @@ class HuggingFaceBackend:
         )
 
     def simulate_update(self, baseline: BackendOutput, target: UpdateTarget, *, update_norm: float) -> BackendOutput:
-        self.restore_after_update()
         selected = self._select_parameters(target)
         if not selected:
             raise ValueError(f"No HF parameters matched update target {target.raw!r}")
@@ -189,6 +190,107 @@ class HuggingFaceBackend:
             with self.torch.no_grad():
                 param.sub_(delta)
         self._deltas.clear()
+        self.reset_lora_adapters()
+        self.parameter_version = 0
+
+    def setup_lora(self, target: UpdateTarget, *, rank: int, alpha: float, freeze_base_model: bool = True) -> int:
+        from torch import nn
+
+        from ttt_cache_lab.models.lora import is_lora_linear, make_lora_linear
+
+        target_key = f"{target.kind.value}:{target.layer}:{rank}:{alpha}"
+        if self._lora_target_key == target_key and self._lora_modules:
+            self.reset_lora_adapters()
+            return len(self._lora_modules)
+
+        if freeze_base_model:
+            for param in self.model.parameters():
+                param.requires_grad_(False)
+
+        filters = self._target_filters(target.kind)
+        replaced = 0
+        for parent, child_name, module_name, module in list(self._iter_named_modules_with_parent()):
+            lower = module_name.lower()
+            if target.layer is not None and not self._name_matches_layer(lower, target.layer):
+                continue
+            if not any(part in lower for part in filters):
+                continue
+            if is_lora_linear(module):
+                self._lora_modules.append(module)
+                replaced += 1
+                continue
+            if isinstance(module, nn.Linear):
+                wrapped = make_lora_linear(self.torch, nn, module, rank=rank, alpha=alpha)
+                wrapped.to(self.device)
+                setattr(parent, child_name, wrapped)
+                self._lora_modules.append(wrapped)
+                replaced += 1
+        if replaced == 0 and target.layer is not None:
+            return self.setup_lora(
+                UpdateTarget(kind=target.kind, layer=None, raw=target.raw),
+                rank=rank,
+                alpha=alpha,
+                freeze_base_model=freeze_base_model,
+            )
+        self._lora_target_key = target_key
+        return replaced
+
+    def train_lora_step(
+        self,
+        prompt: str,
+        target: UpdateTarget,
+        *,
+        rank: int,
+        alpha: float,
+        learning_rate: float,
+        freeze_base_model: bool = True,
+    ) -> float:
+        count = self.setup_lora(target, rank=rank, alpha=alpha, freeze_base_model=freeze_base_model)
+        if count == 0:
+            raise ValueError(f"No Linear modules matched LoRA target {target.raw!r}")
+        self.model.train()
+        encoded = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self.max_length,
+            add_special_tokens=True,
+        )
+        input_ids = encoded["input_ids"].to(self.device)
+        if input_ids.shape[1] < 2:
+            self.model.eval()
+            return 0.0
+        labels = input_ids.clone()
+        outputs = self.model(input_ids=input_ids, labels=labels, use_cache=False)
+        loss = outputs.loss
+        loss.backward()
+        total_norm = 0.0
+        with self.torch.no_grad():
+            for module in self._lora_modules:
+                for param in module.lora_parameters():
+                    if param.grad is None:
+                        continue
+                    delta = -learning_rate * param.grad
+                    total_norm += float(self.torch.linalg.vector_norm(delta.detach().float()).cpu())
+                    param.add_(delta)
+                    param.grad = None
+        self.model.zero_grad(set_to_none=True)
+        self.model.eval()
+        self.parameter_version += 1
+        return total_norm
+
+    def reset_lora_adapters(self) -> None:
+        for module in self._lora_modules:
+            if hasattr(module, "reset_lora"):
+                module.reset_lora()
+
+    def _iter_named_modules_with_parent(self) -> list[tuple[Any, str, str, Any]]:
+        items: list[tuple[Any, str, str, Any]] = []
+        for module_name, module in self.model.named_modules():
+            for child_name, child in module.named_children():
+                full_name = f"{module_name}.{child_name}" if module_name else child_name
+                items.append((module, child_name, full_name, child))
+        return items
 
     def _encode_prompt(self, prompt: str) -> _PromptState:
         encoded = self.tokenizer(

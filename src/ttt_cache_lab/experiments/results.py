@@ -21,6 +21,14 @@ class ExperimentRecord:
     relative_error: float
     latency_units: float
     reason: str
+    experiment_id: str = "single_step"
+    adapter_version: int = 1
+    cached_version: int = 0
+    version_gap: int = 1
+    update_step: int = 1
+    accumulated_update_norm: float = 0.0
+    lora_rank: int = 0
+    update_mode: str = "random"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

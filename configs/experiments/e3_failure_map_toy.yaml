@@ -1,0 +1,41 @@
+name: e3-failure-map-toy
+output_dir: runs/e3_failure_map
+experiment_id: e3_failure_map
+seed: 7
+model:
+  backend: toy
+  num_layers: 4
+  hidden_size: 32
+  vocab_size: 256
+data:
+  task: passkey
+  num_samples: 8
+  context_length: 512
+  answer_length: 4
+updates:
+  targets:
+    - lora.q
+    - lora.k
+    - lora.v
+    - lora.o
+    - lora.mlp_late
+    - mlp.late
+    - norm
+    - output_head
+  step_count: 1
+  update_norm: 0.01
+cache:
+  strategies:
+    - full_recompute
+    - stale_reuse
+    - frozen_reuse
+    - layerwise_recompute
+    - adaptive
+  refresh_period: 4
+adapter:
+  update_mode: random
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.01
+  train_steps_per_version: 1
+version_steps: [0, 1, 2, 4, 8, 16]

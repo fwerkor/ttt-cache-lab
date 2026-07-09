@@ -129,10 +129,22 @@ class ToyBackend:
     def restore_after_update(self) -> None:
         return None
 
-    def _target_drift(self, target: UpdateTarget, update_norm: float) -> dict[str, np.ndarray]:
-        seed = hash((target.kind.value, target.layer, round(update_norm, 8), self.seed)) % (2**32)
-        rng = np.random.default_rng(seed)
-        multipliers = {
+    def train_lora_step(
+        self,
+        prompt: str,
+        target: UpdateTarget,
+        *,
+        rank: int,
+        alpha: float,
+        learning_rate: float,
+        freeze_base_model: bool = True,
+    ) -> float:
+        del prompt, rank, alpha, freeze_base_model
+        # Toy mode has no persistent parameters. Return a deterministic update-norm proxy.
+        return learning_rate * self._target_multiplier(target)
+
+    def _target_multiplier(self, target: UpdateTarget) -> float:
+        return {
             ModuleKind.ATTENTION_Q: 0.2,
             ModuleKind.LORA_Q: 0.15,
             ModuleKind.ATTENTION_K: 0.9,
@@ -145,8 +157,12 @@ class ToyBackend:
             ModuleKind.NORM: 1.2,
             ModuleKind.OUTPUT_HEAD: 0.05,
             ModuleKind.UNKNOWN: 1.0,
-        }
-        scale = update_norm * multipliers.get(target.kind, 1.0)
+        }.get(target.kind, 1.0)
+
+    def _target_drift(self, target: UpdateTarget, update_norm: float) -> dict[str, np.ndarray]:
+        seed = hash((target.kind.value, target.layer, round(update_norm, 8), self.seed)) % (2**32)
+        rng = np.random.default_rng(seed)
+        scale = update_norm * self._target_multiplier(target)
         cache = rng.normal(scale=scale, size=(self.num_layers, 2, self.hidden_size))
         hidden = rng.normal(scale=scale, size=(self.num_layers, self.hidden_size))
         logits = rng.normal(scale=scale, size=(1, self.vocab_size))

@@ -107,3 +107,25 @@ A positive result is a region where an update target is more useful than Q-only 
 ## License
 
 MIT.
+
+
+## Versioned experiment examples
+
+Run one planned experiment template:
+
+```bash
+python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_toy.yaml   --version-summary
+```
+
+Run all toy templates for E1-E7:
+
+```bash
+scripts/run_toy_study.sh
+```
+
+Run the first real LoRA drift template on GPU:
+
+```bash
+pip install -e '.[dev,hf]'
+CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_qwen_0_5b.yaml   --version-summary
+```
