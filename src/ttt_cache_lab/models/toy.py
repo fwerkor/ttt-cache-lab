@@ -160,7 +160,10 @@ class ToyBackend:
         }.get(target.kind, 1.0)
 
     def _target_drift(self, target: UpdateTarget, update_norm: float) -> dict[str, np.ndarray]:
-        seed = hash((target.kind.value, target.layer, round(update_norm, 8), self.seed)) % (2**32)
+        digest = hashlib.sha256(
+            f"{self.seed}:{target.kind.value}:{target.layer}:{round(update_norm, 8)}".encode()
+        ).digest()
+        seed = int.from_bytes(digest[:8], "little") % (2**32)
         rng = np.random.default_rng(seed)
         scale = update_norm * self._target_multiplier(target)
         cache = rng.normal(scale=scale, size=(self.num_layers, 2, self.hidden_size))
