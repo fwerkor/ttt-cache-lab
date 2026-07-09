@@ -17,14 +17,18 @@ updates:
     - output_head
     - lora.q
     - lora.k
+    - lora.v
+    - lora.qv
   step_count: 1
   update_norm: 0.01
 cache:
   strategies:
     - full_recompute
+    - base_cache_reuse
+    - adapter_specific_cache
+    - static_base_delta
     - stale_reuse
     - frozen_reuse
-    - layerwise_recompute
     - adaptive
   refresh_period: 4
 adapter:

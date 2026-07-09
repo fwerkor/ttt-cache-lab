@@ -4,14 +4,14 @@ experiment_id: e6_scaling
 seed: 7
 model:
   backend: ascend_hf
-  modelscope_model_id: Qwen/Qwen2.5-7B-Instruct
   model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  modelscope_model_id: Qwen/Qwen2.5-7B-Instruct
   device: npu:0
   torch_dtype: bfloat16
   max_length: 16384
   trust_remote_code: true
 data:
-  task: passkey
+  task: variable_tracking
   num_samples: 4
   context_length: 16384
   answer_length: 4
@@ -20,7 +20,7 @@ updates:
     - lora.q
     - lora.k
     - lora.v
-    - lora.mlp_late
+    - lora.qv
   step_count: 1
   update_norm: 0.00001
 cache:
@@ -28,8 +28,11 @@ cache:
     - full_recompute
     - stale_reuse
     - periodic_refresh
+    - threshold_refresh
     - adaptive
+    - oracle_planner
   refresh_period: 4
+  update_norm_threshold: 0.05
 adapter:
   update_mode: lora_train
   lora_rank: 8

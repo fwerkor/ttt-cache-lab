@@ -1,34 +1,32 @@
-name: e2-version-drift-qwen-0-5b
-output_dir: runs/e2_version_drift_qwen_0_5b
-experiment_id: e2_version_drift
+name: ascend-e5-delta-correction-qwen-0-5b
+output_dir: runs/ascend_e5_delta_correction_qwen_0_5b
+experiment_id: e5_delta_correction
 seed: 7
 model:
-  backend: hf
+  backend: ascend_hf
   model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
-  device: auto
-  torch_dtype: auto
-  max_length: 1024
+  modelscope_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  device: npu:0
+  torch_dtype: bfloat16
+  max_length: 2048
   trust_remote_code: true
 data:
   task: passkey
   num_samples: 4
-  context_length: 1024
+  context_length: 2048
   answer_length: 4
 updates:
   targets:
-    - lora.q
-    - lora.k
-    - lora.v
+    - lora.k_late
+    - lora.v_late
     - lora.qv
-    - lora.mlp_late
   step_count: 1
   update_norm: 0.00001
 cache:
   strategies:
     - full_recompute
     - stale_reuse
-    - frozen_reuse
-    - periodic_refresh
+    - static_base_delta
     - delta_correction
     - adaptive
   refresh_period: 4

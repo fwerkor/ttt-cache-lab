@@ -13,6 +13,11 @@ REAL_MODEL_CONFIGS = [
     Path("configs/experiments/ascend_e2_version_drift_qwen_7b.yaml"),
     Path("configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml"),
     Path("configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml"),
+    Path("configs/experiments/e5_delta_correction_qwen_0_5b.yaml"),
+    Path("configs/experiments/ascend_e5_delta_correction_qwen_0_5b.yaml"),
+    Path("configs/experiments/ascend_e6_scaling_qwen_1_5b_4k.yaml"),
+    Path("configs/experiments/ascend_e6_scaling_qwen_1_5b_8k.yaml"),
+    Path("configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml"),
 ]
 
 
@@ -22,7 +27,13 @@ def test_real_model_configs_load_without_model_downloads() -> None:
         assert config.model.model_name_or_path
         assert config.adapter.update_mode == "lora_train"
         assert "stale_reuse" in config.cache.strategies
-        assert set(config.updates.targets) >= {"lora.q", "lora.k", "lora.v"}
+        assert set(config.updates.targets) & {"lora.k", "lora.k_late"}
+        assert set(config.updates.targets) & {"lora.v", "lora.v_late"}
+
+
+def test_all_versioned_experiment_configs_parse() -> None:
+    for path in Path("configs/experiments").glob("*.yaml"):
+        VersionedExperimentConfig.from_yaml(path)
 
 
 def test_ascend_configs_have_modelscope_ids() -> None:

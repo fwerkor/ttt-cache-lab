@@ -4,34 +4,43 @@ experiment_id: e7_ablation_failure
 seed: 7
 model:
   backend: toy
-  num_layers: 4
+  num_layers: 6
   hidden_size: 32
   vocab_size: 256
 data:
-  task: passkey
+  task: variable_tracking
   num_samples: 8
-  context_length: 512
+  context_length: 1024
   answer_length: 4
 updates:
   targets:
     - lora.q
     - lora.k
     - lora.v
+    - lora.qv
+    - lora.attn
+    - lora.mlp_early
     - lora.mlp_late
     - norm
   step_count: 1
   update_norm: 0.05
 cache:
   strategies:
+    - no_adaptation
     - full_recompute
     - stale_reuse
     - periodic_refresh
+    - threshold_refresh
+    - delta_correction
+    - layerwise_recompute
     - adaptive
+    - oracle_planner
   refresh_period: 4
+  update_norm_threshold: 0.03
 adapter:
   update_mode: random
   lora_rank: 8
   lora_alpha: 16.0
   learning_rate: 0.01
   train_steps_per_version: 1
-version_steps: [0, 1, 2, 4, 8, 16]
+version_steps: [0, 1, 2, 4, 8, 16, 32]

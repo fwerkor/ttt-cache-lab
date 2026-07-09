@@ -4,19 +4,20 @@ experiment_id: e6_scaling
 seed: 7
 model:
   backend: toy
-  num_layers: 4
-  hidden_size: 32
+  num_layers: 8
+  hidden_size: 48
   vocab_size: 256
 data:
-  task: passkey
+  task: variable_tracking
   num_samples: 8
-  context_length: 1024
+  context_length: 4096
   answer_length: 4
 updates:
   targets:
     - lora.q
     - lora.k
     - lora.v
+    - lora.qv
   step_count: 1
   update_norm: 0.01
 cache:
@@ -24,8 +25,11 @@ cache:
     - full_recompute
     - stale_reuse
     - periodic_refresh
+    - threshold_refresh
     - adaptive
+    - oracle_planner
   refresh_period: 4
+  update_norm_threshold: 0.05
 adapter:
   update_mode: random
   lora_rank: 8

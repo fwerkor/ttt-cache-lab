@@ -4,28 +4,34 @@ experiment_id: e5_delta_correction
 seed: 7
 model:
   backend: toy
-  num_layers: 4
+  num_layers: 6
   hidden_size: 32
   vocab_size: 256
 data:
   task: passkey
   num_samples: 8
-  context_length: 512
+  context_length: 1024
   answer_length: 4
 updates:
   targets:
-    - lora.k
-    - lora.v
-    - lora.q
+    - lora.k_early
+    - lora.k_middle
+    - lora.k_late
+    - lora.v_early
+    - lora.v_middle
+    - lora.v_late
+    - lora.qv
   step_count: 1
   update_norm: 0.01
 cache:
   strategies:
     - full_recompute
     - stale_reuse
-    - adaptive
+    - static_base_delta
     - delta_correction
+    - adaptive
   refresh_period: 4
+  update_norm_threshold: 0.05
 adapter:
   update_mode: random
   lora_rank: 8

@@ -1,19 +1,19 @@
-name: ascend-e2-version-drift-qwen-0_5b
-output_dir: runs/ascend_e2_version_drift_qwen_0_5b
-experiment_id: e2_version_drift
+name: ascend-e6-scaling-qwen-1-5b-4k
+output_dir: runs/ascend_e6_scaling_qwen_1_5b_4k
+experiment_id: e6_scaling
 seed: 7
 model:
   backend: ascend_hf
-  modelscope_model_id: Qwen/Qwen2.5-0.5B-Instruct
-  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  modelscope_model_id: Qwen/Qwen2.5-1.5B-Instruct
   device: npu:0
   torch_dtype: bfloat16
-  max_length: 2048
+  max_length: 4096
   trust_remote_code: true
 data:
-  task: passkey
+  task: variable_tracking
   num_samples: 4
-  context_length: 2048
+  context_length: 4096
   answer_length: 4
 updates:
   targets:
@@ -21,17 +21,16 @@ updates:
     - lora.k
     - lora.v
     - lora.qv
-    - lora.mlp_late
   step_count: 1
   update_norm: 0.00001
 cache:
   strategies:
     - full_recompute
     - stale_reuse
-    - frozen_reuse
     - periodic_refresh
-    - delta_correction
+    - threshold_refresh
     - adaptive
+    - oracle_planner
   refresh_period: 4
   update_norm_threshold: 0.05
 adapter:
@@ -41,4 +40,4 @@ adapter:
   learning_rate: 0.0002
   train_steps_per_version: 1
   freeze_base_model: true
-version_steps: [0, 1, 2, 4]
+version_steps: [0, 1, 2, 4, 8]

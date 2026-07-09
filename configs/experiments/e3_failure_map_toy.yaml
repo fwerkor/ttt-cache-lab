@@ -4,21 +4,27 @@ experiment_id: e3_failure_map
 seed: 7
 model:
   backend: toy
-  num_layers: 4
+  num_layers: 6
   hidden_size: 32
   vocab_size: 256
 data:
-  task: passkey
+  task: multi_needle
   num_samples: 8
-  context_length: 512
+  context_length: 1024
   answer_length: 4
 updates:
   targets:
     - lora.q
     - lora.k
     - lora.v
+    - lora.qv
     - lora.o
+    - lora.attn
+    - lora.mlp_early
+    - lora.mlp_middle
     - lora.mlp_late
+    - mlp.early
+    - mlp.middle
     - mlp.late
     - norm
     - output_head
@@ -29,6 +35,7 @@ cache:
     - full_recompute
     - stale_reuse
     - frozen_reuse
+    - delta_correction
     - layerwise_recompute
     - adaptive
   refresh_period: 4
@@ -38,4 +45,4 @@ adapter:
   lora_alpha: 16.0
   learning_rate: 0.01
   train_steps_per_version: 1
-version_steps: [0, 1, 2, 4, 8, 16]
+version_steps: [0, 1, 2, 4, 8, 16, 32]

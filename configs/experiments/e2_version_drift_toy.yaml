@@ -17,6 +17,8 @@ updates:
     - lora.q
     - lora.k
     - lora.v
+    - lora.qv
+    - lora.o
     - lora.mlp_late
   step_count: 1
   update_norm: 0.01
@@ -25,9 +27,11 @@ cache:
     - full_recompute
     - stale_reuse
     - frozen_reuse
+    - delta_correction
     - layerwise_recompute
     - adaptive
   refresh_period: 4
+  update_norm_threshold: 0.05
 adapter:
   update_mode: random
   lora_rank: 8

@@ -4,30 +4,38 @@ experiment_id: e4_planner_main
 seed: 7
 model:
   backend: toy
-  num_layers: 4
+  num_layers: 6
   hidden_size: 32
   vocab_size: 256
 data:
-  task: passkey
+  task: key_value
   num_samples: 8
-  context_length: 512
+  context_length: 1024
   answer_length: 4
 updates:
   targets:
     - lora.q
     - lora.k
     - lora.v
+    - lora.qv
     - lora.mlp_late
     - norm
   step_count: 1
   update_norm: 0.01
 cache:
   strategies:
+    - no_adaptation
     - full_recompute
     - stale_reuse
     - periodic_refresh
+    - threshold_refresh
+    - static_base_delta
+    - delta_correction
+    - layerwise_recompute
     - adaptive
+    - oracle_planner
   refresh_period: 4
+  update_norm_threshold: 0.05
 adapter:
   update_mode: random
   lora_rank: 8
