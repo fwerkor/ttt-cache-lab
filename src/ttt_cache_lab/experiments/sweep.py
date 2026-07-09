@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+import csv
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+from ttt_cache_lab.configs import SweepConfig
+from ttt_cache_lab.experiments.runner import ExperimentRunner
+from ttt_cache_lab.experiments.summarize import summarize_csv, write_summary
+
+
+@dataclass(frozen=True)
+class SweepArtifacts:
+    output_dir: Path
+    merged_records_csv: Path
+    grouped_csv: Path
+    run_dirs: list[Path]
+
+
+def run_sweep(config: SweepConfig) -> SweepArtifacts:
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    run_dirs: list[Path] = []
+    merged_rows: list[dict[str, str]] = []
+    fieldnames: list[str] | None = None
+
+    for experiment in config.expand():
+        if experiment.output_dir.exists():
+            shutil.rmtree(experiment.output_dir)
+        artifacts = ExperimentRunner(experiment).run()
+        run_dirs.append(experiment.output_dir)
+        with artifacts.csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if fieldnames is None:
+                fieldnames = ["run_name", *list(reader.fieldnames or [])]
+            for row in reader:
+                merged_rows.append({"run_name": experiment.name, **row})
+
+    merged = config.output_dir / "merged_records.csv"
+    with merged.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames or [])
+        writer.writeheader()
+        for row in merged_rows:
+            writer.writerow(row)
+
+    grouped = config.output_dir / "grouped.csv"
+    rows = summarize_csv(merged)
+    write_summary(rows, grouped)
+
+    return SweepArtifacts(
+        output_dir=config.output_dir,
+        merged_records_csv=merged,
+        grouped_csv=grouped,
+        run_dirs=run_dirs,
+    )

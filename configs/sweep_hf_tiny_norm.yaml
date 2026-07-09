@@ -1,0 +1,35 @@
+name: hf-tiny-norm
+output_dir: runs/sweep-hf-tiny-norm
+base:
+  name: hf-tiny-base
+  seed: 7
+  output_dir: runs/unused
+  model:
+    backend: hf
+    model_name_or_path: sshleifer/tiny-gpt2
+    device: auto
+    torch_dtype: auto
+    max_length: 256
+    trust_remote_code: false
+  data:
+    task: passkey
+    num_samples: 2
+    context_length: 256
+    answer_length: 2
+  updates:
+    targets:
+      - attention.q
+      - attention.k
+      - attention.v
+      - mlp.late
+    step_count: 1
+    update_norm: 0.0001
+  cache:
+    strategies:
+      - full_recompute
+      - stale_reuse
+      - frozen_reuse
+      - adaptive
+axes:
+  - path: updates.update_norm
+    values: [0.00001, 0.0001]

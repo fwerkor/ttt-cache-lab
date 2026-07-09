@@ -239,22 +239,24 @@ class HuggingFaceBackend:
                 continue
             if any(part in lower for part in filters):
                 selected.append(param)
+        if target.layer is not None and not selected:
+            return self._select_parameters(UpdateTarget(kind=target.kind, layer=None, raw=target.raw))
         return selected[:4]
 
     def _target_filters(self, kind: ModuleKind) -> tuple[str, ...]:
         mapping = {
-            ModuleKind.ATTENTION_Q: ("q_proj", "query"),
-            ModuleKind.ATTENTION_K: ("k_proj", "key"),
-            ModuleKind.ATTENTION_V: ("v_proj", "value"),
-            ModuleKind.ATTENTION_O: ("o_proj", "out_proj", "dense"),
-            ModuleKind.MLP: ("mlp", "gate_proj", "up_proj", "down_proj", "fc"),
+            ModuleKind.ATTENTION_Q: ("q_proj", "query", "c_attn"),
+            ModuleKind.ATTENTION_K: ("k_proj", "key", "c_attn"),
+            ModuleKind.ATTENTION_V: ("v_proj", "value", "c_attn"),
+            ModuleKind.ATTENTION_O: ("o_proj", "out_proj", "attn.c_proj", "attention.dense"),
+            ModuleKind.MLP: ("mlp", "gate_proj", "up_proj", "down_proj", "mlp.c_fc", "mlp.c_proj"),
             ModuleKind.NORM: ("norm", "ln_"),
             ModuleKind.OUTPUT_HEAD: ("lm_head",),
-            ModuleKind.LORA_Q: ("q_proj", "query"),
-            ModuleKind.LORA_K: ("k_proj", "key"),
-            ModuleKind.LORA_V: ("v_proj", "value"),
-            ModuleKind.LORA_O: ("o_proj", "out_proj", "dense"),
-            ModuleKind.LORA_MLP: ("mlp", "gate_proj", "up_proj", "down_proj", "fc"),
+            ModuleKind.LORA_Q: ("q_proj", "query", "c_attn"),
+            ModuleKind.LORA_K: ("k_proj", "key", "c_attn"),
+            ModuleKind.LORA_V: ("v_proj", "value", "c_attn"),
+            ModuleKind.LORA_O: ("o_proj", "out_proj", "attn.c_proj", "attention.dense"),
+            ModuleKind.LORA_MLP: ("mlp", "gate_proj", "up_proj", "down_proj", "mlp.c_fc", "mlp.c_proj"),
             ModuleKind.UNKNOWN: tuple(),
         }
         return mapping.get(kind, tuple())

@@ -15,6 +15,8 @@ python -m ttt_cache_lab.cli run --config configs/feasibility_toy.yaml
 python -m ttt_cache_lab.cli summarize \
   --input runs/feasibility-toy/summary.csv \
   --output runs/feasibility-toy/grouped.csv
+python -m ttt_cache_lab.cli first-table \
+  --input runs/feasibility-toy/summary.csv
 ```
 
 Equivalent shortcut:
@@ -94,3 +96,19 @@ The main columns are:
 ## 6. Current limitations
 
 The HF backend currently implements actual full recomputation and stale/frozen prefix-cache reuse. Layer-wise recomputation and delta correction are planner-level actions but use full recomputation as an upper-bound placeholder in the HF backend. Implementing actual per-layer cache surgery is the next major step.
+
+
+## 7. Sweep run
+
+Use this when you want the first feasibility table over several update magnitudes
+and context lengths.
+
+```bash
+python -m ttt_cache_lab.cli sweep --config configs/sweep_toy_update_norm.yaml
+python -m ttt_cache_lab.cli summarize --input runs/sweep-toy-update-norm/merged_records.csv
+python -m ttt_cache_lab.cli first-table --input runs/sweep-toy-update-norm/merged_records.csv
+```
+
+The sweep file has a `base` experiment plus `axes`. Each `axes[*].path` is a dotted
+path into the experiment config, for example `updates.update_norm` or
+`data.context_length`.

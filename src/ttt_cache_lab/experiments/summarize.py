@@ -105,3 +105,55 @@ def to_markdown(rows: list[SummaryRow]) -> str:
             + " |"
         )
     return "\n".join(lines)
+
+
+def first_table_markdown(rows: list[SummaryRow]) -> str:
+    by_target_strategy = {(row.update_target, row.cache_strategy): row for row in rows}
+    targets = sorted({row.update_target for row in rows})
+    headers = [
+        "update_target",
+        "full_score",
+        "stale_score",
+        "frozen_score",
+        "layerwise_score",
+        "adaptive_score",
+        "stale_rel_err",
+        "adaptive_rel_err",
+        "adaptive_latency/full_latency",
+    ]
+    lines = ["| " + " | ".join(headers) + " |", "|" + "|".join(["---"] * len(headers)) + "|"]
+    for target in targets:
+        full = by_target_strategy.get((target, "full_recompute"))
+        stale = by_target_strategy.get((target, "stale_reuse"))
+        frozen = by_target_strategy.get((target, "frozen_reuse"))
+        layerwise = by_target_strategy.get((target, "layerwise_recompute"))
+        adaptive = by_target_strategy.get((target, "adaptive"))
+        full_latency = full.latency_units_mean if full else 0.0
+        adaptive_latency = adaptive.latency_units_mean if adaptive else 0.0
+        ratio = adaptive_latency / full_latency if full_latency else 0.0
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    target,
+                    _fmt(full.task_score_mean if full else None),
+                    _fmt(stale.task_score_mean if stale else None),
+                    _fmt(frozen.task_score_mean if frozen else None),
+                    _fmt(layerwise.task_score_mean if layerwise else None),
+                    _fmt(adaptive.task_score_mean if adaptive else None),
+                    _fmt(stale.relative_error_mean if stale else None),
+                    _fmt(adaptive.relative_error_mean if adaptive else None),
+                    _fmt(ratio),
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(lines)
+
+
+def _fmt(value: float | None) -> str:
+    if value is None:
+        return ""
+    if abs(value) >= 1000 or (abs(value) < 0.001 and value != 0):
+        return f"{value:.4g}"
+    return f"{value:.4f}"

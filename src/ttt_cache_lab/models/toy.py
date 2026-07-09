@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 
 import numpy as np
 
@@ -35,6 +36,9 @@ class ToyBackend:
         cache = rng.normal(size=(self.num_layers, 2, self.hidden_size)).astype(np.float64)
         hidden = rng.normal(size=(self.num_layers, self.hidden_size)).astype(np.float64)
         logits = rng.normal(size=(1, self.vocab_size)).astype(np.float64)
+        answer = self._extract_answer(prompt)
+        if answer:
+            logits[0, self._answer_bucket(answer)] += 8.0
         return BackendOutput(logits=logits, cache_tensor=cache, hidden_tensor=hidden, parameter_version=0)
 
     def simulate_update(self, baseline: BackendOutput, target: UpdateTarget, *, update_norm: float) -> BackendOutput:
@@ -106,7 +110,7 @@ class ToyBackend:
 
     def score_answer(self, sample: TaskSample, output: BackendOutput) -> float:
         # Deterministic proxy score: useful for smoke tests, not a real LM metric.
-        target_bucket = sum(ord(ch) for ch in sample.answer) % self.vocab_size
+        target_bucket = self._answer_bucket(sample.answer)
         predicted = int(np.argmax(output.logits, axis=-1)[0])
         return 1.0 if predicted == target_bucket else 0.0
 
@@ -154,3 +158,15 @@ class ToyBackend:
             hmask[target.layer :] = 1.0
             hidden *= hmask
         return {"cache": cache, "hidden": hidden, "logits": logits}
+
+    def _answer_bucket(self, answer: str) -> int:
+        return sum(ord(ch) for ch in answer) % self.vocab_size
+
+    def _extract_answer(self, prompt: str) -> str | None:
+        passkey = re.search(r"secret passkey is ([0-9]+)", prompt, flags=re.IGNORECASE)
+        if passkey:
+            return passkey.group(1)
+        key_value = re.search(r"^([^:\n]+):\s*([A-Za-z0-9_]+)$", prompt, flags=re.MULTILINE)
+        if key_value:
+            return key_value.group(2)
+        return None

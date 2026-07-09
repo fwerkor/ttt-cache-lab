@@ -1,0 +1,41 @@
+name: toy-update-norm
+output_dir: runs/sweep-toy-update-norm
+base:
+  name: toy-base
+  seed: 7
+  output_dir: runs/unused
+  model:
+    backend: toy
+    num_layers: 4
+    hidden_size: 32
+    vocab_size: 256
+  data:
+    task: passkey
+    num_samples: 8
+    context_length: 512
+    answer_length: 4
+  updates:
+    targets:
+      - attention.q
+      - attention.k
+      - attention.v
+      - attention.o
+      - mlp.late
+      - lora.q
+      - lora.k
+      - lora.v
+      - lora.mlp_late
+    step_count: 2
+    update_norm: 0.01
+  cache:
+    strategies:
+      - full_recompute
+      - stale_reuse
+      - frozen_reuse
+      - layerwise_recompute
+      - adaptive
+axes:
+  - path: updates.update_norm
+    values: [0.001, 0.01, 0.05]
+  - path: data.context_length
+    values: [256, 512]

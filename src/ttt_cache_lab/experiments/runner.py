@@ -36,7 +36,6 @@ class ExperimentRunner:
                 target = parse_update_target(target_name, num_layers=self.config.model.num_layers)
                 updated = backend.simulate_update(baseline, target, update_norm=self.config.updates.update_norm)
                 full = backend.full_recompute(sample.prompt, updated)
-                task_score = backend.score_answer(sample, full)
 
                 for strategy in strategies:
                     decision = strategy.decide(
@@ -58,7 +57,7 @@ class ExperimentRunner:
                             action=str(decision.action),
                             cache_state=str(decision.state),
                             first_invalid_layer=decision.first_invalid_layer,
-                            task_score=task_score,
+                            task_score=backend.score_answer(sample, approx),
                             logits_kl=kl_divergence(full.logits, approx.logits),
                             top1_agreement=top1_agreement(full.logits, approx.logits),
                             relative_error=relative_error(full.cache_tensor, approx.cache_tensor),

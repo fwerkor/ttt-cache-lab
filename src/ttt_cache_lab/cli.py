@@ -5,9 +5,15 @@ from pathlib import Path
 
 from rich.console import Console
 
-from ttt_cache_lab.configs import ExperimentConfig
+from ttt_cache_lab.configs import ExperimentConfig, SweepConfig
 from ttt_cache_lab.experiments.runner import ExperimentRunner
-from ttt_cache_lab.experiments.summarize import summarize_csv, to_markdown, write_summary
+from ttt_cache_lab.experiments.summarize import (
+    first_table_markdown,
+    summarize_csv,
+    to_markdown,
+    write_summary,
+)
+from ttt_cache_lab.experiments.sweep import run_sweep
 from ttt_cache_lab.updates.targets import ModuleKind
 
 console = Console()
@@ -23,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     summarize = subparsers.add_parser("summarize", help="Summarize an experiment summary.csv")
     summarize.add_argument("--input", required=True, type=Path)
     summarize.add_argument("--output", type=Path, default=None)
+
+    first_table = subparsers.add_parser("first-table", help="Render the first feasibility table")
+    first_table.add_argument("--input", required=True, type=Path)
+
+    sweep = subparsers.add_parser("sweep", help="Run a YAML-defined sweep")
+    sweep.add_argument("--config", required=True, type=Path)
 
     subparsers.add_parser("list-targets", help="List supported update target names")
     return parser
@@ -43,6 +55,15 @@ def main(argv: list[str] | None = None) -> None:
         if args.output:
             write_summary(rows, args.output)
             print(f"Wrote {args.output}")
+        return
+    if args.command == "first-table":
+        print(first_table_markdown(summarize_csv(args.input)))
+        return
+    if args.command == "sweep":
+        sweep_config = SweepConfig.from_yaml(args.config)
+        artifacts = run_sweep(sweep_config)
+        console.print(f"Wrote {artifacts.merged_records_csv}")
+        console.print(f"Wrote {artifacts.grouped_csv}")
         return
     if args.command == "list-targets":
         for item in ModuleKind:

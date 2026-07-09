@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -58,3 +59,54 @@ class ExperimentConfig(BaseModel):
         with path.open("r", encoding="utf-8") as handle:
             payload = yaml.safe_load(handle)
         return cls.model_validate(payload)
+
+
+class SweepAxis(BaseModel):
+    path: str
+    values: list[Any]
+
+
+class SweepConfig(BaseModel):
+    name: str
+    base: ExperimentConfig
+    output_dir: Path = Path("runs/sweep")
+    axes: list[SweepAxis] = Field(default_factory=list)
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> SweepConfig:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle)
+        return cls.model_validate(payload)
+
+    def expand(self) -> list[ExperimentConfig]:
+        configs: list[ExperimentConfig] = []
+
+        def rec(index: int, payload: dict[str, Any], suffix: list[str]) -> None:
+            if index == len(self.axes):
+                item = ExperimentConfig.model_validate(payload)
+                clean_suffix = "__".join(suffix) if suffix else "base"
+                item.name = f"{self.name}-{clean_suffix}"
+                item.output_dir = self.output_dir / clean_suffix
+                configs.append(item)
+                return
+            axis = self.axes[index]
+            for value in axis.values:
+                next_payload = deepcopy(payload)
+                _set_dotted(next_payload, axis.path, value)
+                safe_value = str(value).replace("/", "_").replace(".", "p").replace(" ", "_")
+                rec(index + 1, next_payload, [*suffix, f"{axis.path.replace('.', '_')}={safe_value}"])
+
+        rec(0, self.base.model_dump(mode="json"), [])
+        return configs
+
+
+def _set_dotted(payload: dict[str, Any], dotted: str, value: Any) -> None:
+    current: dict[str, Any] = payload
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value

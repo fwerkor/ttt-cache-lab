@@ -54,6 +54,7 @@ pip install -e '.[dev]'
 pytest
 python -m ttt_cache_lab.cli run --config configs/feasibility_toy.yaml
 python -m ttt_cache_lab.cli summarize --input runs/feasibility-toy/summary.csv
+python -m ttt_cache_lab.cli first-table --input runs/feasibility-toy/summary.csv
 ```
 
 Tiny HuggingFace smoke run:
@@ -70,6 +71,13 @@ Small real-model feasibility run:
 pip install -e '.[dev,hf]'
 python -m ttt_cache_lab.cli run --config configs/feasibility_hf_qwen_0_5b.yaml
 python -m ttt_cache_lab.cli summarize --input runs/feasibility-hf-qwen-0-5b/summary.csv
+```
+
+Sweep run:
+
+```bash
+python -m ttt_cache_lab.cli sweep --config configs/sweep_toy_update_norm.yaml
+python -m ttt_cache_lab.cli first-table --input runs/sweep-toy-update-norm/merged_records.csv
 ```
 
 See [`docs/runbook.md`](docs/runbook.md) for detailed instructions.
