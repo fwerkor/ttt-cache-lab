@@ -5,6 +5,14 @@ import random
 from ttt_cache_lab.cache.strategies import build_strategy
 from ttt_cache_lab.configs import ExperimentConfig
 from ttt_cache_lab.data.synthetic import SyntheticTaskFactory
+from ttt_cache_lab.experiments.metrics import (
+    estimate_recompute_fraction,
+    is_cache_hit,
+    is_false_safe,
+    is_refresh_action,
+    output_cache_bytes,
+    output_memory_allocated,
+)
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
@@ -53,6 +61,7 @@ class ExperimentRunner:
                         updated=updated,
                         decision=decision,
                     )
+                    top1 = top1_agreement(full.logits, approx.logits)
                     records.append(
                         ExperimentRecord(
                             sample_id=sample_id,
@@ -63,12 +72,22 @@ class ExperimentRunner:
                             first_invalid_layer=decision.first_invalid_layer,
                             task_score=backend.score_answer(sample, approx),
                             logits_kl=kl_divergence(full.logits, approx.logits),
-                            top1_agreement=top1_agreement(full.logits, approx.logits),
+                            top1_agreement=top1,
                             relative_error=relative_error(full.cache_tensor, approx.cache_tensor),
                             latency_units=backend.estimate_latency(
                                 decision, context_length=self.config.data.context_length
                             ),
                             reason=decision.reason,
+                            hidden_relative_error=relative_error(full.hidden_tensor, approx.hidden_tensor),
+                            cache_bytes=output_cache_bytes(approx),
+                            memory_allocated=output_memory_allocated(approx),
+                            recompute_fraction=estimate_recompute_fraction(
+                                decision, num_layers=self.config.model.num_layers
+                            ),
+                            cache_hit=is_cache_hit(decision),
+                            refresh_count=1 if is_refresh_action(decision) else 0,
+                            rejected_reuse=decision.reject_reuse,
+                            false_safe=is_false_safe(decision, full=full, approx=approx),
                         )
                     )
                 backend.restore_after_update()

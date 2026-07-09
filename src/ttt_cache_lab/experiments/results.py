@@ -29,6 +29,14 @@ class ExperimentRecord:
     accumulated_update_norm: float = 0.0
     lora_rank: int = 0
     update_mode: str = "random"
+    hidden_relative_error: float = 0.0
+    cache_bytes: int = 0
+    memory_allocated: int = 0
+    recompute_fraction: float = 0.0
+    cache_hit: bool = False
+    refresh_count: int = 0
+    rejected_reuse: bool = False
+    false_safe: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

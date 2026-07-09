@@ -9,6 +9,14 @@ from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.synthetic import SyntheticTaskFactory
+from ttt_cache_lab.experiments.metrics import (
+    estimate_recompute_fraction,
+    is_cache_hit,
+    is_false_safe,
+    is_refresh_action,
+    output_cache_bytes,
+    output_memory_allocated,
+)
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
@@ -20,6 +28,7 @@ from ttt_cache_lab.updates.targets import UpdateTarget, parse_update_target
 class _StrategyCache:
     output: BackendOutput
     cached_version: int
+    refresh_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -162,13 +171,14 @@ class VersionedExperimentRunner:
         accumulated_update_norm: float,
     ) -> None:
         for strategy in strategies:
+            cache_key = str(strategy.name)
+            cached = strategy_caches[cache_key]
+            version_gap = adapter_version - cached.cached_version
             decision = strategy.decide(
                 target,
-                step=adapter_version,
+                step=version_gap,
                 update_norm=accumulated_update_norm,
             )
-            cache_key = str(decision.strategy)
-            cached = strategy_caches[cache_key]
             if adapter_version == cached.cached_version and decision.action is not CacheAction.FULL_RECOMPUTE:
                 decision = StrategyDecision(
                     decision.strategy,
@@ -183,13 +193,19 @@ class VersionedExperimentRunner:
                 updated=current,
                 decision=decision,
             )
+            new_refresh_count = cached.refresh_count + (1 if is_refresh_action(decision) else 0)
             if decision.action in {
                 CacheAction.FULL_RECOMPUTE,
                 CacheAction.REUSE_EXACT,
                 CacheAction.PARTIAL_RECOMPUTE,
                 CacheAction.DELTA_CORRECT,
             }:
-                strategy_caches[cache_key] = _StrategyCache(output=approx, cached_version=adapter_version)
+                strategy_caches[cache_key] = _StrategyCache(
+                    output=approx,
+                    cached_version=adapter_version,
+                    refresh_count=new_refresh_count,
+                )
+            top1 = top1_agreement(full.logits, approx.logits)
             records.append(
                 ExperimentRecord(
                     sample_id=sample_id,
@@ -200,18 +216,26 @@ class VersionedExperimentRunner:
                     first_invalid_layer=decision.first_invalid_layer,
                     task_score=backend.score_answer(sample_answer, approx),  # type: ignore[arg-type]
                     logits_kl=kl_divergence(full.logits, approx.logits),
-                    top1_agreement=top1_agreement(full.logits, approx.logits),
+                    top1_agreement=top1,
                     relative_error=relative_error(full.cache_tensor, approx.cache_tensor),
                     latency_units=backend.estimate_latency(decision, context_length=self.config.data.context_length),
                     reason=decision.reason,
                     experiment_id=self.config.experiment_id,
                     adapter_version=adapter_version,
                     cached_version=cached.cached_version,
-                    version_gap=adapter_version - cached.cached_version,
+                    version_gap=version_gap,
                     update_step=adapter_version,
                     accumulated_update_norm=accumulated_update_norm,
                     lora_rank=self.config.adapter.lora_rank,
                     update_mode=self.config.adapter.update_mode,
+                    hidden_relative_error=relative_error(full.hidden_tensor, approx.hidden_tensor),
+                    cache_bytes=output_cache_bytes(approx),
+                    memory_allocated=output_memory_allocated(approx),
+                    recompute_fraction=estimate_recompute_fraction(decision, num_layers=self.config.model.num_layers),
+                    cache_hit=is_cache_hit(decision),
+                    refresh_count=new_refresh_count,
+                    rejected_reuse=decision.reject_reuse,
+                    false_safe=is_false_safe(decision, full=full, approx=approx),
                 )
             )
 
@@ -234,29 +258,46 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "logits_kl_mean",
         "top1_agreement_mean",
         "relative_error_mean",
+        "hidden_relative_error_mean",
         "latency_units_mean",
+        "recompute_fraction_mean",
+        "cache_hit_rate",
+        "refresh_count_mean",
+        "false_safe_rate",
         "accumulated_update_norm_mean",
     ]
     with output_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        for key, rows in sorted(groups.items()):
+        for key, records in sorted(groups.items()):
+            experiment_id, target, strategy, version = key
             writer.writerow(
                 {
-                    "experiment_id": key[0],
-                    "update_target": key[1],
-                    "cache_strategy": key[2],
-                    "adapter_version": key[3],
-                    "count": len(rows),
-                    "task_score_mean": _mean(rows, "task_score"),
-                    "logits_kl_mean": _mean(rows, "logits_kl"),
-                    "top1_agreement_mean": _mean(rows, "top1_agreement"),
-                    "relative_error_mean": _mean(rows, "relative_error"),
-                    "latency_units_mean": _mean(rows, "latency_units"),
-                    "accumulated_update_norm_mean": _mean(rows, "accumulated_update_norm"),
+                    "experiment_id": experiment_id,
+                    "update_target": target,
+                    "cache_strategy": strategy,
+                    "adapter_version": version,
+                    "count": len(records),
+                    "task_score_mean": _mean(records, "task_score"),
+                    "logits_kl_mean": _mean(records, "logits_kl"),
+                    "top1_agreement_mean": _mean(records, "top1_agreement"),
+                    "relative_error_mean": _mean(records, "relative_error"),
+                    "hidden_relative_error_mean": _mean(records, "hidden_relative_error"),
+                    "latency_units_mean": _mean(records, "latency_units"),
+                    "recompute_fraction_mean": _mean(records, "recompute_fraction"),
+                    "cache_hit_rate": _mean_bool(records, "cache_hit"),
+                    "refresh_count_mean": _mean(records, "refresh_count"),
+                    "false_safe_rate": _mean_bool(records, "false_safe"),
+                    "accumulated_update_norm_mean": _mean(records, "accumulated_update_norm"),
                 }
             )
 
 
-def _mean(rows: list[dict[str, str]], field: str) -> float:
-    return sum(float(row[field]) for row in rows) / len(rows)
+def _mean(records: list[dict[str, str]], field: str) -> float:
+    values = [float(record[field]) for record in records if record.get(field) not in {None, ""}]
+    return sum(values) / len(values) if values else 0.0
+
+
+def _mean_bool(records: list[dict[str, str]], field: str) -> float:
+    values = [record.get(field, "False").lower() == "true" for record in records]
+    return sum(1.0 for value in values if value) / len(values) if values else 0.0

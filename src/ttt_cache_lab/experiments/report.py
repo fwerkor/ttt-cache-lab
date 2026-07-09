@@ -6,7 +6,16 @@ from collections import defaultdict
 from pathlib import Path
 from typing import cast
 
-NUMERIC_FIELDS = ["task_score", "logits_kl", "top1_agreement", "relative_error", "latency_units"]
+NUMERIC_FIELDS = [
+    "task_score",
+    "logits_kl",
+    "top1_agreement",
+    "relative_error",
+    "hidden_relative_error",
+    "latency_units",
+    "recompute_fraction",
+    "refresh_count",
+]
 
 
 def generate_report(input_csv: Path, output_dir: Path) -> Path:
