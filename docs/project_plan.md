@@ -718,7 +718,7 @@ Use Ascend as an available platform for real experiments:
 
 - 8x Ascend 910B: available platform for Qwen2.5-1.5B/7B/14B, 16K/32K contexts, and multi-step LoRA updates.
 - Use the eight cards first as parallel sweep workers, one process per visible NPU.
-- Multi-card model parallelism can be added later if 14B/32K+ runs require it.
+- Distributed model parallelism can be added later only if 14B/32K+ runs require it.
 
 CUDA GPUs can remain as optional validation or fallback; the research story should not depend on a specific accelerator vendor.
 

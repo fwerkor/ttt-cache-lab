@@ -47,7 +47,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_e2_single.sh   configs/experiment
 
 ## 5. Use 8 cards as parallel experiment workers first
 
-Before tensor parallelism is implemented, use the eight cards to run independent configs/seeds/targets in parallel. Example:
+Use the eight cards as independent experiment workers for configs/seeds/targets. Example:
 
 ```bash
 scripts/run_ascend_e2_parallel.sh
@@ -67,7 +67,7 @@ configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
 
 ## 7. Current limitations
 
-- `ascend_hf` uses torch-npu through HuggingFace Transformers, not MindSpeed tensor parallelism.
-- Multi-card model parallelism is not implemented yet.
+- `ascend_hf` uses torch-npu through HuggingFace Transformers.
+- Multi-card model parallelism is optional future work and should only be added if single-card runs cannot cover the target model/context scale.
 - The recommended first use of 8x910B is parallel sweeps, one process per visible NPU.
 - Real delta KV correction and real layer-wise partial recomputation are still future work.

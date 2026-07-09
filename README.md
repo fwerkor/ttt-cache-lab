@@ -45,7 +45,7 @@ Not implemented yet:
 
 - real delta KV correction on HuggingFace/Ascend;
 - real layer-wise partial recomputation on HuggingFace/Ascend;
-- MindSpeed tensor-parallel backend;
+- optional distributed backend for larger models, if single-card torch-npu is insufficient;
 - full reproduction of aLoRA/LRAgent/ForkKV-style baselines;
 - final paper plots and real 910B experiment results.
 
@@ -151,7 +151,7 @@ Use the 8-card machine as parallel experiment workers first:
 scripts/run_ascend_e2_parallel.sh
 ```
 
-This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Multi-card model parallelism is not implemented yet.
+This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. Distributed model-parallel execution is optional future work, not required for the current experiment path.
 
 ## Toy experiments
 
