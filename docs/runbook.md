@@ -91,12 +91,30 @@ The main columns are:
 - `logits_kl`
 - `top1_agreement`
 - `relative_error`
+- `hidden_relative_error`
 - `latency_units`
+- `recompute_fraction`
+- `cache_hit`
+- `refresh_count`
+- `false_safe`
 
-## 6. Current limitations
+## 6. Analysis commands
 
-The HF backend currently implements actual full recomputation and stale/frozen prefix-cache reuse. Layer-wise recomputation and delta correction are planner-level actions but use full recomputation as an upper-bound placeholder in the HF backend. Their latency is charged as full recomputation until real per-layer cache surgery exists. Implementing actual per-layer cache surgery is the next major step.
+```bash
+python -m ttt_cache_lab.cli version-report \
+  --input runs/e2_version_drift/summary.csv \
+  --output-dir runs/e2_version_drift/report
 
+python -m ttt_cache_lab.cli failure-map \
+  --input runs/e3_failure_map/summary.csv \
+  --output-dir runs/e3_failure_map/failure_map
+
+python -m ttt_cache_lab.cli pareto \
+  --input runs/e4_planner_main/summary.csv \
+  --output-dir runs/e4_planner_main/pareto
+```
+
+The HF/Ascend backend implements full recomputation, stale/frozen prefix-cache reuse, layer-wise `past_key_values` splice, and reference-assisted K/V delta blending. The delta path is measurable and no longer returned as the full-reference output, but a deployment-grade LoRA-weight-only correction path remains future work.
 
 ## 7. Sweep run
 

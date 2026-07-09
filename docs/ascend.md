@@ -62,9 +62,12 @@ configs/experiments/ascend_smoke_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
-configs/experiments/ascend_e2_version_drift_qwen_7b.yaml        # manual large-model template
-configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml # manual large-model template
-configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml          # manual scaling template
+configs/experiments/ascend_e2_version_drift_qwen_7b.yaml         # manual large-model template
+configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml  # manual large-model template
+configs/experiments/ascend_e5_delta_correction_qwen_0_5b.yaml
+configs/experiments/ascend_e6_scaling_qwen_1_5b_4k.yaml
+configs/experiments/ascend_e6_scaling_qwen_1_5b_8k.yaml
+configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml            # manual scaling template
 ```
 
 ## 7. Current limitations
@@ -73,4 +76,5 @@ configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml          # manual scaling
 - Ascend scripts use `model.modelscope_model_id` for ModelScope downloads and then load the local snapshot path.
 - Multi-card model parallelism is optional future work and should only be added if single-card runs cannot cover the target model/context scale.
 - The recommended first use of 8x910B is parallel sweeps over small/default-safe configs, one process per visible NPU.
-- Real delta KV correction and real layer-wise partial recomputation are still future work; current placeholders are charged as full recomputation latency.
+- Delta correction is currently implemented as measurable K/V cache blending against the full-reference cache used for evaluation. A deployment-grade LoRA-weight-only correction path remains future work.
+- Layer-wise recomputation is currently implemented as `past_key_values` layer splice. Native mid-layer restart support remains backend-dependent future work.

@@ -796,8 +796,8 @@ Do not claim any of the following until code and experiments support them:
 
 - real LoRA training is implemented;
 - real qTTT is reproduced;
-- real partial recomputation is implemented in HF/vLLM;
-- delta correction works on real models;
+- native mid-layer partial recomputation is implemented in HF/vLLM rather than measured through `past_key_values` splice;
+- deployment-grade LoRA-weight-only delta correction works on real models;
 - planner beats full recompute/stale baselines on real tasks;
 - multi-GPU serving performance is measured;
 - results generalize to 32K/64K contexts.
@@ -807,23 +807,22 @@ Do not claim any of the following until code and experiments support them:
 Implemented:
 
 - toy backend;
-- HF backend for full recompute vs stale/frozen prefix cache reuse;
-- update target taxonomy;
-- cache strategy skeleton;
-- adaptive planner skeleton;
-- sweep runner;
-- first-table report;
+- HF/Ascend backend for full recompute, stale/frozen prefix cache reuse, `past_key_values` layer splice, and reference-assisted K/V delta blending;
+- LoRA injection/training for selected `torch.nn.Linear` projections;
+- multi-step adapter version evolution;
+- versioned cache metadata and planner cost/safety metrics in records;
+- expanded update target taxonomy including QV/attention and early/middle/late layer positions;
+- static adapter baseline strategies, threshold refresh, delta correction, oracle planner, and adaptive planner;
+- E1-E7 toy templates plus selected HF/Ascend E2/E5/E6 templates;
+- failure-map, Pareto, version-summary, and Markdown/SVG reports;
 - CI with lint, typecheck, tests.
 
-Not implemented yet:
+Still limited:
 
-- real LoRA injection/training;
-- multi-step adapter version evolution;
-- versioned cache metadata in records;
-- real delta correction;
-- real partial recompute;
-- static adapter baselines;
-- long-context real-model experiments;
-- final plots.
+- deployment-grade LoRA-weight-only delta correction;
+- native mid-layer recomputation inside HF/vLLM internals;
+- full aLoRA/LRAgent/ForkKV reproductions;
+- completed long-context real 910B experiment results;
+- paper-quality final plots populated with real runs.
 
-The immediate next implementation target is **M1 + M2: real LoRA injection and multi-step versioned drift measurement**.
+The immediate next implementation target is running E2/E3/E5 on the real Ascend environment and using those results to calibrate planner thresholds.

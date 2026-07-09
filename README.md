@@ -27,10 +27,10 @@ The project is not just about Q-only qTTT. Existing work already covers parts of
 
 Implemented:
 
-- synthetic long-context tasks: passkey and key-value retrieval;
-- update-target taxonomy: Q/K/V/O/MLP/Norm/output head and LoRA variants;
+- synthetic long-context tasks: passkey, key-value retrieval, multi-needle retrieval, and variable tracking;
+- update-target taxonomy: Q/K/V/O/QV/attention/MLP/Norm/output head and LoRA variants with early/middle/late layer positions;
 - cache validity semantics and strategy abstractions;
-- adaptive planner skeleton;
+- adaptive planner with update-target, version-gap, and accumulated-update-norm inputs;
 - single-step feasibility runner;
 - multi-step versioned runner for adapter-version drift experiments;
 - toy backend for CI and dry runs;
@@ -38,18 +38,18 @@ Implemented:
 - Ascend HuggingFace backend using torch-npu (`model.backend: ascend_hf`);
 - ModelScope download preparation for Ascend runs;
 - simple LoRA wrapper and online LoRA update path for `torch.nn.Linear` projections;
-- result summaries, first feasibility tables, Markdown reports, and SVG trend plots;
-- E1-E7 experiment templates from the project plan;
+- HF/Ascend cache-surgery paths for layer-wise cache splice and reference-assisted delta cache blending;
+- result summaries, first feasibility tables, Markdown reports, SVG trend plots, failure-map tables, and Pareto tables;
+- E1-E7 experiment templates from the project plan, including static baselines, threshold refresh, oracle planner, E5 real-model smoke configs, and E6 scaling configs;
 - CI with linting, type checking, and tests.
 
-Not implemented yet:
+Still limited:
 
-- real delta KV correction on HuggingFace/Ascend;
-- real layer-wise partial recomputation on HuggingFace/Ascend;
-- HF/Ascend placeholders for those actions are charged as full recompute latency until implemented;
+- HF/Ascend delta correction is implemented as a measurable K/V cache blend against the full-reference cache used for evaluation; a deployment-grade LoRA-weight-only correction path is still future work;
+- HF/Ascend layer-wise recomputation is implemented as `past_key_values` layer splice for measurement; native mid-layer restart inside each Transformer block is still backend-dependent future work;
 - optional distributed backend for larger models, if single-card torch-npu is insufficient;
 - full reproduction of aLoRA/LRAgent/ForkKV-style baselines;
-- final paper plots and real 910B experiment results.
+- final paper-quality plots and real 910B experiment results.
 
 ## Repository layout
 
@@ -176,6 +176,18 @@ python -m ttt_cache_lab.cli version-report \
   --output-dir runs/e2_version_drift/report
 ```
 
+Generate E3 and E4/E7 analysis tables:
+
+```bash
+python -m ttt_cache_lab.cli failure-map \
+  --input runs/e3_failure_map/summary.csv \
+  --output-dir runs/e3_failure_map/failure_map
+
+python -m ttt_cache_lab.cli pareto \
+  --input runs/e4_planner_main/summary.csv \
+  --output-dir runs/e4_planner_main/pareto
+```
+
 Run all E1-E7 toy templates:
 
 ```bash
@@ -221,9 +233,12 @@ configs/experiments/ascend_smoke_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
-configs/experiments/ascend_e2_version_drift_qwen_7b.yaml        # manual large-model template
-configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml # manual large-model template
-configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml          # manual scaling template
+configs/experiments/ascend_e2_version_drift_qwen_7b.yaml         # manual large-model template
+configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml  # manual large-model template
+configs/experiments/ascend_e5_delta_correction_qwen_0_5b.yaml
+configs/experiments/ascend_e6_scaling_qwen_1_5b_4k.yaml
+configs/experiments/ascend_e6_scaling_qwen_1_5b_8k.yaml
+configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml            # manual scaling template
 ```
 
 ## Output files
@@ -236,6 +251,8 @@ runs/<experiment>/summary.csv            flat CSV records
 runs/<experiment>/version_summary.csv    grouped means by version/target/strategy
 runs/<experiment>/report/report.md       Markdown report
 runs/<experiment>/report/*.svg           metric-vs-version plots
+runs/e3_failure_map/failure_map/*        E3 policy table and heatmap
+runs/e4_planner_main/pareto/*            E4 quality-cost Pareto table
 ```
 
 Important columns include:
@@ -253,7 +270,12 @@ task_score
 logits_kl
 top1_agreement
 relative_error
+hidden_relative_error
 latency_units
+recompute_fraction
+cache_hit
+refresh_count
+false_safe
 ```
 
 ## Backends
