@@ -6,6 +6,8 @@ from pathlib import Path
 from rich.console import Console
 
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig
+from ttt_cache_lab.experiments.failure_map import generate_failure_map
+from ttt_cache_lab.experiments.pareto import generate_pareto
 from ttt_cache_lab.experiments.report import generate_report
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.summarize import (
@@ -51,6 +53,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     version_report.add_argument("--input", required=True, type=Path)
     version_report.add_argument("--output-dir", required=True, type=Path)
+
+    failure_map = subparsers.add_parser("failure-map", help="Generate E3 failure-map tables and heatmap")
+    failure_map.add_argument("--input", required=True, type=Path)
+    failure_map.add_argument("--output-dir", required=True, type=Path)
+
+    pareto = subparsers.add_parser("pareto", help="Generate E4 quality-cost Pareto table")
+    pareto.add_argument("--input", required=True, type=Path)
+    pareto.add_argument("--output-dir", required=True, type=Path)
 
     subparsers.add_parser("list-targets", help="List supported update target names")
     return parser
@@ -98,6 +108,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "version-report":
         report = generate_report(args.input, args.output_dir)
         console.print(f"Wrote {report}")
+        return
+    if args.command == "failure-map":
+        policy = generate_failure_map(args.input, args.output_dir)
+        console.print(f"Wrote {policy}")
+        return
+    if args.command == "pareto":
+        pareto_csv = generate_pareto(args.input, args.output_dir)
+        console.print(f"Wrote {pareto_csv}")
         return
     if args.command == "list-targets":
         for item in ModuleKind:
