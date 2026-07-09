@@ -52,6 +52,15 @@ def is_false_safe(decision: StrategyDecision, *, full: BackendOutput, approx: Ba
     return bool(top1_agreement(full.logits, approx.logits) < 1.0)
 
 
+def output_strategy_mode(output: BackendOutput) -> str:
+    extras = output.extras or {}
+    for key in ("delta_mode", "partial_mode", "cache_mode"):
+        value = extras.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
 def as_float(value: Any) -> float:
     if isinstance(value, np.generic):
         return float(value)

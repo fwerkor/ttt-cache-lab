@@ -37,6 +37,7 @@ class ExperimentRecord:
     refresh_count: int = 0
     rejected_reuse: bool = False
     false_safe: bool = False
+    strategy_mode: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

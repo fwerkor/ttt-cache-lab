@@ -796,8 +796,8 @@ Do not claim any of the following until code and experiments support them:
 
 - real LoRA training is implemented;
 - real qTTT is reproduced;
-- native mid-layer partial recomputation is implemented in HF/vLLM rather than measured through `past_key_values` splice;
-- deployment-grade LoRA-weight-only delta correction works on real models;
+- native mid-layer partial recomputation is implemented in HF/vLLM rather than generic fallback `past_key_values` splice;
+- LoRA-weight-delta correction is validated on real models across safe regions rather than only unit tests and toy runs;
 - planner beats full recompute/stale baselines on real tasks;
 - multi-GPU serving performance is measured;
 - results generalize to 32K/64K contexts.
@@ -807,7 +807,7 @@ Do not claim any of the following until code and experiments support them:
 Implemented:
 
 - toy backend;
-- HF/Ascend backend for full recompute, stale/frozen prefix cache reuse, `past_key_values` layer splice, and reference-assisted K/V delta blending;
+- HF/Ascend backend for full recompute, stale/frozen prefix cache reuse, `past_key_values` layer splice, and LoRA-weight-delta K/V correction;
 - LoRA injection/training for selected `torch.nn.Linear` projections;
 - multi-step adapter version evolution;
 - versioned cache metadata and planner cost/safety metrics in records;
@@ -819,8 +819,8 @@ Implemented:
 
 Still limited:
 
-- deployment-grade LoRA-weight-only delta correction;
-- native mid-layer recomputation inside HF/vLLM internals;
+- real-model validation of LoRA-weight-delta correction safe regions;
+- model-specific native mid-layer recomputation inside HF/vLLM internals;
 - full aLoRA/LRAgent/ForkKV reproductions;
 - completed long-context real 910B experiment results;
 - paper-quality final plots populated with real runs.

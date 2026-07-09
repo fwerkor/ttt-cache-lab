@@ -12,6 +12,7 @@ from ttt_cache_lab.experiments.metrics import (
     is_refresh_action,
     output_cache_bytes,
     output_memory_allocated,
+    output_strategy_mode,
 )
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
@@ -88,6 +89,7 @@ class ExperimentRunner:
                             refresh_count=1 if is_refresh_action(decision) else 0,
                             rejected_reuse=decision.reject_reuse,
                             false_safe=is_false_safe(decision, full=full, approx=approx),
+                            strategy_mode=output_strategy_mode(approx),
                         )
                     )
                 backend.restore_after_update()

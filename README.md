@@ -38,15 +38,15 @@ Implemented:
 - Ascend HuggingFace backend using torch-npu (`model.backend: ascend_hf`);
 - ModelScope download preparation for Ascend runs;
 - simple LoRA wrapper and online LoRA update path for `torch.nn.Linear` projections;
-- HF/Ascend cache-surgery paths for layer-wise cache splice and reference-assisted delta cache blending;
+- HF/Ascend cache-surgery paths for layer-wise cache splice and LoRA-weight-delta K/V correction;
 - result summaries, first feasibility tables, Markdown reports, SVG trend plots, failure-map tables, and Pareto tables;
 - E1-E7 experiment templates from the project plan, including static baselines, threshold refresh, oracle planner, E5 real-model smoke configs, and E6 scaling configs;
 - CI with linting, type checking, and tests.
 
 Still limited:
 
-- HF/Ascend delta correction is implemented as a measurable K/V cache blend against the full-reference cache used for evaluation; a deployment-grade LoRA-weight-only correction path is still future work;
-- HF/Ascend layer-wise recomputation is implemented as `past_key_values` layer splice for measurement; native mid-layer restart inside each Transformer block is still backend-dependent future work;
+- HF/Ascend delta correction now uses cached LoRA projection inputs plus A/B weight snapshots to patch K/V without reading the full-reference cache;
+- HF/Ascend partial recompute records `strategy_mode`; generic Transformers use `fallback_past_key_values_layer_splice`, while model-specific native mid-layer restart can be plugged into `_native_partial_recompute_prefix_cache`;
 - optional distributed backend for larger models, if single-card torch-npu is insufficient;
 - full reproduction of aLoRA/LRAgent/ForkKV-style baselines;
 - final paper-quality plots and real 910B experiment results.
@@ -276,6 +276,7 @@ recompute_fraction
 cache_hit
 refresh_count
 false_safe
+strategy_mode
 ```
 
 ## Backends

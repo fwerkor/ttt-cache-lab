@@ -388,6 +388,10 @@ class HuggingFaceBackend:
     ) -> BackendOutput:
         if not baseline.extras or not full.extras:
             raise ValueError("Partial recompute requires cached HF states from baseline and full outputs")
+        native = self._native_partial_recompute_prefix_cache(baseline=baseline, decision=decision)
+        if native is not None:
+            self._last_partial_s = float(native.extras.get("strategy_latency", 0.0)) if native.extras else 0.0
+            return native
         split_layer = decision.first_invalid_layer or 0
         merged_past = self._splice_past(
             baseline.extras["past_key_values"],
@@ -401,10 +405,19 @@ class HuggingFaceBackend:
             cache_tensor=self._summarize_past(merged_past),
             hidden_tensor=hidden,
             lora_cache=full.extras.get("lora_cache", {}),
-            extra_metadata={"partial_mode": "past_key_values_layer_splice"},
+            extra_metadata={"partial_mode": "fallback_past_key_values_layer_splice"},
         )
         self._last_partial_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
         return result
+
+    def _native_partial_recompute_prefix_cache(
+        self,
+        *,
+        baseline: BackendOutput,
+        decision: StrategyDecision,
+    ) -> BackendOutput | None:
+        del baseline, decision
+        return None
 
     def _delta_correct_prefix_cache(
         self,

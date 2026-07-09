@@ -97,6 +97,7 @@ The main columns are:
 - `cache_hit`
 - `refresh_count`
 - `false_safe`
+- `strategy_mode`
 
 ## 6. Analysis commands
 
@@ -114,7 +115,7 @@ python -m ttt_cache_lab.cli pareto \
   --output-dir runs/e4_planner_main/pareto
 ```
 
-The HF/Ascend backend implements full recomputation, stale/frozen prefix-cache reuse, layer-wise `past_key_values` splice, and reference-assisted K/V delta blending. The delta path is measurable and no longer returned as the full-reference output, but a deployment-grade LoRA-weight-only correction path remains future work.
+The HF/Ascend backend implements full recomputation, stale/frozen prefix-cache reuse, layer-wise `past_key_values` splice, and LoRA-weight-delta K/V correction. Delta correction uses cached LoRA projection inputs plus cached-version A/B snapshots and does not read the full-reference cache. Partial recompute writes `strategy_mode=fallback_past_key_values_layer_splice` unless a model-specific native mid-layer restart backend is supplied.
 
 ## 7. Sweep run
 

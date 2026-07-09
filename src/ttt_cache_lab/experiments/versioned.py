@@ -16,6 +16,7 @@ from ttt_cache_lab.experiments.metrics import (
     is_refresh_action,
     output_cache_bytes,
     output_memory_allocated,
+    output_strategy_mode,
 )
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
@@ -250,6 +251,7 @@ class VersionedExperimentRunner:
                     refresh_count=new_refresh_count,
                     rejected_reuse=decision.reject_reuse,
                     false_safe=is_false_safe(decision, full=full, approx=approx),
+                    strategy_mode=output_strategy_mode(approx),
                 )
             )
 

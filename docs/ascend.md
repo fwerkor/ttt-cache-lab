@@ -76,5 +76,5 @@ configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml            # manual scali
 - Ascend scripts use `model.modelscope_model_id` for ModelScope downloads and then load the local snapshot path.
 - Multi-card model parallelism is optional future work and should only be added if single-card runs cannot cover the target model/context scale.
 - The recommended first use of 8x910B is parallel sweeps over small/default-safe configs, one process per visible NPU.
-- Delta correction is currently implemented as measurable K/V cache blending against the full-reference cache used for evaluation. A deployment-grade LoRA-weight-only correction path remains future work.
-- Layer-wise recomputation is currently implemented as `past_key_values` layer splice. Native mid-layer restart support remains backend-dependent future work.
+- Delta correction uses cached LoRA projection inputs plus cached-version A/B snapshots to patch K/V without reading the full-reference cache.
+- Layer-wise recomputation records `strategy_mode`; generic Transformers use `fallback_past_key_values_layer_splice`, while model-specific native mid-layer restart support remains backend-dependent.
