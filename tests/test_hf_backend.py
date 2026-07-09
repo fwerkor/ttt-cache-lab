@@ -1,6 +1,7 @@
 from typing import Any, cast
 
 import numpy as np
+import pytest
 
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName
@@ -52,17 +53,24 @@ def test_hf_score_accepts_nonempty_prefix_match() -> None:
     assert backend.score_answer(sample, output) == 1.0
 
 
-def test_hf_unsupported_cache_surgery_charges_full_latency() -> None:
+def test_hf_cache_surgery_latency_falls_back_to_fractional_prefill() -> None:
     backend = cast(Any, object.__new__(HuggingFaceBackend))
     backend._last_prefill_s = 3.0
     backend._last_stale_s = 0.1
 
-    for action in (CacheAction.PARTIAL_RECOMPUTE, CacheAction.DELTA_CORRECT):
-        decision = StrategyDecision(
-            StrategyName.ADAPTIVE,
-            action,
-            CacheBlockState.INVALID,
-            None,
-            "test",
-        )
-        assert HuggingFaceBackend.estimate_latency(backend, decision, context_length=128) == 3.0
+    partial = StrategyDecision(
+        StrategyName.ADAPTIVE,
+        CacheAction.PARTIAL_RECOMPUTE,
+        CacheBlockState.INVALID,
+        None,
+        "test",
+    )
+    delta = StrategyDecision(
+        StrategyName.ADAPTIVE,
+        CacheAction.DELTA_CORRECT,
+        CacheBlockState.INVALID,
+        None,
+        "test",
+    )
+    assert HuggingFaceBackend.estimate_latency(backend, partial, context_length=128) == 1.5
+    assert HuggingFaceBackend.estimate_latency(backend, delta, context_length=128) == pytest.approx(0.45)

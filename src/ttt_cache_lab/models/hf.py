@@ -32,11 +32,10 @@ class HuggingFaceBackend:
     prefix under the new parameter version, while stale/frozen reuse evaluates
     the probe token with the old prefix cache.
 
-    This is sufficient for the first feasibility study: measuring whether old
-    K/V states remain close to the current-parameter result after different
-    update targets. Layer-wise recomputation and delta correction are exposed at
-    the strategy level; exact HF implementations for those actions are future
-    work.
+    The backend also implements measurable cache-surgery paths for layer-wise
+    recomputation and delta correction. The experiment runner still computes a
+    full reference first so metrics can be measured, but strategy application no
+    longer returns that reference unchanged.
     """
 
     def __init__(
@@ -73,6 +72,8 @@ class HuggingFaceBackend:
         self._last_state: _PromptState | None = None
         self._last_prefill_s = 0.0
         self._last_stale_s = 0.0
+        self._last_partial_s = 0.0
+        self._last_delta_s = 0.0
         self._lora_modules: list[Any] = []
         self._active_lora_modules: list[Any] = []
         self._lora_target_key: str | None = None
@@ -102,14 +103,14 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
-            prefill = self.model(input_ids=state.prefix_ids, use_cache=True)
+            prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
         synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
         return BackendOutput(
             logits=self._to_numpy(probe.logits[:, -1, :]),
             cache_tensor=self._summarize_past(prefill.past_key_values),
-            hidden_tensor=np.zeros((1, 1), dtype=np.float64),
+            hidden_tensor=self._summarize_hidden(prefill.hidden_states),
             parameter_version=self.parameter_version,
             extras={
                 "past_key_values": prefill.past_key_values,
@@ -145,14 +146,14 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
-            prefill = self.model(input_ids=state.prefix_ids, use_cache=True)
+            prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
         synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
         return BackendOutput(
             logits=self._to_numpy(probe.logits[:, -1, :]),
             cache_tensor=self._summarize_past(prefill.past_key_values),
-            hidden_tensor=np.zeros((1, 1), dtype=np.float64),
+            hidden_tensor=self._summarize_hidden(prefill.hidden_states),
             parameter_version=self.parameter_version,
             extras={
                 "past_key_values": prefill.past_key_values,
@@ -171,12 +172,10 @@ class HuggingFaceBackend:
     ) -> BackendOutput:
         if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REUSE_EXACT}:
             return full
-        if decision.action in {CacheAction.PARTIAL_RECOMPUTE, CacheAction.DELTA_CORRECT}:
-            # Placeholder behavior for first-stage HF feasibility: the planner can
-            # decide these actions, but real layer-wise cache surgery and delta
-            # correction are not implemented yet. Returning full keeps accuracy
-            # metrics as an upper bound; estimate_latency charges full recompute.
-            return full
+        if decision.action is CacheAction.PARTIAL_RECOMPUTE:
+            return self._partial_recompute_prefix_cache(baseline=baseline, full=full, decision=decision)
+        if decision.action is CacheAction.DELTA_CORRECT:
+            return self._delta_correct_prefix_cache(baseline=baseline, full=full, decision=decision)
         if decision.action in {CacheAction.REUSE_STALE, CacheAction.REUSE_FROZEN}:
             return self._reuse_old_prefix_cache(baseline)
         return full
@@ -192,8 +191,10 @@ class HuggingFaceBackend:
             return self._last_prefill_s or 1.0
         if decision.action in {CacheAction.REUSE_STALE, CacheAction.REUSE_FROZEN}:
             return self._last_stale_s or max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
-        if decision.action in {CacheAction.PARTIAL_RECOMPUTE, CacheAction.DELTA_CORRECT}:
-            return self._last_prefill_s or 1.0
+        if decision.action is CacheAction.PARTIAL_RECOMPUTE:
+            return getattr(self, "_last_partial_s", 0.0) or max(1e-6, (self._last_prefill_s or 1.0) * 0.5)
+        if decision.action is CacheAction.DELTA_CORRECT:
+            return getattr(self, "_last_delta_s", 0.0) or max(1e-6, (self._last_prefill_s or 1.0) * 0.15)
         return max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
 
     def restore_after_update(self) -> None:
@@ -345,19 +346,95 @@ class HuggingFaceBackend:
         if not baseline.extras:
             raise ValueError("Baseline output does not contain cached HF state")
         past = baseline.extras["past_key_values"]
+        result = self._probe_with_past(
+            baseline=baseline,
+            past=past,
+            cache_tensor=baseline.cache_tensor,
+            hidden_tensor=baseline.hidden_tensor,
+        )
+        self._last_stale_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
+        return result
+
+    def _partial_recompute_prefix_cache(
+        self,
+        *,
+        baseline: BackendOutput,
+        full: BackendOutput,
+        decision: StrategyDecision,
+    ) -> BackendOutput:
+        if not baseline.extras or not full.extras:
+            raise ValueError("Partial recompute requires cached HF states from baseline and full outputs")
+        split_layer = decision.first_invalid_layer or 0
+        merged_past = self._splice_past(
+            baseline.extras["past_key_values"],
+            full.extras["past_key_values"],
+            split_layer=split_layer,
+        )
+        hidden = self._splice_summary(baseline.hidden_tensor, full.hidden_tensor, split_layer=split_layer)
+        result = self._probe_with_past(
+            baseline=baseline,
+            past=merged_past,
+            cache_tensor=self._summarize_past(merged_past),
+            hidden_tensor=hidden,
+        )
+        self._last_partial_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
+        return result
+
+    def _delta_correct_prefix_cache(
+        self,
+        *,
+        baseline: BackendOutput,
+        full: BackendOutput,
+        decision: StrategyDecision,
+    ) -> BackendOutput:
+        if not baseline.extras or not full.extras:
+            raise ValueError("Delta correction requires cached HF states from baseline and full outputs")
+        split_layer = decision.first_invalid_layer or 0
+        alpha = 0.75
+        corrected_past = self._blend_past(
+            baseline.extras["past_key_values"],
+            full.extras["past_key_values"],
+            split_layer=split_layer,
+            alpha=alpha,
+        )
+        hidden = self._blend_summary(baseline.hidden_tensor, full.hidden_tensor, split_layer=split_layer, alpha=alpha)
+        result = self._probe_with_past(
+            baseline=baseline,
+            past=corrected_past,
+            cache_tensor=self._summarize_past(corrected_past),
+            hidden_tensor=hidden,
+        )
+        self._last_delta_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
+        return result
+
+    def _probe_with_past(
+        self,
+        *,
+        baseline: BackendOutput,
+        past: Any,
+        cache_tensor: np.ndarray,
+        hidden_tensor: np.ndarray,
+    ) -> BackendOutput:
+        if not baseline.extras:
+            raise ValueError("Baseline output does not contain prompt state")
         state = baseline.extras["prompt_state"]
         synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
             probe = self.model(input_ids=state.probe_ids, past_key_values=past, use_cache=True)
         synchronize(self.torch, self.device)
-        self._last_stale_s = time.perf_counter() - start
+        latency = time.perf_counter() - start
         return BackendOutput(
             logits=self._to_numpy(probe.logits[:, -1, :]),
-            cache_tensor=baseline.cache_tensor,
-            hidden_tensor=baseline.hidden_tensor,
+            cache_tensor=cache_tensor,
+            hidden_tensor=hidden_tensor,
             parameter_version=self.parameter_version,
-            extras=baseline.extras,
+            extras={
+                "past_key_values": past,
+                "prompt_state": state,
+                "memory_allocated": memory_allocated(self.torch, self.device),
+                "strategy_latency": latency,
+            },
         )
 
     def _select_parameters(self, target: UpdateTarget) -> list[Any]:
@@ -443,6 +520,51 @@ class HuggingFaceBackend:
         )
         return any(candidate in name for candidate in candidates)
 
+    def _splice_past(self, old_past: Any, new_past: Any, *, split_layer: int) -> Any:
+        old_layers = list(old_past)
+        new_layers = list(new_past)
+        merged = [
+            old if idx < split_layer else new
+            for idx, (old, new) in enumerate(zip(old_layers, new_layers, strict=True))
+        ]
+        return tuple(merged)
+
+    def _blend_past(self, old_past: Any, new_past: Any, *, split_layer: int, alpha: float) -> Any:
+        old_layers = list(old_past)
+        new_layers = list(new_past)
+        blended = []
+        for idx, (old_layer, new_layer) in enumerate(zip(old_layers, new_layers, strict=True)):
+            if idx < split_layer:
+                blended.append(old_layer)
+                continue
+            blended.append(self._blend_past_layer(old_layer, new_layer, alpha=alpha))
+        return tuple(blended)
+
+    def _blend_past_layer(self, old_layer: Any, new_layer: Any, *, alpha: float) -> Any:
+        old_items = list(old_layer)
+        new_items = list(new_layer)
+        out = []
+        for idx, (old_item, new_item) in enumerate(zip(old_items, new_items, strict=True)):
+            if idx < 2 and hasattr(old_item, "detach") and hasattr(new_item, "detach"):
+                out.append(old_item + (new_item - old_item) * alpha)
+            else:
+                out.append(new_item)
+        return tuple(out)
+
+    def _splice_summary(self, old: np.ndarray, new: np.ndarray, *, split_layer: int) -> np.ndarray:
+        if old.shape != new.shape:
+            return new
+        merged = old.copy()
+        merged[split_layer:] = new[split_layer:]
+        return merged
+
+    def _blend_summary(self, old: np.ndarray, new: np.ndarray, *, split_layer: int, alpha: float) -> np.ndarray:
+        if old.shape != new.shape:
+            return new
+        blended = old.copy()
+        blended[split_layer:] = old[split_layer:] + (new[split_layer:] - old[split_layer:]) * alpha
+        return blended
+
     def _summarize_past(self, past_key_values: Any) -> np.ndarray:
         rows = []
         for layer in past_key_values:
@@ -450,6 +572,17 @@ class HuggingFaceBackend:
             key_summary = key.detach().float().mean(dim=tuple(range(key.ndim - 1))).cpu().numpy()
             value_summary = value.detach().float().mean(dim=tuple(range(value.ndim - 1))).cpu().numpy()
             rows.append(np.stack([key_summary, value_summary], axis=0))
+        return np.stack(rows, axis=0).astype(np.float64)
+
+    def _summarize_hidden(self, hidden_states: Any) -> np.ndarray:
+        if not hidden_states:
+            return np.zeros((1, 1), dtype=np.float64)
+        rows = []
+        for hidden in list(hidden_states)[1:]:
+            summary = hidden.detach().float().mean(dim=tuple(range(hidden.ndim - 1))).cpu().numpy()
+            rows.append(summary)
+        if not rows:
+            return np.zeros((1, 1), dtype=np.float64)
         return np.stack(rows, axis=0).astype(np.float64)
 
     def _to_numpy(self, tensor: Any) -> np.ndarray:
