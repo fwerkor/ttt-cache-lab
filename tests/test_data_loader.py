@@ -42,6 +42,7 @@ def test_jsonl_loader_maps_context_question_and_answer(tmp_path: Path) -> None:
     assert sample.metadata["scorer"] == "exact_match"
     assert sample.metadata["source"] == "jsonl"
     assert sample.metadata["truncation_strategy"] == "middle"
+    assert sample.metadata["max_generation_tokens"] == config.answer_length
 
 
 def test_huggingface_loader_uses_config_and_seed(monkeypatch: object) -> None:

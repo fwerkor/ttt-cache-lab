@@ -242,7 +242,9 @@ class HuggingFaceBackend:
             self._sample_activation_boundaries[sample.prompt] = activation_boundary
         self._prepared_input_ids[sample.prompt] = input_ids
         answer_ids = self.tokenizer(sample.answer, add_special_tokens=False).get("input_ids", [])
-        self._sample_answer_token_counts[sample.prompt] = max(1, len(answer_ids))
+        reference_tokens = max(1, len(answer_ids))
+        configured_limit = max(1, int(sample.metadata.get("max_generation_tokens", reference_tokens)))
+        self._sample_answer_token_counts[sample.prompt] = min(reference_tokens, configured_limit)
         metadata = dict(sample.metadata)
         metadata["token_length"] = context_length
         return TaskSample(prompt=sample.prompt, answer=sample.answer, metadata=metadata)

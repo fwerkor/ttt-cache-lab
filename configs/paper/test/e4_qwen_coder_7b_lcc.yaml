@@ -38,7 +38,7 @@ data:
     '
   scorer: code_similarity
   truncation_strategy: left
-  answer_length: 16
+  answer_length: 64
 updates:
   targets:
   - lora.q

@@ -36,7 +36,7 @@ data:
     Answer:'
   scorer: rouge_l
   truncation_strategy: middle
-  answer_length: 16
+  answer_length: 128
 updates:
   targets:
   - lora.q

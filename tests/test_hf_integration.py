@@ -202,3 +202,17 @@ def test_alora_reuses_base_prefix_and_recomputes_adapter_suffix(tiny_llama_dir: 
     assert output.extras["alora_activation_boundary"] < output.extras["token_length"]
     assert output.extras["cache_maintenance_latency"] >= 0.0
     assert output.extras["cache_bytes"] > 0
+
+
+def test_external_generation_length_is_capped_by_sample_metadata(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    raw = TaskSample(
+        prompt="key is alpha Answer :",
+        answer="alpha alpha alpha",
+        metadata={"max_generation_tokens": 1},
+    )
+    sample = backend.prepare_sample(raw, context_length=16)
+    assert backend._sample_answer_token_counts[sample.prompt] == 1
+    output = backend.prefill(sample.prompt)
+    assert output.extras is not None
+    assert output.extras["generated_tokens"] == 1
