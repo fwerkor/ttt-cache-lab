@@ -249,3 +249,30 @@ def test_versioned_cache_capacity_is_global_across_samples_and_versions(tmp_path
     assert max(record.cache_entry_count for record in records) <= 2
     assert records[-1].evicted_cache_entries > 0
     assert all(record.total_cache_bytes >= record.cache_bytes for record in records)
+
+
+
+def test_related_work_baselines_use_distinct_cache_representations(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-related-work",
+            "experiment_id": "unit_related_work",
+            "seed": 5,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 4, "hidden_size": 16, "vocab_size": 32},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k:1"], "update_norm": 0.01},
+            "cache": {"strategies": ["lragent_adapter_cache", "forkkv_base_delta"]},
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [1],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    by_strategy = {record.cache_strategy: record for record in records}
+    lragent = by_strategy["lragent_adapter_cache"]
+    forkkv = by_strategy["forkkv_base_delta"]
+    assert lragent.action == "delta_correct"
+    assert forkkv.action == "delta_correct"
+    assert lragent.strategy_mode == "lragent_shared_base_plus_low_rank_component"
+    assert forkkv.strategy_mode == "forkkv_copy_on_write_residual"
+    assert lragent.cache_bytes < forkkv.cache_bytes

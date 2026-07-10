@@ -295,10 +295,7 @@ class VersionedExperimentRunner:
                     "No-adaptation baseline keeps the original model and v0 output fixed.",
                 )
                 baseline_output = cached.original_output
-            elif strategy.name in {
-                StrategyName.ADAPTER_SPECIFIC_CACHE,
-                StrategyName.LRAGENT_ADAPTER_CACHE,
-            }:
+            elif strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
                 entry = cached.manager.get(adapter_id, adapter_version)
                 existing = entry.output if entry is not None else None
                 if existing is not None:
@@ -371,10 +368,7 @@ class VersionedExperimentRunner:
                 first_invalid_layer=decision.first_invalid_layer,
                 action=decision.action,
             )
-            if strategy.name in {
-                StrategyName.ADAPTER_SPECIFIC_CACHE,
-                StrategyName.LRAGENT_ADAPTER_CACHE,
-            }:
+            if strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
                 cached.manager.put(adapter_id, adapter_version, VersionedCacheEntry(approx, new_blocks))
                 cached.output = approx
                 cached.cached_version = adapter_version

@@ -141,8 +141,9 @@ def test_related_work_baselines_have_distinct_actions() -> None:
     lragent = build_strategy("lragent_adapter_cache").decide(target, step=1, update_norm=0.01)
     forkkv = build_strategy("forkkv_base_delta").decide(target, step=1, update_norm=0.01)
     assert alora.action is CacheAction.ALORA_SUFFIX_RECOMPUTE
-    assert lragent.action is CacheAction.FULL_RECOMPUTE
+    assert lragent.action is CacheAction.DELTA_CORRECT
     assert forkkv.action is CacheAction.DELTA_CORRECT
+    assert lragent.recompute_fraction < forkkv.recompute_fraction
     assert str(alora.strategy) == "alora_prefix_reuse"
     assert str(lragent.strategy) == "lragent_adapter_cache"
     assert str(forkkv.strategy) == "forkkv_base_delta"

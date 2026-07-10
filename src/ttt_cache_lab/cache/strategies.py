@@ -365,34 +365,108 @@ class AloraPrefixReuseStrategy(CacheStrategy):
         )
 
 
-class LrAgentAdapterCacheStrategy(AdapterSpecificCacheStrategy):
+class LrAgentAdapterCacheStrategy(CacheStrategy):
     name = StrategyName.LRAGENT_ADAPTER_CACHE
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
-        decision = super().decide(target, step=step, update_norm=update_norm)
+        del update_norm
+        if step == 0:
+            return StrategyDecision(
+                self.name,
+                CacheAction.REUSE_EXACT,
+                CacheBlockState.VALID_EXACT,
+                None,
+                "LRAgent decomposition already contains this adapter-version component.",
+            )
+        if target.kind in {ModuleKind.LORA_Q}:
+            return StrategyDecision(
+                self.name,
+                CacheAction.REUSE_FROZEN,
+                CacheBlockState.VALID_FROZEN,
+                None,
+                "LRAgent shares the base K/V component for Q-only LoRA updates.",
+            )
+        if target.kind in {ModuleKind.LORA_K, ModuleKind.LORA_V, ModuleKind.LORA_QV}:
+            return StrategyDecision(
+                self.name,
+                CacheAction.DELTA_CORRECT,
+                CacheBlockState.VALID_APPROX,
+                target.layer,
+                "LRAgent composes the shared base cache with an adapter-dependent low-rank K/V component.",
+                recompute_fraction=0.1,
+            )
+        if target.is_lora and target.layer is not None:
+            return StrategyDecision(
+                self.name,
+                CacheAction.PARTIAL_RECOMPUTE,
+                CacheBlockState.INVALID,
+                target.layer,
+                "LRAgent cannot express this state-changing adapter effect as a K/V low-rank component.",
+            )
         return StrategyDecision(
             self.name,
-            decision.action,
-            decision.state,
-            decision.first_invalid_layer,
-            "LRAgent-style baseline: keep a dedicated complete cache entry per fixed adapter identity.",
-            recompute_fraction=decision.recompute_fraction,
+            CacheAction.FULL_RECOMPUTE,
+            CacheBlockState.INVALID,
+            None,
+            "LRAgent low-rank cache sharing applies only to supported LoRA projections.",
+            recompute_fraction=1.0,
         )
 
 
-class ForkKvBaseDeltaStrategy(StaticBaseDeltaStrategy):
+class ForkKvBaseDeltaStrategy(CacheStrategy):
     name = StrategyName.FORKKV_BASE_DELTA
 
+    def __init__(self, update_norm_threshold: float = 0.05) -> None:
+        self.update_norm_threshold = update_norm_threshold
+
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
-        decision = super().decide(target, step=step, update_norm=update_norm)
+        if step == 0:
+            return StrategyDecision(
+                self.name,
+                CacheAction.REUSE_EXACT,
+                CacheBlockState.VALID_EXACT,
+                None,
+                "ForkKV copy-on-write entry already matches the current adapter version.",
+            )
+        if target.kind in {ModuleKind.ATTENTION_Q, ModuleKind.LORA_Q, ModuleKind.OUTPUT_HEAD}:
+            return StrategyDecision(
+                self.name,
+                CacheAction.REUSE_FROZEN,
+                CacheBlockState.VALID_FROZEN,
+                None,
+                "ForkKV reuses the shared base cache because this update does not mutate historical K/V.",
+            )
+        if target.kind in {
+            ModuleKind.ATTENTION_K,
+            ModuleKind.ATTENTION_V,
+            ModuleKind.ATTENTION_QV,
+            ModuleKind.LORA_K,
+            ModuleKind.LORA_V,
+            ModuleKind.LORA_QV,
+        }:
+            return StrategyDecision(
+                self.name,
+                CacheAction.DELTA_CORRECT,
+                CacheBlockState.VALID_APPROX,
+                target.layer,
+                "ForkKV materializes a copy-on-write agent residual over the shared base K/V cache.",
+                recompute_fraction=0.2,
+            )
+        if target.layer is not None:
+            return StrategyDecision(
+                self.name,
+                CacheAction.PARTIAL_RECOMPUTE,
+                CacheBlockState.INVALID,
+                target.layer,
+                "ForkKV falls back to downstream copy-on-write recomputation for state-changing modules.",
+            )
         return StrategyDecision(
             self.name,
-            decision.action,
-            decision.state,
-            decision.first_invalid_layer,
-            f"ForkKV-style base/delta decomposition: {decision.reason}",
-            recompute_fraction=decision.recompute_fraction,
-            reject_reuse=decision.reject_reuse,
+            CacheAction.FULL_RECOMPUTE,
+            CacheBlockState.INVALID,
+            None,
+            "ForkKV has no safe residual boundary for this all-layer state-changing update.",
+            recompute_fraction=1.0,
         )
 
 

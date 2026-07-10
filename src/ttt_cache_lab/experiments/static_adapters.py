@@ -128,10 +128,7 @@ class StaticAdapterExperimentRunner:
                                 "No-adaptation baseline uses the base model and base cache.",
                             )
                             baseline_output = baseline
-                        elif strategy.name in {
-                            StrategyName.ADAPTER_SPECIFIC_CACHE,
-                            StrategyName.LRAGENT_ADAPTER_CACHE,
-                        }:
+                        elif strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
                             existing_entry = manager.get(cache_namespace, adapter_number)
                             existing = existing_entry.output if existing_entry is not None else None
                             if existing is None:
@@ -178,10 +175,7 @@ class StaticAdapterExperimentRunner:
                             updated=adapter.current,
                             decision=decision,
                         )
-                        stores_version = strategy.name in {
-                            StrategyName.ADAPTER_SPECIFIC_CACHE,
-                            StrategyName.LRAGENT_ADAPTER_CACHE,
-                        } or (
+                        stores_version = strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE or (
                             strategy.name not in {
                                 StrategyName.NO_ADAPTATION,
                                 StrategyName.ALORA_PREFIX_REUSE,

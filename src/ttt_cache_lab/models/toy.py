@@ -6,7 +6,7 @@ import re
 import numpy as np
 
 from ttt_cache_lab.cache.semantics import CacheAction
-from ttt_cache_lab.cache.strategies import StrategyDecision
+from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.models.interface import BackendOutput
 from ttt_cache_lab.updates.targets import ModuleKind, UpdateTarget
@@ -92,11 +92,25 @@ class ToyBackend:
             )
         if decision.action is CacheAction.DELTA_CORRECT:
             corrected = baseline.cache_tensor + 0.75 * (full.cache_tensor - baseline.cache_tensor)
+            delta_mode = "toy_delta_correction"
+            logical_cache_bytes = int(corrected.nbytes)
+            if decision.strategy is StrategyName.LRAGENT_ADAPTER_CACHE:
+                delta_mode = "lragent_shared_base_plus_low_rank_component"
+                logical_cache_bytes = max(1, int(corrected.nbytes * 0.1))
+            elif decision.strategy is StrategyName.FORKKV_BASE_DELTA:
+                delta_mode = "forkkv_copy_on_write_residual"
+                logical_cache_bytes = max(1, int(corrected.nbytes * 0.2))
             return BackendOutput(
                 logits=0.75 * full.logits + 0.25 * updated.logits,
                 cache_tensor=corrected,
                 hidden_tensor=updated.hidden_tensor,
                 parameter_version=updated.parameter_version,
+                extras={
+                    "delta_mode": delta_mode,
+                    "cache_bytes": logical_cache_bytes,
+                    "physical_cache_bytes": int(corrected.nbytes),
+                    "baseline_fidelity": "paper_reimplementation",
+                },
             )
         if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
             return BackendOutput(
