@@ -963,16 +963,29 @@ class HuggingFaceBackend:
             for layer_index, original in replacements:
                 layer_container[layer_index] = original
 
+        recomputed_hidden_states = tuple(hidden.detach() for hidden in prefill.hidden_states)
+        expected_suffix_states = len(layer_container) - split_layer + 1
+        if len(recomputed_hidden_states) == len(layer_container) + 1:
+            merged_hidden_states = recomputed_hidden_states
+        elif len(recomputed_hidden_states) == expected_suffix_states:
+            merged_hidden_states = hidden_states[: split_layer + 1] + recomputed_hidden_states[1:]
+        else:
+            raise RuntimeError(
+                "Native partial recompute returned an unexpected hidden-state history: "
+                f"got {len(recomputed_hidden_states)}, expected {expected_suffix_states} suffix states "
+                f"or {len(layer_container) + 1} full states."
+            )
+
         lora_cache = dict(baseline.extras.get("lora_cache", {}))
         lora_cache.update(self._snapshot_lora_cache())
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
-            hidden_tensor=self._summarize_hidden(prefill.hidden_states),
+            hidden_tensor=self._summarize_hidden(merged_hidden_states),
             parameter_version=self.parameter_version,
             extras={
                 "past_key_values": prefill.past_key_values,
-                "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
+                "hidden_states": merged_hidden_states,
                 "prompt_state": state,
                 "lora_cache": lora_cache,
                 "memory_allocated": memory_allocated(self.torch, self.devices),

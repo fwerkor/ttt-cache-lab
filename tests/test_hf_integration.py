@@ -150,7 +150,18 @@ def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
     assert partial.extras is not None
     assert partial.extras["partial_mode"] == "native_llama_like_layer_restart"
     assert partial.extras["cache_bytes"] > 0
+    assert len(partial.extras["hidden_states"]) == backend.num_layers + 1
     assert partial.logits.shape == full.logits.shape
+
+    repeated_partial = backend.apply_cache_strategy(
+        baseline=partial,
+        full=full,
+        updated=baseline,
+        decision=partial_decision,
+    )
+    assert repeated_partial.extras is not None
+    assert repeated_partial.extras["partial_mode"] == "native_llama_like_layer_restart"
+    assert len(repeated_partial.extras["hidden_states"]) == backend.num_layers + 1
 
 
 def test_layer_specific_updates_never_fall_back_to_other_layers(tiny_llama_dir: Path) -> None:
