@@ -70,6 +70,8 @@ Edit the YAML config rather than the code.
 - `data.evaluation_partition`: explicit `calibration`, `validation`, or `test` provenance.
 - `data.choice_fields`, `filters`, and metadata fields: mapping for LongBench v2 and other structured benchmarks.
 - `data.context_length`: exact tokenizer-level prompt length after the configured truncation/padding policy.
+- `data.answer_length`: synthetic answer construction length or expected task answer length.
+- `data.max_generation_tokens`: decode budget, defaulting to 16 and never lower than `answer_length`; it is intentionally independent of the reference answer's tokenizer length.
 - `data.truncation_strategy`: `error`, `left`, or `middle` for overlength external data.
 - `data.adapter_activation_marker`: optional invocation marker for the aLoRA-style prefix-reuse baseline.
 - `updates.targets`: update targets, such as `attention.q`, `attention.k`, `lora.v`, `mlp.late`.

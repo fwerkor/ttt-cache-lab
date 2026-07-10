@@ -42,7 +42,7 @@ def test_jsonl_loader_maps_context_question_and_answer(tmp_path: Path) -> None:
     assert sample.metadata["scorer"] == "exact_match"
     assert sample.metadata["source"] == "jsonl"
     assert sample.metadata["truncation_strategy"] == "middle"
-    assert sample.metadata["max_generation_tokens"] == config.answer_length
+    assert sample.metadata["max_generation_tokens"] == config.max_generation_tokens
 
 
 def test_huggingface_loader_uses_config_and_seed(monkeypatch: object) -> None:
@@ -87,8 +87,23 @@ def test_huggingface_loader_uses_config_and_seed(monkeypatch: object) -> None:
 def test_synthetic_loader_adds_runtime_metadata() -> None:
     config = DataConfig(task="passkey", num_samples=1, context_length=64, answer_length=2)
     sample = build_task_samples(config, seed=1)[0]
+    assert len(sample.answer) == 2
     assert sample.metadata["source"] == "synthetic"
     assert sample.metadata["record_index"] == 0
+    assert sample.metadata["max_generation_tokens"] == 16
+
+
+def test_generation_budget_never_truncates_the_configured_answer_length() -> None:
+    config = DataConfig(
+        task="passkey",
+        num_samples=1,
+        context_length=64,
+        answer_length=32,
+        max_generation_tokens=16,
+    )
+    sample = build_task_samples(config, seed=1)[0]
+    assert len(sample.answer) == 32
+    assert sample.metadata["max_generation_tokens"] == 32
 
 
 

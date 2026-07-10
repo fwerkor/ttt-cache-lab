@@ -22,6 +22,10 @@ SYNTHETIC_TASKS = {
 }
 
 
+def _generation_limit(config: DataConfig) -> int:
+    return max(1, config.answer_length, config.max_generation_tokens)
+
+
 def build_task_samples(config: DataConfig, *, seed: int) -> list[TaskSample]:
     del seed  # Dataset selection is intentionally independent of model/update randomness.
     if config.source == "synthetic":
@@ -217,7 +221,7 @@ def _records_to_samples(
                     "truncation_strategy": config.truncation_strategy,
                     "adapter_activation_marker": config.adapter_activation_marker or "",
                     "scorer": config.scorer,
-                    "max_generation_tokens": max(1, config.answer_length),
+                    "max_generation_tokens": _generation_limit(config),
                     "answers": answers,
                     "choice_labels": choice_labels,
                     "choices": choice_values,
@@ -371,7 +375,7 @@ def _with_runtime_metadata(sample: TaskSample, *, config: DataConfig, index: int
             "truncation_strategy": config.truncation_strategy,
             "adapter_activation_marker": config.adapter_activation_marker or "",
             "scorer": config.scorer,
-            "max_generation_tokens": max(1, config.answer_length),
+            "max_generation_tokens": _generation_limit(config),
             "answers": (sample.answer,),
             "choice_labels": (),
             "choices": (),

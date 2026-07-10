@@ -36,7 +36,8 @@ class DataConfig(BaseModel):
     sample_offset: int = Field(default=0, ge=0)
     num_samples: int = 16
     context_length: int = 512
-    answer_length: int = 4
+    answer_length: int = Field(default=4, ge=1)
+    max_generation_tokens: int = Field(default=16, ge=1)
     dataset_path: Path | None = None
     dataset_name: str | None = None
     dataset_config: str | None = None

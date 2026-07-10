@@ -39,7 +39,7 @@ The controlled suite isolates cache-consistency mechanisms:
 - `common_words`: compute an intersection across long lists;
 - `variable_tracking`: recover the final value after dispersed state updates.
 
-The framework also retains `passkey` and `key_value` for smoke tests. Controlled samples are generated deterministically from `data.selection_seed`; model/update seeds never change sample membership.
+The framework also retains `passkey` and `key_value` for smoke tests. Controlled samples are generated deterministically from `data.selection_seed`; model/update seeds never change sample membership. `answer_length` controls the generated reference value, while the decode budget is independently set by `max_generation_tokens` (16 by default) so instruction-style response prefixes do not truncate the answer or leak the reference tokenizer length.
 
 ### 3.2 Real long-context tasks
 

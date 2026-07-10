@@ -259,3 +259,14 @@ def test_external_generation_length_is_capped_by_sample_metadata(tiny_llama_dir:
     output = backend.prefill(sample.prompt)
     assert output.extras is not None
     assert output.extras["generated_tokens"] == 1
+
+
+def test_generation_budget_does_not_leak_reference_answer_length(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    raw = TaskSample(
+        prompt="key is alpha Answer :",
+        answer="alpha",
+        metadata={"max_generation_tokens": 8},
+    )
+    sample = backend.prepare_sample(raw, context_length=16)
+    assert backend._sample_answer_token_counts[sample.prompt] == 8
