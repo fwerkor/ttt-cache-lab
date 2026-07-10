@@ -29,7 +29,13 @@ class SyntheticTaskFactory:
     def key_value(self, *, context_length: int, answer_length: int) -> TaskSample:
         key = f"key_{self.rng.randrange(10_000)}"
         value = "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length))
-        pairs = [f"key_{i}: value_{self.rng.randrange(10_000)}" for i in range(max(1, context_length // 16))]
+        pairs = [
+            f"key_{i}: value_{self.rng.randrange(10_000)}"
+            for i in range(max(1, context_length // 16))
+            if f"key_{i}" != key
+        ]
+        if not pairs:
+            pairs.append(f"key_fallback: value_{self.rng.randrange(10_000)}")
         insert_at = self.rng.randrange(len(pairs))
         pairs.insert(insert_at, f"{key}: {value}")
         prompt = "\n".join(pairs) + f"\nQuestion: What is the value for {key}?\nAnswer:"
@@ -67,8 +73,12 @@ class SyntheticTaskFactory:
         updates = max(3, min(16, context_length // 256))
         values = ["".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length)) for _ in range(updates)]
         lines = [f"Initial state: {variable} = {values[0]}."]
+        distractors: set[str] = set()
         for idx, value in enumerate(values[1:], start=1):
             distractor = f"var_{self.rng.randrange(1000)}"
+            while distractor == variable or distractor in distractors:
+                distractor = f"var_{self.rng.randrange(1000)}"
+            distractors.add(distractor)
             lines.append(f"Step {idx}: {distractor} = tmp_{self.rng.randrange(10_000)}.")
             lines.append(f"Step {idx}: {variable} = {value}.")
         filler = [f"trace_{self.rng.randrange(100_000)}" for _ in range(max(1, context_length // 12))]
@@ -100,14 +110,24 @@ class SyntheticTaskFactory:
 
     def multi_hop_tracing(self, *, context_length: int, answer_length: int) -> TaskSample:
         hop_count = max(3, min(12, context_length // 512))
-        entities = [f"entity_{self.rng.randrange(1_000_000)}" for _ in range(hop_count + 1)]
+        used_entities: set[str] = set()
+
+        def next_entity() -> str:
+            candidate = f"entity_{self.rng.randrange(1_000_000)}"
+            while candidate in used_entities:
+                candidate = f"entity_{self.rng.randrange(1_000_000)}"
+            used_entities.add(candidate)
+            return candidate
+
+        entities = [next_entity() for _ in range(hop_count + 1)]
         answer = "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length))
         facts = [f"{entities[index]} points to {entities[index + 1]}." for index in range(hop_count)]
         facts.append(f"{entities[-1]} stores value {answer}.")
-        distractors = [
-            f"entity_{self.rng.randrange(1_000_000)} points to entity_{self.rng.randrange(1_000_000)}."
-            for _ in range(max(hop_count, context_length // 24))
-        ]
+        distractors = []
+        for _ in range(max(hop_count, context_length // 24)):
+            source = next_entity()
+            destination = next_entity()
+            distractors.append(f"{source} points to {destination}.")
         combined = distractors + facts
         self.rng.shuffle(combined)
         prompt = "\n".join(combined) + (
@@ -125,10 +145,11 @@ class SyntheticTaskFactory:
         target = f"group_{self.rng.randrange(1000)}"
         target_count = self.rng.randrange(3, 12)
         lines = [f"Event belongs to {target}." for _ in range(target_count)]
-        lines.extend(
-            f"Event belongs to group_{self.rng.randrange(1000)}."
-            for _ in range(max(target_count, context_length // 10))
-        )
+        for _ in range(max(target_count, context_length // 10)):
+            distractor = f"group_{self.rng.randrange(1000)}"
+            while distractor == target:
+                distractor = f"group_{self.rng.randrange(1000)}"
+            lines.append(f"Event belongs to {distractor}.")
         self.rng.shuffle(lines)
         prompt = "\n".join(lines) + (
             f"\nQuestion: How many events belong to {target}? Reply with one integer.\nAnswer:"
