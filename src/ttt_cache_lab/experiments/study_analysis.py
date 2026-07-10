@@ -517,7 +517,7 @@ def _with_full_task_drop(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def _reference_key(row: dict[str, str]) -> tuple[tuple[str, str], ...]:
-    fields = [
+    fields: list[str] = [
         field
         for field in (
             "run_name",

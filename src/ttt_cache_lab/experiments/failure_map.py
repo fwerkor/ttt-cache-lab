@@ -123,7 +123,7 @@ def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
 
 
 def _reference_key(row: dict[str, str]) -> tuple[tuple[str, str], ...]:
-    fields = [
+    fields: list[str] = [
         field
         for field in (
             "run_name",
