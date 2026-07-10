@@ -85,12 +85,19 @@ def test_huggingface_loader_uses_config_and_seed(monkeypatch: object) -> None:
 
 
 def test_synthetic_loader_adds_runtime_metadata() -> None:
-    config = DataConfig(task="passkey", num_samples=1, context_length=64, answer_length=2)
+    config = DataConfig(
+        task="passkey",
+        num_samples=1,
+        context_length=64,
+        answer_length=2,
+        synthetic_difficulty="medium",
+    )
     sample = build_task_samples(config, seed=1)[0]
     assert len(sample.answer) == 2
     assert sample.metadata["source"] == "synthetic"
     assert sample.metadata["record_index"] == 0
     assert sample.metadata["max_generation_tokens"] == 16
+    assert sample.metadata["synthetic_difficulty"] == "medium"
 
 
 def test_generation_budget_never_truncates_the_configured_answer_length() -> None:

@@ -823,6 +823,7 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
             "model_num_layers",
             "model_hidden_size",
             "context_length",
+            "synthetic_difficulty",
             "task_name",
             "update_target",
             "cache_strategy",

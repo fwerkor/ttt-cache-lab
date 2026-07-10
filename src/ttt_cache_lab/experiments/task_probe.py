@@ -24,6 +24,7 @@ class TaskProbeRecord:
     task_family: str
     model_name: str
     context_length: int
+    synthetic_difficulty: str
     answer: str
     generated_text: str
     task_score: float
@@ -105,6 +106,9 @@ def run_task_probe(
                 task_family=str(sample.metadata.get("task_family", config.data.task_family)),
                 model_name=str(config.model.model_name_or_path or config.model.backend),
                 context_length=config.data.context_length,
+                synthetic_difficulty=str(
+                    sample.metadata.get("synthetic_difficulty", config.data.synthetic_difficulty)
+                ),
                 answer=sample.answer,
                 generated_text=str(extras.get("generated_text", "")),
                 task_score=score,

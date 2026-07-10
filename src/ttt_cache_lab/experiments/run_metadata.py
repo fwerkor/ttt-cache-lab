@@ -93,6 +93,9 @@ def record_run_fields(
         "dataset_sample_id": str(sample_metadata.get("dataset_sample_id", "")),
         "dataset_category": str(sample_metadata.get("category", "")),
         "selection_seed": int(data.get("selection_seed", 0)),
+        "synthetic_difficulty": str(
+            sample_metadata.get("synthetic_difficulty", data.get("synthetic_difficulty", ""))
+        ),
         "backend_name": str(model.get("backend", "")),
         "torch_dtype": str(model.get("torch_dtype", "")),
         "attention_implementation": str(

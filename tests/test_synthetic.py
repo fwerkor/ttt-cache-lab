@@ -93,3 +93,65 @@ def test_variable_tracking_distractors_never_reassign_target() -> None:
     variable = str(sample.metadata["variable"])
     assignments = re.findall(rf"{re.escape(variable)} = [a-z]+\.", sample.prompt)
     assert len(assignments) == int(sample.metadata["updates"])
+
+
+def test_synthetic_difficulty_controls_structural_complexity() -> None:
+    easy_needle = SyntheticTaskFactory(7).multi_needle(
+        context_length=16384,
+        answer_length=4,
+        difficulty="easy",
+    )
+    hard_needle = SyntheticTaskFactory(7).multi_needle(
+        context_length=16384,
+        answer_length=4,
+        difficulty="hard",
+    )
+    assert easy_needle.metadata["needle_count"] < hard_needle.metadata["needle_count"]
+
+    easy_hop = SyntheticTaskFactory(7).multi_hop_tracing(
+        context_length=16384,
+        answer_length=4,
+        difficulty="easy",
+    )
+    hard_hop = SyntheticTaskFactory(7).multi_hop_tracing(
+        context_length=16384,
+        answer_length=4,
+        difficulty="hard",
+    )
+    assert easy_hop.metadata["hop_count"] < hard_hop.metadata["hop_count"]
+
+    easy_tracking = SyntheticTaskFactory(7).variable_tracking(
+        context_length=16384,
+        answer_length=4,
+        difficulty="easy",
+    )
+    hard_tracking = SyntheticTaskFactory(7).variable_tracking(
+        context_length=16384,
+        answer_length=4,
+        difficulty="hard",
+    )
+    assert easy_tracking.metadata["updates"] < hard_tracking.metadata["updates"]
+
+    easy_set = SyntheticTaskFactory(7).common_words(
+        context_length=16384,
+        answer_length=4,
+        difficulty="easy",
+    )
+    hard_set = SyntheticTaskFactory(7).common_words(
+        context_length=16384,
+        answer_length=4,
+        difficulty="hard",
+    )
+    assert easy_set.metadata["list_count"] < hard_set.metadata["list_count"]
+
+    easy_aggregation = SyntheticTaskFactory(7).aggregation(
+        context_length=16384,
+        answer_length=4,
+        difficulty="easy",
+    )
+    hard_aggregation = SyntheticTaskFactory(7).aggregation(
+        context_length=16384,
+        answer_length=4,
+        difficulty="hard",
+    )
+    assert int(easy_aggregation.answer) > int(hard_aggregation.answer)

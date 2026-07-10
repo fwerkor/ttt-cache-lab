@@ -37,6 +37,7 @@ def build_task_samples(config: DataConfig, *, seed: int) -> list[TaskSample]:
             num_samples=pool_size,
             context_length=config.context_length,
             answer_length=config.answer_length,
+            difficulty=config.synthetic_difficulty,
         )
         selected = samples[config.sample_offset : config.sample_offset + config.num_samples]
         return [
@@ -376,6 +377,7 @@ def _with_runtime_metadata(sample: TaskSample, *, config: DataConfig, index: int
             "adapter_activation_marker": config.adapter_activation_marker or "",
             "scorer": config.scorer,
             "max_generation_tokens": _generation_limit(config),
+            "synthetic_difficulty": config.synthetic_difficulty,
             "answers": (sample.answer,),
             "choice_labels": (),
             "choices": (),

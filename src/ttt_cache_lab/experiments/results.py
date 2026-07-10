@@ -69,6 +69,7 @@ class ExperimentRecord:
     total_cache_bytes: int = 0
     evicted_cache_entries: int = 0
     context_length: int = 0
+    synthetic_difficulty: str = ""
     model_name: str = ""
     model_num_layers: int = 0
     model_hidden_size: int = 0
@@ -118,6 +119,7 @@ class ExperimentRecord:
             self.lora_rank,
             self.configured_update_norm,
             self.context_length,
+            self.synthetic_difficulty,
             self.model_name,
             self.seed,
         )

@@ -38,6 +38,7 @@ class DataConfig(BaseModel):
     context_length: int = 512
     answer_length: int = Field(default=4, ge=1)
     max_generation_tokens: int = Field(default=16, ge=1)
+    synthetic_difficulty: Literal["easy", "medium", "hard"] = "hard"
     dataset_path: Path | None = None
     dataset_name: str | None = None
     dataset_config: str | None = None

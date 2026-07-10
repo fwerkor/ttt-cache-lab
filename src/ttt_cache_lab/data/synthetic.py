@@ -2,7 +2,19 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+SyntheticDifficulty = Literal["easy", "medium", "hard"]
+
+
+def _difficulty_value(
+    difficulty: SyntheticDifficulty,
+    *,
+    easy: int,
+    medium: int,
+    hard: int,
+) -> int:
+    return {"easy": easy, "medium": medium, "hard": hard}[difficulty]
 
 
 @dataclass(frozen=True)
@@ -45,8 +57,18 @@ class SyntheticTaskFactory:
             metadata={"insert_at": insert_at, "task": "key_value", "key": key},
         )
 
-    def multi_needle(self, *, context_length: int, answer_length: int) -> TaskSample:
-        needle_count = max(2, min(8, context_length // 512))
+    def multi_needle(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
+        maximum = max(2, min(8, context_length // 512))
+        needle_count = min(
+            maximum,
+            _difficulty_value(difficulty, easy=2, medium=4, hard=8),
+        )
         needles = []
         target_index = self.rng.randrange(needle_count)
         for idx in range(needle_count):
@@ -61,16 +83,34 @@ class SyntheticTaskFactory:
             used_positions.add(pos)
             filler.insert(pos, f"Record {key} has code {value}.")
         target_key, answer = needles[target_index]
-        prompt = " ".join(filler) + f"\nQuestion: What code is stored in {target_key}?\nAnswer:"
+        prompt = " ".join(filler) + (
+            f"\nQuestion: What code is stored in {target_key}? "
+            "Reply with only the exact code.\nAnswer:"
+        )
         return TaskSample(
             prompt=prompt,
             answer=answer,
-            metadata={"task": "multi_needle", "needle_count": needle_count, "target": target_key},
+            metadata={
+                "task": "multi_needle",
+                "needle_count": needle_count,
+                "target": target_key,
+                "synthetic_difficulty": difficulty,
+            },
         )
 
-    def variable_tracking(self, *, context_length: int, answer_length: int) -> TaskSample:
+    def variable_tracking(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
         variable = f"var_{self.rng.randrange(1000)}"
-        updates = max(3, min(16, context_length // 256))
+        maximum = max(3, min(16, context_length // 256))
+        updates = min(
+            maximum,
+            _difficulty_value(difficulty, easy=4, medium=8, hard=16),
+        )
         values = ["".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length)) for _ in range(updates)]
         lines = [f"Initial state: {variable} = {values[0]}."]
         distractors: set[str] = set()
@@ -84,14 +124,28 @@ class SyntheticTaskFactory:
         filler = [f"trace_{self.rng.randrange(100_000)}" for _ in range(max(1, context_length // 12))]
         insert_at = self.rng.randrange(len(filler))
         filler.insert(insert_at, "\n".join(lines))
-        prompt = "\n".join(filler) + f"\nQuestion: What is the final value of {variable}?\nAnswer:"
+        prompt = "\n".join(filler) + (
+            f"\nQuestion: What is the value in the final assignment to {variable}? "
+            "Reply with only the exact value.\nAnswer:"
+        )
         return TaskSample(
             prompt=prompt,
             answer=values[-1],
-            metadata={"task": "variable_tracking", "updates": updates, "variable": variable},
+            metadata={
+                "task": "variable_tracking",
+                "updates": updates,
+                "variable": variable,
+                "synthetic_difficulty": difficulty,
+            },
         )
 
-    def needle_absent(self, *, context_length: int, answer_length: int) -> TaskSample:
+    def needle_absent(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
         del answer_length
         requested = f"needle_{self.rng.randrange(100_000, 200_000)}"
         records = [
@@ -100,16 +154,31 @@ class SyntheticTaskFactory:
         ]
         prompt = " ".join(records) + (
             f"\nQuestion: What code is stored in {requested}? "
-            "Reply NOT_FOUND when the record is absent.\nAnswer:"
+            "Use only an exact matching record above. If no record has exactly that key, "
+            "reply with NOT_FOUND as the first answer token. Do not infer a code.\nAnswer:"
         )
         return TaskSample(
             prompt=prompt,
             answer="NOT_FOUND",
-            metadata={"task": "needle_absent", "target": requested},
+            metadata={
+                "task": "needle_absent",
+                "target": requested,
+                "synthetic_difficulty": difficulty,
+            },
         )
 
-    def multi_hop_tracing(self, *, context_length: int, answer_length: int) -> TaskSample:
-        hop_count = max(3, min(12, context_length // 512))
+    def multi_hop_tracing(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
+        maximum = max(3, min(12, context_length // 512))
+        hop_count = min(
+            maximum,
+            _difficulty_value(difficulty, easy=3, medium=6, hard=12),
+        )
         used_entities: set[str] = set()
 
         def next_entity() -> str:
@@ -131,19 +200,34 @@ class SyntheticTaskFactory:
         combined = distractors + facts
         self.rng.shuffle(combined)
         prompt = "\n".join(combined) + (
-            f"\nQuestion: Follow the pointer chain beginning at {entities[0]}. "
-            "What value is stored at the final entity?\nAnswer:"
+            f"\nQuestion: Follow the pointer chain beginning at {entities[0]} until an entity stores a value. "
+            "Reply with only that stored value, not an entity name or explanation.\nAnswer:"
         )
         return TaskSample(
             prompt=prompt,
             answer=answer,
-            metadata={"task": "multi_hop_tracing", "hop_count": hop_count},
+            metadata={
+                "task": "multi_hop_tracing",
+                "hop_count": hop_count,
+                "synthetic_difficulty": difficulty,
+            },
         )
 
-    def aggregation(self, *, context_length: int, answer_length: int) -> TaskSample:
+    def aggregation(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
         del answer_length
         target = f"group_{self.rng.randrange(1000)}"
-        target_count = self.rng.randrange(3, 12)
+        lower, upper = {
+            "easy": (20, 33),
+            "medium": (10, 21),
+            "hard": (3, 12),
+        }[difficulty]
+        target_count = self.rng.randrange(lower, upper)
         lines = [f"Event belongs to {target}." for _ in range(target_count)]
         for _ in range(max(target_count, context_length // 10)):
             distractor = f"group_{self.rng.randrange(1000)}"
@@ -157,26 +241,51 @@ class SyntheticTaskFactory:
         return TaskSample(
             prompt=prompt,
             answer=str(target_count),
-            metadata={"task": "aggregation", "target": target, "count": target_count},
+            metadata={
+                "task": "aggregation",
+                "target": target,
+                "count": target_count,
+                "synthetic_difficulty": difficulty,
+            },
         )
 
-    def common_words(self, *, context_length: int, answer_length: int) -> TaskSample:
+    def common_words(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
         common_count = max(2, min(6, answer_length))
-        common = [f"shared_{self.rng.randrange(100_000)}" for _ in range(common_count)]
-        list_count = max(3, min(8, context_length // 512))
+        common = [f"commonword_{self.rng.randrange(100_000)}" for _ in range(common_count)]
+        maximum = max(3, min(8, context_length // 512))
+        list_count = min(
+            maximum,
+            _difficulty_value(difficulty, easy=3, medium=5, hard=8),
+        )
+        total_unique = max(24, context_length // 16)
+        unique_per_list = max(3, total_unique // list_count)
         lists: list[list[str]] = []
         for _ in range(list_count):
-            unique = [f"item_{self.rng.randrange(1_000_000)}" for _ in range(max(3, context_length // 128))]
+            unique = [f"item_{self.rng.randrange(1_000_000)}" for _ in range(unique_per_list)]
             items = unique + common
             self.rng.shuffle(items)
             lists.append(items)
         prompt = "\n".join(
             f"List {index + 1}: {', '.join(items)}" for index, items in enumerate(lists)
-        ) + "\nQuestion: Which words occur in every list? Return a comma-separated set.\nAnswer:"
+        ) + (
+            "\nQuestion: Which exact tokens occur in every list? Copy the complete tokens, including the "
+            "commonword_ prefix, as a comma-separated set with no explanation.\nAnswer:"
+        )
         return TaskSample(
             prompt=prompt,
             answer=", ".join(sorted(common)),
-            metadata={"task": "common_words", "list_count": list_count, "common_count": common_count},
+            metadata={
+                "task": "common_words",
+                "list_count": list_count,
+                "common_count": common_count,
+                "synthetic_difficulty": difficulty,
+            },
         )
 
     def build(
@@ -186,6 +295,7 @@ class SyntheticTaskFactory:
         num_samples: int,
         context_length: int,
         answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
     ) -> list[TaskSample]:
         if task == "passkey":
             return [
@@ -197,32 +307,56 @@ class SyntheticTaskFactory:
             ]
         if task == "multi_needle":
             return [
-                self.multi_needle(context_length=context_length, answer_length=answer_length)
+                self.multi_needle(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
                 for _ in range(num_samples)
             ]
         if task == "variable_tracking":
             return [
-                self.variable_tracking(context_length=context_length, answer_length=answer_length)
+                self.variable_tracking(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
                 for _ in range(num_samples)
             ]
         if task == "needle_absent":
             return [
-                self.needle_absent(context_length=context_length, answer_length=answer_length)
+                self.needle_absent(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
                 for _ in range(num_samples)
             ]
         if task == "multi_hop_tracing":
             return [
-                self.multi_hop_tracing(context_length=context_length, answer_length=answer_length)
+                self.multi_hop_tracing(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
                 for _ in range(num_samples)
             ]
         if task == "aggregation":
             return [
-                self.aggregation(context_length=context_length, answer_length=answer_length)
+                self.aggregation(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
                 for _ in range(num_samples)
             ]
         if task == "common_words":
             return [
-                self.common_words(context_length=context_length, answer_length=answer_length)
+                self.common_words(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
                 for _ in range(num_samples)
             ]
         raise ValueError(f"Unsupported synthetic task: {task}")
