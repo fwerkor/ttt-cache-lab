@@ -1,0 +1,73 @@
+name: paper-e6-qwen-32b-8192
+output_dir: runs/paper/direct/scaling/qwen_32b/8192
+experiment_id: e6_scaling
+seed: 7
+model:
+  backend: hf
+  model_name_or_path: Qwen/Qwen2.5-32B-Instruct
+  device: auto
+  torch_dtype: bfloat16
+  max_length: 8192
+  trust_remote_code: true
+  parallelism: model_shard
+  device_ids: []
+data:
+  source: synthetic
+  task: multi_hop_tracing
+  benchmark_name: controlled-long-context
+  task_family: multi_hop_reasoning
+  evaluation_partition: test
+  selection_seed: 404
+  sample_offset: 128
+  num_samples: 8
+  context_length: 8192
+  answer_length: 4
+  scorer: contains
+updates:
+  targets:
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  step_count: 1
+  update_norm: 0.001
+cache:
+  strategies:
+  - full_recompute
+  - stale_reuse
+  - periodic_refresh
+  - threshold_refresh
+  - delta_correction
+  - layerwise_recompute
+  - adaptive
+  refresh_period: 4
+  update_norm_threshold: 0.01
+  version_gap_threshold: 8
+  failure_map_path: runs/paper/calibration/final/failure_map/failure_map.csv
+  oracle_kl_threshold: 0.05
+  oracle_top1_threshold: 0.99
+  oracle_task_drop_threshold: 0.01
+metrics:
+  compute_tensor_metrics: true
+  compute_task_metrics: true
+  compute_attention_metrics: false
+  compute_flops_metrics: true
+measurement:
+  warmup_runs: 3
+  timed_runs: 10
+  bootstrap_resamples: 5000
+  confidence_level: 0.95
+adapter:
+  update_mode: lora_train
+  norm_control: target_l2
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps:
+- 0
+- 1
+- 2
+- 4
+- 8
