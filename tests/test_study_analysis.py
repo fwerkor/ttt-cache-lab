@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 from ttt_cache_lab.experiments.results import ExperimentRecord, write_records
@@ -93,6 +94,17 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
         [
             _record(
                 experiment_id="e5_delta",
+                strategy="full_recompute",
+                version=2,
+                gap=2,
+                task_score=1.0,
+                logits_kl=0.0,
+                top1=1.0,
+                rank=8,
+                norm=0.02,
+            ),
+            _record(
+                experiment_id="e5_delta",
                 strategy="delta_correction",
                 version=2,
                 gap=2,
@@ -142,3 +154,44 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
     assert (output / "e3_failure_map" / "attention_shift_heatmap.svg").exists()
     assert (output / "e4_pareto" / "pareto.csv").exists()
     assert (output / "e4_pareto" / "pareto.svg").exists()
+
+
+def test_e2_analysis_preserves_context_and_update_norm_axes(tmp_path: Path) -> None:
+    records = []
+    for context, norm in ((128, 0.01), (256, 0.02)):
+        records.extend(
+            [
+                _record(
+                    experiment_id="e2_drift",
+                    strategy="full_recompute",
+                    version=1,
+                    gap=1,
+                    task_score=1.0,
+                    logits_kl=0.0,
+                    top1=1.0,
+                    context=context,
+                    norm=norm,
+                ),
+                _record(
+                    experiment_id="e2_drift",
+                    strategy="stale_reuse",
+                    version=1,
+                    gap=1,
+                    task_score=0.9,
+                    logits_kl=0.01,
+                    top1=1.0,
+                    context=context,
+                    norm=norm,
+                ),
+            ]
+        )
+    source = write_records(records, tmp_path / "run").csv_path
+    output = tmp_path / "analysis"
+    generate_study_analysis(source, output)
+    with (output / "e2_version_drift.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    stale = [row for row in rows if row["cache_strategy"] == "stale_reuse"]
+    assert {(row["context_length"], row["configured_update_norm"]) for row in stale} == {
+        ("128", "0.01"),
+        ("256", "0.02"),
+    }

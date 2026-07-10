@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import cast
 
+from ttt_cache_lab.experiments.conditions import condition_fields
 from ttt_cache_lab.experiments.study_analysis import generate_study_analysis
 
 NUMERIC_FIELDS = [
@@ -23,7 +24,20 @@ NUMERIC_FIELDS = [
 def generate_report(input_csv: Path, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = _read_rows(input_csv)
-    grouped = _group(rows, ["experiment_id", "update_target", "cache_strategy", "adapter_version"])
+    grouped = _group(
+        rows,
+        list(
+            condition_fields(
+                rows,
+                "update_target",
+                "cache_strategy",
+                "adapter_version",
+                "cached_version",
+                "version_gap",
+            )
+        ),
+    )
+    series_fields = condition_fields(rows, "update_target", "cache_strategy")
     markdown = _markdown_report(rows, grouped)
     report_path = output_dir / "report.md"
     report_path.write_text(markdown, encoding="utf-8")
@@ -32,6 +46,7 @@ def generate_report(input_csv: Path, output_dir: Path) -> Path:
             grouped,
             metric=metric,
             output=output_dir / f"{metric}_by_version.svg",
+            series_fields=series_fields,
         )
     generate_study_analysis(input_csv, output_dir)
     return report_path
@@ -115,15 +130,21 @@ def _markdown_report(rows: list[dict[str, str]], grouped: list[dict[str, str | f
     return "\n".join(lines)
 
 
-def _write_svg_line_plot(grouped: list[dict[str, str | float | int]], *, metric: str, output: Path) -> None:
-    series: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
+def _write_svg_line_plot(
+    grouped: list[dict[str, str | float | int]],
+    *,
+    metric: str,
+    output: Path,
+    series_fields: tuple[str, ...],
+) -> None:
+    series: dict[tuple[str, ...], list[tuple[float, float]]] = defaultdict(list)
     field = f"{metric}_mean"
     for item in grouped:
         version_raw = item.get("adapter_version", 0)
         value_raw = item.get(field)
         if value_raw is None:
             continue
-        key = (str(item.get("update_target", "")), str(item.get("cache_strategy", "")))
+        key = tuple(str(item.get(field, "")) for field in series_fields)
         series[key].append((float(version_raw), float(value_raw)))
     width, height = 900, 520
     margin = 60
@@ -168,7 +189,7 @@ def _write_svg_line_plot(grouped: list[dict[str, str | float | int]], *, metric:
             lines.append(f"<circle cx='{sx(x):.2f}' cy='{sy(y):.2f}' r='2.5' fill='{color}'/>")
         lx = width - margin + 10
         ly = margin + 18 * idx
-        label = f"{key[0]} / {key[1]}"
+        label = " / ".join(value for value in key if value)
         lines.append(f"<text x='{lx}' y='{ly}' font-size='10' fill='{color}'>{_escape(label[:48])}</text>")
     lines.append("</svg>")
     output.write_text("\n".join(lines), encoding="utf-8")

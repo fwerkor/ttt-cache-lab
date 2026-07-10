@@ -5,6 +5,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from ttt_cache_lab.experiments.conditions import condition_fields, with_full_reference_metrics
+
 
 @dataclass(frozen=True)
 class FailureThresholds:
@@ -15,7 +17,7 @@ class FailureThresholds:
 
 @dataclass(frozen=True)
 class FailureCell:
-    experiment_id: str
+    condition: tuple[tuple[str, str], ...]
     update_target: str
     version_gap: int
     cache_strategy: str
@@ -30,7 +32,7 @@ class FailureCell:
 
     def to_dict(self) -> dict[str, str | int | float]:
         return {
-            "experiment_id": self.experiment_id,
+            **dict(self.condition),
             "update_target": self.update_target,
             "version_gap": self.version_gap,
             "cache_strategy": self.cache_strategy,
@@ -41,7 +43,11 @@ class FailureCell:
             "top1_agreement_mean": self.top1_agreement_mean,
             "relative_error_mean": self.relative_error_mean,
             "false_safe_rate": self.false_safe_rate,
+            "attention_shift_mean": self.attention_shift_mean,
         }
+
+    def condition_label(self) -> str:
+        return ", ".join(f"{field}={value}" for field, value in self.condition if value)
 
 
 def generate_failure_map(
@@ -77,41 +83,32 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
 
 
 def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
-    groups: dict[tuple[str, str, int, str], list[dict[str, str]]] = defaultdict(list)
-    full_records: dict[tuple[tuple[str, str], ...], list[dict[str, str]]] = defaultdict(list)
-    for row in rows:
-        experiment = row.get("experiment_id", "")
-        target = row.get("update_target", "")
-        gap = int(float(row.get("version_gap", row.get("adapter_version", "0")) or 0))
-        strategy = row.get("cache_strategy", "")
-        groups[(experiment, target, gap, strategy)].append(row)
-        if strategy == "full_recompute":
-            full_records[_reference_key(row)].append(row)
+    enriched = with_full_reference_metrics(rows)
+    dimensions = condition_fields(
+        enriched,
+        "update_target",
+        "version_gap",
+        "cache_strategy",
+    )
+    groups: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    for row in enriched:
+        groups[tuple(row.get(field, "") for field in dimensions)].append(row)
 
-    full_scores = {key: _mean(records, "task_score") for key, records in full_records.items()}
-    cells = []
-    for (experiment, target, gap, strategy), records in sorted(groups.items()):
-        task_score = _mean(records, "task_score")
-        task_drops = []
-        for record in records:
-            reference = full_scores.get(_reference_key(record))
-            if reference is None:
-                raise ValueError(
-                    "Missing full_recompute reference for "
-                    f"experiment={experiment!r}, target={target!r}, "
-                    f"adapter_version={record.get('adapter_version', '')!r}, "
-                    f"sample_id={record.get('sample_id', '')!r}"
-                )
-            task_drops.append(reference - float(record.get("task_score", 0.0) or 0.0))
+    cells: list[FailureCell] = []
+    condition_names = tuple(
+        field for field in dimensions if field not in {"update_target", "version_gap", "cache_strategy"}
+    )
+    for key, records in sorted(groups.items()):
+        values = dict(zip(dimensions, key, strict=True))
         cells.append(
             FailureCell(
-                experiment_id=experiment,
-                update_target=target,
-                version_gap=gap,
-                cache_strategy=strategy,
+                condition=tuple((field, values.get(field, "")) for field in condition_names),
+                update_target=values.get("update_target", ""),
+                version_gap=int(float(values.get("version_gap", "0") or 0)),
+                cache_strategy=values.get("cache_strategy", ""),
                 count=len(records),
-                task_score_mean=task_score,
-                task_drop_vs_full=sum(task_drops) / len(task_drops),
+                task_score_mean=_mean(records, "task_score"),
+                task_drop_vs_full=_mean(records, "task_drop_vs_full"),
                 logits_kl_mean=_mean(records, "logits_kl"),
                 top1_agreement_mean=_mean(records, "top1_agreement"),
                 relative_error_mean=_mean(records, "relative_error"),
@@ -120,25 +117,6 @@ def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
             )
         )
     return cells
-
-
-def _reference_key(row: dict[str, str]) -> tuple[tuple[str, str], ...]:
-    fields: list[str] = [
-        field
-        for field in (
-            "run_name",
-            "experiment_id",
-            "sample_id",
-            "update_target",
-            "adapter_id",
-            "adapter_version",
-            "lora_rank",
-            "update_mode",
-        )
-        if field in row
-    ]
-    fields.extend(sorted(field for field in row if field.startswith("sweep.")))
-    return tuple((field, row.get(field, "")) for field in fields)
 
 
 def _write_cells(cells: list[FailureCell], output: Path) -> None:
@@ -151,25 +129,32 @@ def _write_cells(cells: list[FailureCell], output: Path) -> None:
 
 
 def _policy_table(cells: list[FailureCell], *, thresholds: FailureThresholds) -> str:
-    by_target_gap: dict[tuple[str, int], list[FailureCell]] = defaultdict(list)
+    by_condition_target_gap: dict[
+        tuple[tuple[tuple[str, str], ...], str, int], list[FailureCell]
+    ] = defaultdict(list)
     for cell in cells:
-        by_target_gap[(cell.update_target, cell.version_gap)].append(cell)
+        by_condition_target_gap[(cell.condition, cell.update_target, cell.version_gap)].append(cell)
     lines = [
         "# Failure map policy table",
         "",
-        "| update target | version gap | recommended policy | reason |",
-        "|---|---:|---|---|",
+        "| condition | update target | version gap | recommended policy | reason |",
+        "|---|---|---:|---|---|",
     ]
-    for (target, gap), group in sorted(by_target_gap.items()):
+    for (condition, target, gap), group in sorted(by_condition_target_gap.items()):
         recommendation, reason = _recommend(group, thresholds=thresholds)
-        lines.append(f"| {target} | {gap} | {recommendation} | {reason} |")
+        condition_label = ", ".join(f"{field}={value}" for field, value in condition if value) or "default"
+        lines.append(f"| {_escape(condition_label)} | {target} | {gap} | {recommendation} | {reason} |")
     return "\n".join(lines) + "\n"
 
 
 def _recommend(group: list[FailureCell], *, thresholds: FailureThresholds) -> tuple[str, str]:
     strategies = {cell.cache_strategy: cell for cell in group}
     stale = strategies.get("stale_reuse") or strategies.get("frozen_reuse")
-    delta = strategies.get("delta_correction") or strategies.get("static_base_delta") or strategies.get("adaptive")
+    delta = (
+        strategies.get("delta_correction")
+        or strategies.get("static_base_delta")
+        or strategies.get("adaptive")
+    )
     partial = strategies.get("layerwise_recompute") or strategies.get("oracle_planner")
 
     if stale and _safe(cell=stale, thresholds=thresholds):
@@ -192,16 +177,21 @@ def _safe(*, cell: FailureCell, thresholds: FailureThresholds) -> bool:
 
 def _heatmap_svg(cells: list[FailureCell], *, metric: str) -> str:
     filtered = [cell for cell in cells if cell.cache_strategy != "full_recompute"]
-    rows = sorted({(cell.cache_strategy, cell.update_target) for cell in filtered})
+    rows = sorted(
+        {(cell.condition_label(), cell.cache_strategy, cell.update_target) for cell in filtered}
+    )
     gaps = sorted({cell.version_gap for cell in filtered})
     if not rows or not gaps:
         return "<svg xmlns='http://www.w3.org/2000/svg'></svg>"
     values = {
-        (cell.cache_strategy, cell.update_target, cell.version_gap): float(getattr(cell, metric)) for cell in filtered
+        (cell.condition_label(), cell.cache_strategy, cell.update_target, cell.version_gap): float(
+            getattr(cell, metric)
+        )
+        for cell in filtered
     }
     max_value = max(values.values() or [1.0]) or 1.0
     cell_w, cell_h = 96, 32
-    left, top = 300, 50
+    left, top = 520, 50
     width = left + cell_w * len(gaps) + 30
     height = top + cell_h * len(rows) + 40
     lines = [
@@ -209,18 +199,18 @@ def _heatmap_svg(cells: list[FailureCell], *, metric: str) -> str:
         "<rect width='100%' height='100%' fill='white'/>",
         (
             f"<text x='{width / 2}' y='25' text-anchor='middle' font-size='16'>"
-            f"{metric} by strategy, target, and version gap</text>"
+            f"{metric} by condition, strategy, target, and version gap</text>"
         ),
     ]
     for col, gap in enumerate(gaps):
         x = left + col * cell_w + cell_w / 2
         lines.append(f"<text x='{x}' y='{top - 12}' text-anchor='middle' font-size='12'>gap {gap}</text>")
-    for row_index, (strategy, target) in enumerate(rows):
+    for row_index, (condition, strategy, target) in enumerate(rows):
         y = top + row_index * cell_h
-        label = _escape(f"{strategy} / {target}")
-        lines.append(f"<text x='{left - 8}' y='{y + 21}' text-anchor='end' font-size='12'>{label}</text>")
+        label = _escape(" / ".join(value for value in (condition, strategy, target) if value))
+        lines.append(f"<text x='{left - 8}' y='{y + 21}' text-anchor='end' font-size='11'>{label}</text>")
         for col, gap in enumerate(gaps):
-            value = values.get((strategy, target, gap), 0.0)
+            value = values.get((condition, strategy, target, gap), 0.0)
             shade = int(255 - min(220, 220 * value / max_value))
             x = left + col * cell_w
             lines.append(

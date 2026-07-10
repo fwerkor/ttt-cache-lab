@@ -5,10 +5,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from ttt_cache_lab.experiments.conditions import condition_fields
+
 
 @dataclass(frozen=True)
 class ParetoPoint:
-    experiment_id: str
+    condition: tuple[tuple[str, str], ...]
     cache_strategy: str
     update_target: str
     task_score_mean: float
@@ -20,7 +22,7 @@ class ParetoPoint:
 
     def to_dict(self) -> dict[str, str | float | bool]:
         return {
-            "experiment_id": self.experiment_id,
+            **dict(self.condition),
             "cache_strategy": self.cache_strategy,
             "update_target": self.update_target,
             "task_score_mean": self.task_score_mean,
@@ -30,6 +32,9 @@ class ParetoPoint:
             "false_safe_rate": self.false_safe_rate,
             "dominated": self.dominated,
         }
+
+    def condition_label(self) -> str:
+        return ", ".join(f"{field}={value}" for field, value in self.condition if value)
 
 
 def generate_pareto(input_csv: Path, output_dir: Path) -> Path:
@@ -54,17 +59,21 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
 
 
 def _aggregate(rows: list[dict[str, str]]) -> list[ParetoPoint]:
-    groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
+    dimensions = condition_fields(rows, "cache_strategy", "update_target")
+    groups: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
-        key = (row.get("experiment_id", ""), row.get("cache_strategy", ""), row.get("update_target", ""))
-        groups[key].append(row)
-    raw_points = []
-    for (experiment, strategy, target), records in sorted(groups.items()):
+        groups[tuple(row.get(field, "") for field in dimensions)].append(row)
+    condition_names = tuple(
+        field for field in dimensions if field not in {"cache_strategy", "update_target"}
+    )
+    raw_points: list[ParetoPoint] = []
+    for key, records in sorted(groups.items()):
+        values = dict(zip(dimensions, key, strict=True))
         raw_points.append(
             ParetoPoint(
-                experiment_id=experiment,
-                cache_strategy=strategy,
-                update_target=target,
+                condition=tuple((field, values.get(field, "")) for field in condition_names),
+                cache_strategy=values.get("cache_strategy", ""),
+                update_target=values.get("update_target", ""),
                 task_score_mean=_mean(records, "task_score"),
                 latency_units_mean=_mean_preferred(records, ("end_to_end_latency", "latency_units")),
                 recompute_fraction_mean=_mean(records, "recompute_fraction"),
@@ -75,7 +84,7 @@ def _aggregate(rows: list[dict[str, str]]) -> list[ParetoPoint]:
         )
     return [
         ParetoPoint(
-            experiment_id=point.experiment_id,
+            condition=point.condition,
             cache_strategy=point.cache_strategy,
             update_target=point.update_target,
             task_score_mean=point.task_score_mean,
@@ -93,13 +102,16 @@ def _is_dominated(point: ParetoPoint, all_points: list[ParetoPoint]) -> bool:
     candidates = [
         other
         for other in all_points
-        if other.experiment_id == point.experiment_id and other.update_target == point.update_target and other != point
+        if other.condition == point.condition
+        and other.update_target == point.update_target
+        and other != point
     ]
     for other in candidates:
         no_worse_quality = other.task_score_mean >= point.task_score_mean
         no_worse_latency = other.latency_units_mean <= point.latency_units_mean
         strictly_better = (
-            other.task_score_mean > point.task_score_mean or other.latency_units_mean < point.latency_units_mean
+            other.task_score_mean > point.task_score_mean
+            or other.latency_units_mean < point.latency_units_mean
         )
         no_worse_safety = other.false_safe_rate <= point.false_safe_rate
         if no_worse_quality and no_worse_latency and no_worse_safety and strictly_better:
@@ -111,7 +123,7 @@ def _markdown(points: list[ParetoPoint]) -> str:
     lines = [
         "# Planner Pareto table",
         "",
-        "| experiment | target | strategy | task | latency | recompute | refreshes | false-safe | dominated |",
+        "| condition | target | strategy | task | latency | recompute | refreshes | false-safe | dominated |",
         "|---|---|---|---:|---:|---:|---:|---:|---|",
     ]
     for point in points:
@@ -119,7 +131,7 @@ def _markdown(points: list[ParetoPoint]) -> str:
             "| "
             + " | ".join(
                 [
-                    point.experiment_id,
+                    point.condition_label() or "default",
                     point.update_target,
                     point.cache_strategy,
                     f"{point.task_score_mean:.4f}",
@@ -138,8 +150,8 @@ def _markdown(points: list[ParetoPoint]) -> str:
 def _pareto_svg(points: list[ParetoPoint]) -> str:
     if not points:
         return "<svg xmlns='http://www.w3.org/2000/svg'></svg>"
-    width, height = 1000, 640
-    left, right, top, bottom = 90, 320, 55, 80
+    width, height = 1200, max(640, 90 + 18 * len(points))
+    left, right, top, bottom = 90, 520, 55, 80
     plot_w = width - left - right
     plot_h = height - top - bottom
     latencies = [point.latency_units_mean for point in points]
@@ -187,9 +199,16 @@ def _pareto_svg(points: list[ParetoPoint]) -> str:
             f"<circle cx='{x:.2f}' cy='{y:.2f}' r='{radius}' fill='black' opacity='{opacity}' "
             f"stroke='black' stroke-width='1'/>"
         )
-        label = _escape(f"{point.update_target} / {point.cache_strategy}")
+        condition = point.condition_label()
+        label = _escape(
+            " / ".join(
+                value
+                for value in (condition, point.update_target, point.cache_strategy)
+                if value
+            )
+        )
         lines.append(
-            f"<text x='{left + plot_w + 18}' y='{legend_y + index * 17}' font-size='11' "
+            f"<text x='{left + plot_w + 18}' y='{legend_y + index * 17}' font-size='10' "
             f"opacity='{opacity}'>{label}</text>"
         )
     lines.append("</svg>")

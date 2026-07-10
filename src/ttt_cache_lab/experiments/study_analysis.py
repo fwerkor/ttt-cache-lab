@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from ttt_cache_lab.experiments.conditions import condition_fields, with_full_reference_metrics
+
 
 @dataclass(frozen=True)
 class StudyThresholds:
@@ -44,9 +46,10 @@ def generate_study_analysis(
 
 def _analyze_e1(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
     e1_rows = [row for row in rows if "e1" in row.get("experiment_id", "").lower()]
+    group_fields = condition_fields(e1_rows, "update_target", "cache_strategy")
     summary = _aggregate(
         e1_rows,
-        keys=("update_target", "cache_strategy"),
+        keys=group_fields,
         metrics=(
             "task_score",
             "end_to_end_latency",
@@ -64,8 +67,7 @@ def _analyze_e1(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
             "E1 static-adapter cache cost",
             summary,
             columns=(
-                "update_target",
-                "cache_strategy",
+                *group_fields,
                 "task_score_mean",
                 "end_to_end_latency_mean",
                 "cache_bytes_mean",
@@ -99,10 +101,18 @@ def _analyze_e2(
     thresholds: StudyThresholds,
 ) -> list[Path]:
     e2_rows = [row for row in rows if "e2" in row.get("experiment_id", "").lower()]
-    enriched = _with_full_task_drop(e2_rows)
+    enriched = with_full_reference_metrics(e2_rows)
+    summary_fields = condition_fields(
+        enriched,
+        "update_target",
+        "cache_strategy",
+        "adapter_version",
+        "cached_version",
+        "version_gap",
+    )
     summary = _aggregate(
         enriched,
-        keys=("update_target", "cache_strategy", "version_gap"),
+        keys=summary_fields,
         metrics=(
             "task_score",
             "task_drop_vs_full",
@@ -118,15 +128,16 @@ def _analyze_e2(
     _write_dicts(csv_path, summary)
 
     boundaries: list[dict[str, object]] = []
-    groups = _group(enriched, ("update_target", "cache_strategy"))
-    for (target, strategy), records in sorted(groups.items()):
+    boundary_fields = condition_fields(enriched, "update_target", "cache_strategy")
+    groups = _group(enriched, boundary_fields)
+    for key, records in sorted(groups.items()):
+        dimensions = dict(zip(boundary_fields, key, strict=True))
         candidates = sorted(records, key=lambda row: _number(row, "version_gap"))
         failed = [row for row in candidates if not _safe(row, thresholds=thresholds)]
         first = failed[0] if failed else None
         boundaries.append(
             {
-                "update_target": target,
-                "cache_strategy": strategy,
+                **dimensions,
                 "first_unsafe_version_gap": int(_number(first, "version_gap")) if first else -1,
                 "first_unsafe_update_norm": _number(first, "update_norm_since_cache") if first else 0.0,
                 "task_drop_vs_full": _number(first, "task_drop_vs_full") if first else 0.0,
@@ -142,8 +153,7 @@ def _analyze_e2(
             "E2 first safety-boundary crossing",
             boundaries,
             columns=(
-                "update_target",
-                "cache_strategy",
+                *boundary_fields,
                 "first_unsafe_version_gap",
                 "first_unsafe_update_norm",
                 "task_drop_vs_full",
@@ -159,7 +169,7 @@ def _analyze_e2(
             summary,
             x_field="version_gap",
             y_field="task_drop_vs_full_mean",
-            series_fields=("cache_strategy", "update_target"),
+            series_fields=condition_fields(enriched, "cache_strategy", "update_target"),
             title="E2 task drop versus cache-version gap",
             x_label="version gap",
             y_label="task drop versus full recompute",
@@ -201,18 +211,18 @@ def _analyze_e4(
 ) -> list[Path]:
     from ttt_cache_lab.experiments.pareto import generate_pareto
 
-    e4_rows = _with_full_task_drop(
+    e4_rows = with_full_reference_metrics(
         [row for row in rows if "e4" in row.get("experiment_id", "").lower()]
     )
-    groups = _group(e4_rows, ("update_target", "cache_strategy"))
+    group_fields = condition_fields(e4_rows, "update_target", "cache_strategy")
+    groups = _group(e4_rows, group_fields)
     summary: list[dict[str, object]] = []
-    for (target, strategy), records in sorted(groups.items()):
-        full_latency = _reference_mean(records, e4_rows, "end_to_end_latency")
+    for key, records in sorted(groups.items()):
+        dimensions = dict(zip(group_fields, key, strict=True))
         latency = _mean(records, "end_to_end_latency")
         summary.append(
             {
-                "update_target": target,
-                "cache_strategy": strategy,
+                **dimensions,
                 "count": len(records),
                 "task_score_mean": _mean(records, "task_score"),
                 "task_drop_vs_full_mean": _mean(records, "task_drop_vs_full"),
@@ -220,7 +230,7 @@ def _analyze_e4(
                 "top1_agreement_mean": _mean(records, "top1_agreement"),
                 "attention_shift_mean": _mean(records, "attention_shift"),
                 "end_to_end_latency_mean": latency,
-                "speedup_vs_full": full_latency / latency if latency > 0.0 else 0.0,
+                "speedup_vs_full": _mean(records, "speedup_vs_full"),
                 "total_cache_bytes_mean": _mean(records, "total_cache_bytes"),
                 "flops_fraction_mean": _mean(records, "flops_fraction"),
                 "safe_rate": sum(
@@ -239,8 +249,7 @@ def _analyze_e4(
             "E4 planner quality-cost comparison",
             summary,
             columns=(
-                "update_target",
-                "cache_strategy",
+                *group_fields,
                 "task_score_mean",
                 "task_drop_vs_full_mean",
                 "logits_kl_mean",
@@ -281,44 +290,36 @@ def _analyze_e4(
     ]
 
 
-def _reference_mean(
-    records: list[dict[str, str]],
-    all_rows: list[dict[str, str]],
-    field: str,
-) -> float:
-    targets = {row.get("update_target", "") for row in records}
-    references = [
-        row
-        for row in all_rows
-        if row.get("update_target", "") in targets
-        and row.get("cache_strategy", "") == "full_recompute"
-    ]
-    return _mean(references, field)
-
-
 def _analyze_e5(
     rows: list[dict[str, str]],
     output_dir: Path,
     *,
     thresholds: StudyThresholds,
 ) -> list[Path]:
-    e5_rows = _with_full_task_drop(
+    e5_rows = with_full_reference_metrics(
         [row for row in rows if "e5" in row.get("experiment_id", "").lower()]
     )
-    groups = _group(
+    group_fields = condition_fields(
         e5_rows,
-        ("cache_strategy", "lora_rank", "configured_update_norm", "version_gap"),
+        "update_target",
+        "cache_strategy",
+        "strategy_mode",
+        "adapter_version",
+        "version_gap",
     )
+    groups = _group(e5_rows, group_fields)
     safe_rows: list[dict[str, object]] = []
     for key, records in sorted(groups.items()):
-        strategy, rank, update_norm, gap = key
+        dimensions = dict(zip(group_fields, key, strict=True))
         safe_rate = sum(1.0 for row in records if _safe(row, thresholds=thresholds)) / len(records)
+        facet = " / ".join(
+            str(dimensions.get(field, ""))
+            for field in ("update_target", "cache_strategy", "strategy_mode", "version_gap")
+        )
         safe_rows.append(
             {
-                "cache_strategy": strategy,
-                "lora_rank": rank,
-                "update_norm": update_norm,
-                "version_gap": gap,
+                **dimensions,
+                "facet": facet,
                 "count": len(records),
                 "safe_rate": safe_rate,
                 "task_drop_vs_full_mean": _mean(records, "task_drop_vs_full"),
@@ -336,10 +337,7 @@ def _analyze_e5(
             "E5 rank and update-norm safe region",
             safe_rows,
             columns=(
-                "cache_strategy",
-                "lora_rank",
-                "update_norm",
-                "version_gap",
+                *group_fields,
                 "safe_rate",
                 "task_drop_vs_full_mean",
                 "logits_kl_mean",
@@ -355,9 +353,9 @@ def _analyze_e5(
         _matrix_svg(
             safe_rows,
             row_field="lora_rank",
-            column_field="update_norm",
+            column_field="configured_update_norm",
             value_field="safe_rate",
-            facet_field="cache_strategy",
+            facet_field="facet",
             title="E5 safe rate by LoRA rank and update norm",
         ),
         encoding="utf-8",
@@ -366,17 +364,29 @@ def _analyze_e5(
 
 
 def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
-    e6_rows = [row for row in rows if "e6" in row.get("experiment_id", "").lower()]
+    e6_rows = with_full_reference_metrics(
+        [row for row in rows if "e6" in row.get("experiment_id", "").lower()]
+    )
     for row in e6_rows:
         if not row.get("context_length"):
             row["context_length"] = row.get("sweep.data.context_length", "0")
         if not row.get("model_name"):
             row["model_name"] = row.get("sweep.model.model_name_or_path", "") or "unknown"
+    group_fields = condition_fields(
+        e6_rows,
+        "update_target",
+        "cache_strategy",
+        "adapter_version",
+        "version_gap",
+    )
     summary = _aggregate(
         e6_rows,
-        keys=("model_name", "model_num_layers", "context_length", "cache_strategy"),
+        keys=group_fields,
         metrics=(
             "task_score",
+            "task_drop_vs_full",
+            "speedup_vs_full",
+            "relative_error",
             "logits_kl",
             "attention_shift",
             "end_to_end_latency",
@@ -394,11 +404,11 @@ def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
             "E6 context and model-scale results",
             summary,
             columns=(
-                "model_name",
-                "model_num_layers",
-                "context_length",
-                "cache_strategy",
+                *group_fields,
                 "task_score_mean",
+                "task_drop_vs_full_mean",
+                "speedup_vs_full_mean",
+                "relative_error_mean",
                 "logits_kl_mean",
                 "attention_shift_mean",
                 "end_to_end_latency_mean",
@@ -416,7 +426,7 @@ def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
             summary,
             x_field="context_length",
             y_field="end_to_end_latency_mean",
-            series_fields=("model_name", "cache_strategy"),
+            series_fields=condition_fields(e6_rows, "model_name", "cache_strategy", "update_target"),
             title="E6 end-to-end latency by context and model",
             x_label="context length",
             y_label="end-to-end latency",
@@ -432,12 +442,14 @@ def _analyze_e7(
     *,
     thresholds: StudyThresholds,
 ) -> list[Path]:
-    e7_rows = _with_full_task_drop(
+    e7_rows = with_full_reference_metrics(
         [row for row in rows if "e7" in row.get("experiment_id", "").lower()]
     )
-    groups = _group(e7_rows, ("update_target", "cache_strategy"))
+    group_fields = condition_fields(e7_rows, "update_target", "cache_strategy")
+    groups = _group(e7_rows, group_fields)
     boundaries: list[dict[str, object]] = []
-    for (target, strategy), records in sorted(groups.items()):
+    for key, records in sorted(groups.items()):
+        dimensions = dict(zip(group_fields, key, strict=True))
         points = sorted(
             records,
             key=lambda row: (
@@ -449,8 +461,7 @@ def _analyze_e7(
         first = unsafe[0] if unsafe else None
         boundaries.append(
             {
-                "update_target": target,
-                "cache_strategy": strategy,
+                **dimensions,
                 "tested_points": len(points),
                 "unsafe_points": len(unsafe),
                 "first_unsafe_version_gap": int(_number(first, "version_gap")) if first else -1,
@@ -470,8 +481,7 @@ def _analyze_e7(
             "E7 failure-boundary sweep",
             boundaries,
             columns=(
-                "update_target",
-                "cache_strategy",
+                *group_fields,
                 "tested_points",
                 "unsafe_points",
                 "first_unsafe_version_gap",
@@ -497,44 +507,6 @@ def _analyze_e7(
         encoding="utf-8",
     )
     return [csv_path, md_path, svg_path]
-
-
-def _with_full_task_drop(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    full_scores: dict[tuple[tuple[str, str], ...], float] = {}
-    for row in rows:
-        if row.get("cache_strategy") == "full_recompute":
-            full_scores[_reference_key(row)] = _number(row, "task_score")
-    enriched: list[dict[str, str]] = []
-    for row in rows:
-        item = dict(row)
-        full_score = full_scores.get(_reference_key(row))
-        if full_score is not None:
-            item["task_drop_vs_full"] = str(full_score - _number(row, "task_score"))
-        else:
-            item["task_drop_vs_full"] = row.get("task_drop_vs_full", "0")
-        enriched.append(item)
-    return enriched
-
-
-def _reference_key(row: dict[str, str]) -> tuple[tuple[str, str], ...]:
-    fields: list[str] = [
-        field
-        for field in (
-            "run_name",
-            "experiment_id",
-            "sample_id",
-            "update_target",
-            "adapter_id",
-            "adapter_version",
-            "lora_rank",
-            "update_mode",
-            "context_length",
-            "model_name",
-        )
-        if field in row
-    ]
-    fields.extend(sorted(field for field in row if field.startswith("sweep.")))
-    return tuple((field, row.get(field, "")) for field in fields)
 
 
 def _safe(row: dict[str, str], *, thresholds: StudyThresholds) -> bool:

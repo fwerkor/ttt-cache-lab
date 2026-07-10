@@ -698,11 +698,21 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
             "run_name",
             *sweep_fields,
             "experiment_id",
+            "model_name",
+            "model_num_layers",
+            "model_hidden_size",
+            "context_length",
+            "task_name",
             "update_target",
             "cache_strategy",
             "adapter_version",
+            "cached_version",
+            "version_gap",
             "lora_rank",
+            "configured_update_norm",
             "update_mode",
+            "norm_control",
+            "seed",
         )
         if field in fieldnames
     ]
