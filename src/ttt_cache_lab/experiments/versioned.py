@@ -34,7 +34,7 @@ from ttt_cache_lab.experiments.metrics import (
     output_throughput,
 )
 from ttt_cache_lab.experiments.planner_runtime import build_planner_runtime
-from ttt_cache_lab.experiments.provenance import planner_provenance
+from ttt_cache_lab.experiments.provenance import baseline_provenance, planner_provenance
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.experiments.run_metadata import (
     collect_run_metadata,
@@ -525,6 +525,9 @@ class VersionedExperimentRunner:
                 if self.config.metrics.compute_attention_metrics
                 else None
             )
+            baseline_fidelity, baseline_source, baseline_reference = baseline_provenance(
+                decision.strategy, output_baseline_fidelity(approx)
+            )
             planner_source, failure_map_path, failure_map_sha256 = planner_provenance(
                 decision.strategy,
                 self.config.cache.failure_map_path,
@@ -596,7 +599,9 @@ class VersionedExperimentRunner:
                     strategy_mode=output_strategy_mode(approx),
                     strategy_available=output_strategy_available(approx),
                     strategy_fallback=output_strategy_fallback(approx),
-                    baseline_fidelity=output_baseline_fidelity(approx),
+                    baseline_fidelity=baseline_fidelity,
+                    baseline_source=baseline_source,
+                    baseline_reference=baseline_reference,
                     cache_block_count=cached.manager.total_block_count(),
                     cache_entry_count=cached.manager.entry_count(),
                     total_cache_bytes=cached.manager.total_cache_bytes(),

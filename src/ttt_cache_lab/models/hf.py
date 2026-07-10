@@ -54,6 +54,8 @@ class HuggingFaceBackend:
         torch_dtype: str,
         max_length: int,
         trust_remote_code: bool,
+        revision: str | None = None,
+        attention_implementation: str | None = None,
         parallelism: str = "single",
         device_ids: list[int] | None = None,
         seed: int,
@@ -69,14 +71,23 @@ class HuggingFaceBackend:
         torch.manual_seed(seed)
         dtype = self._resolve_dtype(torch_dtype)
         load_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
+        if revision is not None:
+            load_kwargs["revision"] = revision
+        if attention_implementation is not None:
+            load_kwargs["attn_implementation"] = attention_implementation
         if dtype is not None:
             load_kwargs["dtype"] = dtype
         tokenizer_factory = cast(Any, AutoTokenizer)
         model_factory = cast(Any, AutoModelForCausalLM)
         config_factory = cast(Any, AutoConfig)
+        tokenizer_kwargs: dict[str, Any] = {
+            "trust_remote_code": trust_remote_code,
+        }
+        if revision is not None:
+            tokenizer_kwargs["revision"] = revision
         self.tokenizer: Any = tokenizer_factory.from_pretrained(
             model_name_or_path,
-            trust_remote_code=trust_remote_code,
+            **tokenizer_kwargs,
         )
         if parallelism == "model_shard":
             from ttt_cache_lab.models.sharding import build_model_shard_plan, resolve_shard_device_ids
@@ -88,9 +99,14 @@ class HuggingFaceBackend:
                 device_type=device_type,
                 configured=list(device_ids or []),
             )
+            config_kwargs: dict[str, Any] = {
+                "trust_remote_code": trust_remote_code,
+            }
+            if revision is not None:
+                config_kwargs["revision"] = revision
             model_config = config_factory.from_pretrained(
                 model_name_or_path,
-                trust_remote_code=trust_remote_code,
+                **config_kwargs,
             )
             shard_plan = build_model_shard_plan(
                 model_config,

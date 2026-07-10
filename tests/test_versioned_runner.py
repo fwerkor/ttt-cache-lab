@@ -337,6 +337,10 @@ def test_related_work_baselines_use_distinct_cache_representations(tmp_path: Pat
     assert forkkv.strategy_mode == "forkkv_copy_on_write_residual"
     assert lragent.baseline_fidelity == "paper_reimplementation"
     assert forkkv.baseline_fidelity == "paper_reimplementation"
+    assert lragent.baseline_source == "LRAgent"
+    assert forkkv.baseline_source == "ForkKV"
+    assert lragent.baseline_reference
+    assert forkkv.baseline_reference
     assert lragent.cache_bytes < forkkv.cache_bytes
 
 

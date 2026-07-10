@@ -16,6 +16,51 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+_RELATED_BASELINES = {
+    StrategyName.ALORA_PREFIX_REUSE: (
+        "paper_reimplementation",
+        "aLoRA",
+        "invocation-prefix adapter reuse semantics",
+    ),
+    StrategyName.LRAGENT_ADAPTER_CACHE: (
+        "paper_reimplementation",
+        "LRAgent",
+        "shared base cache plus adapter low-rank component",
+    ),
+    StrategyName.FORKKV_BASE_DELTA: (
+        "paper_reimplementation",
+        "ForkKV",
+        "copy-on-write base plus residual cache",
+    ),
+    StrategyName.BASE_CACHE_REUSE: (
+        "adapted_baseline",
+        "static adapter reuse",
+        "base-prefix cache reuse control",
+    ),
+    StrategyName.ADAPTER_SPECIFIC_CACHE: (
+        "adapted_baseline",
+        "per-adapter cache",
+        "dedicated cache entry per fixed adapter",
+    ),
+    StrategyName.STATIC_BASE_DELTA: (
+        "adapted_baseline",
+        "base-plus-delta cache",
+        "static base and adapter delta decomposition",
+    ),
+}
+
+
+def baseline_provenance(
+    strategy: StrategyName,
+    observed_fidelity: str,
+) -> tuple[str, str, str]:
+    configured = _RELATED_BASELINES.get(strategy)
+    if configured is not None:
+        fidelity, source, reference = configured
+        return (observed_fidelity or fidelity, source, reference)
+    return (observed_fidelity or "native_baseline", strategy.value, "local implementation")
+
+
 def planner_provenance(
     strategy: StrategyName,
     failure_map_path: Path | None,

@@ -56,6 +56,8 @@ class ExperimentRecord:
     strategy_available: bool = True
     strategy_fallback: str = ""
     baseline_fidelity: str = ""
+    baseline_source: str = ""
+    baseline_reference: str = ""
     cache_block_count: int = 0
     cache_entry_count: int = 0
     total_cache_bytes: int = 0
@@ -141,6 +143,16 @@ def write_records(
         records=final_records,
         metadata_path=metadata_path,
     )
+
+
+def merge_record_files(
+    inputs: list[Path],
+    output_dir: Path,
+) -> ExperimentArtifacts:
+    records: list[ExperimentRecord] = []
+    for path in inputs:
+        records.extend(read_records(path))
+    return write_records(records, output_dir, merge_existing=False)
 
 
 def read_records(path: Path) -> list[ExperimentRecord]:
