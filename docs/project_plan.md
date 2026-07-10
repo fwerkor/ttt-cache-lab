@@ -794,9 +794,8 @@ docs/results/e7_ablation_failure.md
 
 Do not claim any of the following until code and experiments support them:
 
-- real LoRA training is implemented;
 - real qTTT is reproduced;
-- native mid-layer partial recomputation is implemented in HF/vLLM rather than generic fallback `past_key_values` splice;
+- native mid-layer recomputation generalizes beyond the explicitly tested Llama/Qwen-like and GPT-2 decoder families;
 - LoRA-weight-delta correction is validated on real models across safe regions rather than only unit tests and toy runs;
 - planner beats full recompute/stale baselines on real tasks;
 - multi-GPU serving performance is measured;
@@ -806,23 +805,25 @@ Do not claim any of the following until code and experiments support them:
 
 Implemented:
 
-- toy backend;
-- HF/Ascend backend for full recompute, stale/frozen prefix cache reuse, `past_key_values` layer splice, and LoRA-weight-delta K/V correction;
+- toy backend with task-correct scoring for passkey, key-value, multi-needle, and variable-tracking diagnostics;
+- HF/Ascend backend for full recompute, stale/frozen prefix cache reuse, native tested-family layer restart, and LoRA-weight-delta K/V correction;
 - LoRA injection/training for selected `torch.nn.Linear` projections;
 - multi-step adapter version evolution;
 - versioned cache metadata and planner cost/safety metrics in records;
 - expanded update target taxonomy including QV/attention and early/middle/late layer positions;
 - static adapter baseline strategies, threshold refresh, delta correction, oracle planner, and adaptive planner;
 - E1-E7 toy templates plus selected HF/Ascend E2/E5/E6 templates;
-- failure-map, Pareto, version-summary, and Markdown/SVG reports;
+- condition-preserving failure-map, Pareto, version-summary, E5 safe-region, E6 scaling, E7 paired-ablation, and adaptation-effect reports;
+- E3 failure-map calibration wired into E4 with artifact hashes and runtime latency budgets;
+- explicit cache-manager scopes, raw/applied update diagnostics, attention availability, baseline provenance, atomic checkpoints, resume, cross-run merging, and structured failure manifests;
 - CI with lint, typecheck, tests.
 
 Still limited:
 
 - real-model validation of LoRA-weight-delta correction safe regions;
-- model-specific native mid-layer recomputation inside HF/vLLM internals;
-- full aLoRA/LRAgent/ForkKV reproductions;
-- completed long-context real 910B experiment results;
+- native layer restart validation outside the currently tested decoder families and under large sharded models;
+- official upstream aLoRA/LRAgent/ForkKV comparisons; local variants are explicitly labeled as paper reimplementations or adapted baselines;
+- completed long-context 7B/32B accelerator results;
 - paper-quality final plots populated with real runs.
 
-The immediate next implementation target is running E2/E3/E5 on the real Ascend environment and using those results to calibrate planner thresholds.
+The immediate next step is hardware execution: run the small-model smoke test, generate E3, run E4 against the exact calibrated map, then execute E5/E6/E7 and merge the model/context runs for the final analysis.

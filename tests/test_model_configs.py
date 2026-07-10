@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ttt_cache_lab.configs import VersionedExperimentConfig
+from ttt_cache_lab.configs import VersionedExperimentConfig, VersionedSweepConfig
 
 REAL_MODEL_CONFIGS = [
     Path("configs/experiments/e2_version_drift_qwen_0_5b.yaml"),
@@ -48,6 +48,13 @@ def test_default_ascend_parallel_excludes_large_manual_templates() -> None:
     assert "ascend_e2_version_drift_qwen_7b.yaml" not in script
     assert "ascend_e2_version_drift_mistral_7b_v0_3.yaml" not in script
     assert "ascend_e2_version_drift_llama_3_2_1b.yaml" in script
+
+
+def test_attention_metric_sweep_uses_eager_attention() -> None:
+    config = VersionedSweepConfig.from_yaml(
+        Path("configs/versioned_sweep_e7_boundary_qwen_0_5b.yaml")
+    )
+    assert config.base.model.attention_implementation == "eager"
 
 
 def test_llama_templates_use_small_1b_model() -> None:

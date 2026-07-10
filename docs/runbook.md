@@ -61,6 +61,8 @@ CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli run \
 Edit the YAML config rather than the code.
 
 - `model.model_name_or_path`: local path or HuggingFace model ID.
+- `model.revision`: immutable model commit/revision for reproducible runs.
+- `model.attention_implementation`: explicit backend such as `eager`; use `eager` when collecting attention metrics.
 - `model.max_length`: truncation length for the prompt.
 - `data.source`: `synthetic`, `jsonl`, or `huggingface`.
 - `data.num_samples`: number of examples to run.
@@ -68,8 +70,12 @@ Edit the YAML config rather than the code.
 - `data.truncation_strategy`: `error`, `left`, or `middle` for overlength external data.
 - `data.adapter_activation_marker`: optional invocation marker for the aLoRA-style prefix-reuse baseline.
 - `updates.targets`: update targets, such as `attention.q`, `attention.k`, `lora.v`, `mlp.late`.
-- `updates.update_norm`: random perturbation magnitude for the controlled update.
+- `updates.update_norm`: random perturbation magnitude or target L2 norm for the controlled update.
+- `adapter.norm_control`: `target_l2` or `none`; the latter preserves raw learning-rate updates.
 - `cache.strategies`: cache policies to compare.
+- `cache.manager_scope`: `condition` by default; use `sample` or `global_workload` only for workload-style capacity experiments.
+- `resume`: merge completed checkpoint records from an interrupted run.
+- `checkpoint_each_target`: atomically save after each sample × target condition.
 
 List supported target names:
 
@@ -83,7 +89,11 @@ Each run writes:
 
 - `records.jsonl`: one record per sample × update target × cache strategy;
 - `summary.csv`: flat CSV with raw records;
+- `run_metadata.json`: config hash, git state, platform, package versions, and visible-device environment;
+- `run_failure.json`: structured exception/OOM/unsupported manifest when a run fails;
 - optional grouped CSV from the `summarize` command.
+
+`records.jsonl` and `summary.csv` are written through same-directory temporary files and atomically replaced.
 
 The main columns are:
 
@@ -100,8 +110,11 @@ The main columns are:
 - `cache_hit`
 - `refresh_count`
 - `false_safe`
-- `strategy_mode`
-- `cache_bytes`, `peak_memory_allocated`
+- `strategy_mode`, `strategy_available`, `strategy_fallback`
+- `baseline_fidelity`, `baseline_source`, `baseline_reference`
+- `cache_bytes`, `physical_cache_bytes`, `peak_memory_allocated`
+- `accumulated_raw_update_norm`, `accumulated_update_norm`, `update_scale`
+- `baseline_task_score`, `full_task_score`, `adaptation_gain_vs_base`
 - `adaptation_latency`, `cache_maintenance_latency`, `decode_latency`, `end_to_end_latency`
 - `throughput_tokens_per_s`, `cache_entry_count`
 
@@ -120,6 +133,16 @@ python -m ttt_cache_lab.cli pareto \
   --input runs/e4_planner_main/summary.csv \
   --output-dir runs/e4_planner_main/pareto
 ```
+
+Run E3 and E4 as one calibrated dependency chain:
+
+```bash
+scripts/run_calibrated_planner.sh \
+  configs/experiments/e3_failure_map_toy.yaml \
+  configs/experiments/e4_planner_main_toy.yaml
+```
+
+E4 records expose `planner_source=failure_map` and the exact artifact SHA-256 when the calibrated map is used.
 
 The HF/Ascend backend implements full recomputation, stale/frozen reuse, LoRA-weight-delta K/V correction, native Llama/GPT-2 decoder-layer restart, and aLoRA-style base-prefix reuse with suffix-only recomputation. Delta correction and layer restart do not read the full-reference cache used for evaluation metrics. Unsupported model families fail explicitly instead of substituting a full-reference splice.
 
@@ -284,3 +307,32 @@ scripts/run_model_sharded.sh \
 ```
 
 The launcher uses Hugging Face Accelerate device maps. This is model layer sharding, distinct from `run_ascend_e2_parallel.sh`, which runs independent experiments on separate cards.
+
+
+## 15. Resume, merge, and failure recovery
+
+For long runs, set:
+
+```yaml
+resume: true
+checkpoint_each_target: true
+```
+
+Resume is record-level: completed conditions are preserved and de-duplicated, while model updates required to reconstruct in-memory state are replayed.
+
+Merge multiple completed model/context runs for one E6 analysis:
+
+```bash
+python -m ttt_cache_lab.cli merge-records \
+  --input runs/e6_qwen_1_5b/records.jsonl runs/e6_qwen_7b/records.jsonl \
+  --output-dir runs/e6_merged
+python -m ttt_cache_lab.cli version-report \
+  --input runs/e6_merged/summary.csv \
+  --output-dir runs/e6_merged/report
+```
+
+When a CLI run raises an exception, inspect `run_failure.json`. OOM and unsupported backend/model paths are retained as structured artifacts instead of only terminal output.
+
+## 16. Baseline fidelity
+
+The local aLoRA-, LRAgent-, and ForkKV-style methods are labeled `paper_reimplementation`. Simplified static controls are labeled `adapted_baseline`. These labels prevent local implementations from being presented as official upstream reproductions. Official-code comparisons remain a separate experimental validation step.

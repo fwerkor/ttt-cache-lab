@@ -37,10 +37,13 @@ Implemented:
 - real KV tensor byte counts, peak allocated memory, adaptation/cache/decode/end-to-end latency, throughput, cache-entry counts, and configurable tensor/task metrics;
 - E1-E7 toy and Hugging Face templates; E5 rank/update-norm sweeps; E6 exact 4K/8K/16K/32K context sweeps;
 - single-model layer sharding across multiple CUDA GPUs, including a 6×GPU Qwen2.5-32B template;
-- strategy-aware failure maps, configurable safety thresholds, Markdown reports, SVG trends, and quality-cost Pareto figures;
+- condition-preserving E1-E7 analyses that retain model, context, rank, update norm, seed, and sweep axes and pair every strategy with the exact full-recompute reference;
+- E3-calibrated E4 planning with failure-map artifact hashes, runtime action-latency budgets, explicit cache-manager scopes, and measured-oracle provenance;
+- E5 correction/fallback diagnostics, E6 latency/speedup/task-drop scaling plots, E7 paired ablation effects, and adaptation-gain/update-scale reports;
+- atomic per-target checkpoints, record-level resume, cross-run record merging, structured failure manifests, and run metadata with config/git/package provenance;
 - CI for linting, strict type checking, unit tests, and offline tiny-Llama integration tests that execute real LoRA, KV delta correction, and native layer restart paths.
 
-Remaining validation work is experimental rather than placeholder implementation: the large-model paths still need to be run on the selected GPU infrastructure, and the adapted related-work baselines should be compared against official upstream implementations where licensing and environments permit.
+Remaining work is hardware validation rather than placeholder implementation: the 7B/32B and long-context templates still need to be run on the selected accelerator infrastructure. The aLoRA/LRAgent/ForkKV-style methods are explicitly labeled as paper reimplementations and should still be compared with official upstream implementations where licensing and environments permit.
 
 ## Repository layout
 
@@ -113,17 +116,15 @@ python -m ttt_cache_lab.cli version-report \
   --output-dir runs/e2_version_drift/report
 ```
 
-Generate E3 and E4/E7 analysis tables:
+Generate E3 and then run the E4 planner against that exact artifact:
 
 ```bash
-python -m ttt_cache_lab.cli failure-map \
-  --input runs/e3_failure_map/summary.csv \
-  --output-dir runs/e3_failure_map/failure_map
-
-python -m ttt_cache_lab.cli pareto \
-  --input runs/e4_planner_main/summary.csv \
-  --output-dir runs/e4_planner_main/pareto
+scripts/run_calibrated_planner.sh \
+  configs/experiments/e3_failure_map_toy.yaml \
+  configs/experiments/e4_planner_main_toy.yaml
 ```
+
+The script verifies that `cache.failure_map_path` points to the E3 artifact before starting E4.
 
 Run all E1-E7 toy templates:
 
@@ -173,7 +174,9 @@ Most experiment runs write:
 ```text
 runs/<experiment>/records.jsonl          raw records
 runs/<experiment>/summary.csv            flat CSV records
-runs/<experiment>/version_summary.csv    grouped means by version/target/strategy
+runs/<experiment>/run_metadata.json       config hash, git state, platform, packages
+runs/<experiment>/run_failure.json        structured exception manifest, only on failure
+runs/<experiment>/version_summary.csv    condition-preserving grouped means
 runs/<experiment>/report/report.md       Markdown report
 runs/<experiment>/report/*.svg           metric-vs-version plots
 runs/e3_failure_map/failure_map/*        E3 policy table and heatmap
@@ -191,6 +194,11 @@ adapter_version
 cached_version
 version_gap
 accumulated_update_norm
+accumulated_raw_update_norm
+update_scale
+baseline_task_score
+full_task_score
+adaptation_gain_vs_base
 task_score
 logits_kl
 top1_agreement
@@ -198,6 +206,7 @@ relative_error
 hidden_relative_error
 update_norm_since_cache
 cache_bytes
+physical_cache_bytes
 peak_memory_allocated
 adaptation_latency
 cache_maintenance_latency
@@ -210,6 +219,12 @@ cache_hit
 refresh_count
 false_safe
 strategy_mode
+strategy_available
+strategy_fallback
+planner_source
+baseline_fidelity
+baseline_source
+run_config_sha256
 ```
 
 ## Backends
@@ -225,21 +240,44 @@ strategy_mode
 model:
   backend: hf
   model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  revision: <immutable-model-commit>
   device: cuda:0
   torch_dtype: bfloat16
+  attention_implementation: eager  # required when attention metrics are enabled
   max_length: 4096
   trust_remote_code: true
 
 adapter:
   update_mode: lora_train
+  norm_control: target_l2  # use none to preserve raw learning-rate updates
   lora_rank: 8
   lora_alpha: 16.0
   learning_rate: 0.0002
   train_steps_per_version: 1
   freeze_base_model: true
 
+cache:
+  manager_scope: condition  # sample or global_workload must be explicit
+
+resume: true
+checkpoint_each_target: true
 version_steps: [0, 1, 2, 4, 8]
 ```
+
+## Cross-run scaling analysis
+
+Merge completed model/context runs before generating one E6 report:
+
+```bash
+python -m ttt_cache_lab.cli merge-records \
+  --input runs/e6_qwen_1_5b/records.jsonl runs/e6_qwen_7b/records.jsonl \
+  --output-dir runs/e6_merged
+python -m ttt_cache_lab.cli version-report \
+  --input runs/e6_merged/summary.csv \
+  --output-dir runs/e6_merged/report
+```
+
+`resume: true` merges existing checkpoint records by a stable condition identity. It preserves completed records but still replays model updates needed to reconstruct in-memory adapter/cache state.
 
 ## Documentation
 
