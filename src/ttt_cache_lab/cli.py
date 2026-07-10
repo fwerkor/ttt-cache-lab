@@ -14,6 +14,7 @@ from ttt_cache_lab.experiments.results import merge_record_files
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.static_adapters import StaticAdapterExperimentRunner
 from ttt_cache_lab.experiments.statistics import generate_statistical_report
+from ttt_cache_lab.experiments.study import run_study_job, select_study_jobs, write_study_plan
 from ttt_cache_lab.experiments.summarize import (
     first_table_markdown,
     summarize_csv,
@@ -92,6 +93,24 @@ def build_parser() -> argparse.ArgumentParser:
     statistics.add_argument("--bootstrap-resamples", type=int, default=2000)
     statistics.add_argument("--confidence-level", type=float, default=0.95)
     statistics.add_argument("--seed", type=int, default=2027)
+
+    study_plan = subparsers.add_parser(
+        "study-plan",
+        help="Expand a paper study manifest into a stable job matrix",
+    )
+    study_plan.add_argument("--manifest", required=True, type=Path)
+    study_plan.add_argument("--output-dir", type=Path, default=None)
+
+    study_run = subparsers.add_parser(
+        "study-run",
+        help="Run one job or one modulo shard from a paper study manifest",
+    )
+    study_run.add_argument("--manifest", required=True, type=Path)
+    study_run.add_argument("--job-index", type=int, default=None)
+    study_run.add_argument("--tag", default=None)
+    study_run.add_argument("--shard-index", type=int, default=None)
+    study_run.add_argument("--num-shards", type=int, default=None)
+    study_run.add_argument("--dry-run", action="store_true")
 
     subparsers.add_parser("list-targets", help="List supported update target names")
     return parser
@@ -208,6 +227,26 @@ def main(argv: list[str] | None = None) -> None:
         )
         for output in outputs:
             console.print(f"Wrote {output}")
+        return
+    if args.command == "study-plan":
+        for output in write_study_plan(args.manifest, args.output_dir):
+            console.print(f"Wrote {output}")
+        return
+    if args.command == "study-run":
+        jobs = select_study_jobs(
+            args.manifest,
+            job_index=args.job_index,
+            tag=args.tag,
+            shard_index=args.shard_index,
+            num_shards=args.num_shards,
+        )
+        for job in jobs:
+            console.print(
+                f"[bold]Study job {job.index}:[/bold] {job.name} seed={job.seed} -> {job.output_dir}"
+            )
+            if not args.dry_run:
+                study_artifacts = run_study_job(job)
+                console.print(f"Wrote {study_artifacts.csv_path}")
         return
     if args.command == "list-targets":
         for item in ModuleKind:
