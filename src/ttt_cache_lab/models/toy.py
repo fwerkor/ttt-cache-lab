@@ -145,10 +145,12 @@ class ToyBackend:
         alpha: float,
         learning_rate: float,
         freeze_base_model: bool = True,
+        target_update_norm: float | None = None,
     ) -> float:
         del sample, rank, alpha, freeze_base_model
         # Toy mode has no persistent parameters. Return a deterministic update-norm proxy.
-        return learning_rate * self._target_multiplier(target)
+        measured = learning_rate * self._target_multiplier(target)
+        return measured if target_update_norm is None else target_update_norm
 
     def _target_multiplier(self, target: UpdateTarget) -> float:
         return {

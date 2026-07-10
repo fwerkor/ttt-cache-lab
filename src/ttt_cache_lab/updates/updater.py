@@ -80,7 +80,6 @@ class SupervisedLoraUpdater:
         step_count: int,
         update_norm: float,
     ) -> UpdateResult:
-        del update_norm
         if step_count < 1:
             raise ValueError("step_count must be at least 1")
         train = getattr(self.backend, "train_lora_step", None)
@@ -97,6 +96,7 @@ class SupervisedLoraUpdater:
                     alpha=self.alpha,
                     learning_rate=self.learning_rate,
                     freeze_base_model=self.freeze_base_model,
+                    target_update_norm=update_norm,
                 )
             )
             total_latency += float(self.backend.last_adaptation_latency())

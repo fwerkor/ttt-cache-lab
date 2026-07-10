@@ -30,3 +30,26 @@ def test_lora_mode_uses_random_updater_for_non_lora_controls() -> None:
     updater = build_updater(backend, mode="lora_train", sample=sample, target=target)
     result = updater.update(backend.prefill(sample.prompt), target, step_count=1, update_norm=0.01)
     assert result.output.parameter_version == 1
+
+
+
+def test_supervised_lora_updater_honors_target_update_norm() -> None:
+    backend = ToyBackend(num_layers=2, hidden_size=8, vocab_size=16, seed=7)
+    sample = TaskSample(prompt="key 1", answer="1", metadata={})
+    target = parse_update_target("lora.k:1", num_layers=backend.num_layers)
+    updater = build_updater(
+        backend,
+        mode="lora_train",
+        sample=sample,
+        target=target,
+        rank=4,
+        learning_rate=0.5,
+    )
+    result = updater.update(
+        backend.prefill(sample.prompt),
+        target,
+        step_count=2,
+        update_norm=0.03,
+    )
+    assert result.update_norm == 0.06
+    assert result.step_count == 2

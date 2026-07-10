@@ -428,6 +428,7 @@ class HuggingFaceBackend:
         alpha: float,
         learning_rate: float,
         freeze_base_model: bool = True,
+        target_update_norm: float | None = None,
     ) -> float:
         count = self.setup_lora(target, rank=rank, alpha=alpha, freeze_base_model=freeze_base_model)
         if count == 0:
@@ -464,22 +465,32 @@ class HuggingFaceBackend:
         )
         loss = outputs.loss
         loss.backward()
-        total_norm = 0.0
+        pending_updates: list[tuple[Any, Any]] = []
+        squared_norm = self.torch.zeros((), dtype=self.torch.float64, device=self.device)
         with self.torch.no_grad():
             for module in self._active_lora_modules:
                 for param in module.lora_parameters():
                     if param.grad is None:
                         continue
                     delta = -learning_rate * param.grad
-                    total_norm += float(self.torch.linalg.vector_norm(delta.detach().float()).cpu())
-                    param.add_(delta)
-                    param.grad = None
+                    pending_updates.append((param, delta))
+                    squared_norm += self.torch.sum(delta.detach().double() ** 2).to(self.device)
+            raw_norm = float(self.torch.sqrt(squared_norm).cpu())
+            scale = 1.0
+            if target_update_norm is not None:
+                if target_update_norm < 0.0:
+                    raise ValueError("target_update_norm must be non-negative")
+                if raw_norm > 0.0:
+                    scale = target_update_norm / raw_norm
+            for param, delta in pending_updates:
+                param.add_(delta * scale)
+                param.grad = None
         self.model.zero_grad(set_to_none=True)
         self.model.eval()
         synchronize(self.torch, self.devices)
         self._last_adaptation_s = time.perf_counter() - adaptation_start
         self.parameter_version += 1
-        return total_norm
+        return raw_norm * scale
 
     def snapshot_adapter_state(self) -> tuple[tuple[Any, Any], ...]:
         return tuple((module.lora_a.detach().clone(), module.lora_b.detach().clone()) for module in self._lora_modules)
