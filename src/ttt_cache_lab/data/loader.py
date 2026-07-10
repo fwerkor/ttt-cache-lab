@@ -51,7 +51,7 @@ def _read_jsonl(path: Path) -> Iterable[Mapping[str, Any]]:
 
 def _load_huggingface(config: DataConfig, *, seed: int) -> Iterable[Mapping[str, Any]]:
     try:
-        from datasets import load_dataset  # type: ignore[import-not-found]
+        from datasets import load_dataset
     except ImportError as exc:
         raise RuntimeError("Hugging Face dataset loading requires: pip install -e '.[hf]'") from exc
 

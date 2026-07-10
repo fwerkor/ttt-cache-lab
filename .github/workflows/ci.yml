@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -22,4 +23,23 @@ jobs:
       - name: Typecheck
         run: mypy src tests
       - name: Test
-        run: pytest
+        run: pytest -m 'not hf_integration'
+
+  hf-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU torch and HF dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu 'torch>=2.2'
+          pip install -e '.[dev]' 'transformers>=4.45,<5' 'accelerate>=0.33' 'tokenizers>=0.20'
+      - name: Run HF integration tests
+        env:
+          TRANSFORMERS_OFFLINE: "1"
+          HF_HUB_OFFLINE: "1"
+        run: pytest -m hf_integration -q

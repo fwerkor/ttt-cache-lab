@@ -43,6 +43,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "hf_integration: offline tiny-transformer integration tests requiring torch and transformers",
+]
 
 [tool.ruff]
 line-length = 120
@@ -62,5 +65,5 @@ mypy_path = "src"
 
 
 [[tool.mypy.overrides]]
-module = ["torch", "transformers"]
+module = ["torch", "torch.*", "transformers", "transformers.*", "tokenizers", "tokenizers.*", "datasets", "datasets.*"]
 ignore_missing_imports = true

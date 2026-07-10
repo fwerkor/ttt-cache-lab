@@ -68,8 +68,13 @@ class HuggingFaceBackend:
         load_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
         if dtype is not None:
             load_kwargs["torch_dtype"] = dtype
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **load_kwargs)
+        tokenizer_factory = cast(Any, AutoTokenizer)
+        model_factory = cast(Any, AutoModelForCausalLM)
+        self.tokenizer: Any = tokenizer_factory.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=trust_remote_code,
+        )
+        self.model: Any = model_factory.from_pretrained(model_name_or_path, **load_kwargs)
         self.model.to(self.device)
         self.model.eval()
         self.num_layers = self._infer_num_layers()
@@ -335,6 +340,8 @@ class HuggingFaceBackend:
         replaced = 0
         seen_active: set[int] = set()
         for parent, child_name, module_name, module in list(self._iter_named_modules_with_parent()):
+            if child_name == "base" and is_lora_linear(parent):
+                continue
             lower = module_name.lower()
             if target.layer is not None and not self._name_matches_layer(lower, target.layer):
                 continue
@@ -357,13 +364,6 @@ class HuggingFaceBackend:
                 self._activate_lora_module(wrapped)
                 seen_active.add(id(wrapped))
                 replaced += 1
-        if replaced == 0 and target.layer is not None:
-            return self.setup_lora(
-                UpdateTarget(kind=target.kind, layer=None, raw=target.raw),
-                rank=rank,
-                alpha=alpha,
-                freeze_base_model=freeze_base_model,
-            )
         self._lora_target_key = target_key
         return replaced
 
@@ -511,7 +511,7 @@ class HuggingFaceBackend:
     def _generate_answer(self, state: _PromptState, past: Any) -> tuple[Any, str, float]:
         max_new_tokens = self._sample_answer_token_counts.get(state.prompt, 1)
         current = state.probe_ids
-        current_past = past
+        current_past = self._clone_past(past)
         generated: list[Any] = []
         first_logits = None
         start = time.perf_counter()
@@ -685,6 +685,19 @@ class HuggingFaceBackend:
             return blocks, "gpt2"
         return None, "unknown"
 
+    def _clone_past(self, past: Any) -> Any:
+        layers = tuple(
+            tuple(tensor.detach().clone() if hasattr(tensor, "detach") else tensor for tensor in layer)
+            for layer in self._past_as_layers(past)
+        )
+        return self._restore_past_type(past, layers)
+
+    def _restore_past_type(self, original: Any, layers: tuple[tuple[Any, ...], ...]) -> Any:
+        factory = getattr(type(original), "from_legacy_cache", None)
+        if callable(factory):
+            return factory(layers)
+        return layers
+
     def _past_as_layers(self, past: Any) -> list[Any]:
         if hasattr(past, "to_legacy_cache"):
             return list(past.to_legacy_cache())
@@ -716,21 +729,13 @@ class HuggingFaceBackend:
             module.forward = MethodType(gpt2_forward, module)
             return module
 
-        def llama_forward(_module: Any, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
+        def llama_forward(_module: Any, *args: Any, **kwargs: Any) -> Any:
             del _module, args
-            cache = kwargs.get("past_key_value")
+            cache = kwargs.get("past_key_values") or kwargs.get("past_key_value")
             if cache is not None and hasattr(cache, "update"):
                 key, value = cached_past[:2]
                 cache.update(key, value, layer_index, {})
-                present = cache
-            else:
-                present = cached_past
-            output: tuple[Any, ...] = (cached_hidden,)
-            if bool(kwargs.get("output_attentions", False)):
-                output += (None,)
-            if bool(kwargs.get("use_cache", False)):
-                output += (present,)
-            return output
+            return cached_hidden
 
         module.forward = MethodType(llama_forward, module)
         return module
@@ -918,7 +923,8 @@ class HuggingFaceBackend:
                     state["layer"] = old_state.get("layer")
                     state["projection"] = old_state.get("projection")
                     new_lora_cache[str(name)] = state
-        return tuple(tuple(layer) for layer in corrected), new_lora_cache
+        corrected_layers = tuple(tuple(layer) for layer in corrected)
+        return self._restore_past_type(past_key_values, corrected_layers), new_lora_cache
 
     def _reshape_projection_delta(self, delta: Any, target_past: Any) -> Any | None:
         if not hasattr(delta, "reshape") or not hasattr(target_past, "shape"):
@@ -970,8 +976,6 @@ class HuggingFaceBackend:
                 continue
             if any(part in lower for part in filters):
                 selected.append(param)
-        if target.layer is not None and not selected:
-            return self._select_parameters(UpdateTarget(kind=target.kind, layer=None, raw=target.raw))
         return selected[:4]
 
     def _target_filters(self, kind: ModuleKind) -> tuple[str, ...]:
