@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -299,10 +300,14 @@ class CachePlanner:
         cells = self.failure_map.nearest(target, version_gap, runtime=runtime)
         if not cells:
             return None
-        safe = [cell for cell in cells if cell.safe(self.policy)]
-        candidates: list[tuple[float, FailureMapCell, CacheAction]] = []
-        for cell in safe:
-            action = _strategy_action(cell.cache_strategy, target=target)
+        by_strategy: dict[str, list[FailureMapCell]] = defaultdict(list)
+        for cell in cells:
+            by_strategy[cell.cache_strategy].append(cell)
+        candidates: list[tuple[float, str, CacheAction, list[FailureMapCell]]] = []
+        for strategy, evidence in by_strategy.items():
+            if not all(cell.safe(self.policy) for cell in evidence):
+                continue
+            action = _strategy_action(strategy, target=target)
             if action is None:
                 continue
             if action is CacheAction.DELTA_CORRECT and not self.policy.allow_delta_correction:
@@ -315,21 +320,28 @@ class CachePlanner:
                 continue
             if self._memory_pressure(runtime) and action is CacheAction.DELTA_CORRECT:
                 continue
-            candidates.append((runtime.action_latency(action, target=target), cell, action))
+            candidates.append((runtime.action_latency(action, target=target), strategy, action, evidence))
         if not candidates:
             return self._refresh_decision(
                 target,
-                "E3 failure map contains no safe strategy within the configured budgets.",
+                "E3 failure map contains no strategy that is safe across all compatible calibration cells "
+                "and within the configured budgets.",
                 runtime=runtime,
             )
-        _, cell, action = min(candidates, key=lambda item: item[0])
+        _, strategy, action, evidence = min(candidates, key=lambda item: item[0])
+        nearest_gap = min(cell.version_gap for cell in evidence)
+        worst_kl = max(cell.logits_kl_mean for cell in evidence)
+        worst_task_drop = max(cell.task_drop_vs_full for cell in evidence)
+        worst_false_safe = max(cell.false_safe_rate for cell in evidence)
+        worst_top1 = min(cell.top1_agreement_mean for cell in evidence)
         return PlannerDecision(
             _action_state(action),
             action,
             (
-                f"E3 failure map selected {cell.cache_strategy} at nearest measured gap "
-                f"{cell.version_gap}: KL={cell.logits_kl_mean:.6g}, "
-                f"top1={cell.top1_agreement_mean:.6g}, task_drop={cell.task_drop_vs_full:.6g}."
+                f"E3 failure map selected {strategy} at nearest measured gap {nearest_gap} "
+                f"after requiring safety across {len(evidence)} compatible calibration cells: "
+                f"worst_KL={worst_kl:.6g}, worst_top1={worst_top1:.6g}, "
+                f"worst_task_drop={worst_task_drop:.6g}, worst_false_safe={worst_false_safe:.6g}."
             ),
             first_invalid_layer=(
                 target.layer

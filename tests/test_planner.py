@@ -278,3 +278,19 @@ def test_planner_uses_runtime_action_latencies() -> None:
     )
     assert fast_delta.action is CacheAction.DELTA_CORRECT
     assert slow_delta.action is CacheAction.PARTIAL_RECOMPUTE
+
+
+def test_failure_map_requires_strategy_safety_across_all_calibration_cells(tmp_path: Path) -> None:
+    failure_map = _failure_map(
+        tmp_path / "failure_map.csv",
+        [
+            "lora.k:2,2,stale_reuse,0.0,0.001,1.0,0.0\n",
+            "lora.k:2,2,stale_reuse,0.2,0.2,0.0,1.0\n",
+            "lora.k:2,2,delta_correction,0.0,0.01,1.0,0.0\n",
+            "lora.k:2,2,delta_correction,0.0,0.02,1.0,0.0\n",
+        ],
+    )
+    planner = CachePlanner(PlannerPolicy(failure_map_path=failure_map))
+    decision = planner.plan(parse_update_target("lora.k:2"), update_norm=0.01, version_gap=2)
+    assert decision.action is CacheAction.DELTA_CORRECT
+    assert "across 2 compatible calibration cells" in decision.reason
