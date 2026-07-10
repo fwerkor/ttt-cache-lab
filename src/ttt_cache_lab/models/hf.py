@@ -389,6 +389,21 @@ class HuggingFaceBackend:
         self.parameter_version += 1
         return total_norm
 
+    def snapshot_adapter_state(self) -> tuple[tuple[Any, Any], ...]:
+        return tuple(
+            (module.lora_a.detach().clone(), module.lora_b.detach().clone())
+            for module in self._lora_modules
+        )
+
+    def load_adapter_state(self, state: tuple[tuple[Any, Any], ...], *, version: int) -> None:
+        if len(state) != len(self._lora_modules):
+            raise ValueError("Adapter snapshot does not match the installed LoRA modules")
+        with self.torch.no_grad():
+            for module, (lora_a, lora_b) in zip(self._lora_modules, state, strict=True):
+                module.lora_a.copy_(lora_a.to(device=module.lora_a.device, dtype=module.lora_a.dtype))
+                module.lora_b.copy_(lora_b.to(device=module.lora_b.device, dtype=module.lora_b.dtype))
+        self.parameter_version = version
+
     def reset_lora_adapters(self) -> None:
         for module in self._lora_modules:
             if hasattr(module, "reset_lora"):

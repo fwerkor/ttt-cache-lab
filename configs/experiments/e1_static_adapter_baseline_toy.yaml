@@ -24,6 +24,7 @@ updates:
 cache:
   strategies:
     - full_recompute
+    - no_adaptation
     - base_cache_reuse
     - adapter_specific_cache
     - static_base_delta
@@ -32,9 +33,10 @@ cache:
     - adaptive
   refresh_period: 4
 adapter:
-  update_mode: random
+  update_mode: static_lora
   lora_rank: 8
   lora_alpha: 16.0
   learning_rate: 0.01
   train_steps_per_version: 1
+  static_adapter_sequence: [0, 1, 2, 0, 2, 1, 0]
 version_steps: [0, 1, 2, 4, 8, 16]

@@ -116,12 +116,13 @@ def _set_dotted(payload: dict[str, Any], dotted: str, value: Any) -> None:
 
 
 class AdapterConfig(BaseModel):
-    update_mode: Literal["random", "lora_train"] = "random"
+    update_mode: Literal["random", "lora_train", "static_lora"] = "random"
     lora_rank: int = 8
     lora_alpha: float = 16.0
     learning_rate: float = 1e-3
     train_steps_per_version: int = 1
     freeze_base_model: bool = True
+    static_adapter_sequence: list[int] = Field(default_factory=lambda: [0, 1, 2, 0, 1, 2])
 
 
 class VersionedExperimentConfig(BaseModel):

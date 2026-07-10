@@ -351,6 +351,7 @@ class VersionedExperimentRunner:
                     latency_units=backend.estimate_latency(decision, context_length=self.config.data.context_length),
                     reason=decision.reason,
                     experiment_id=self.config.experiment_id,
+                    adapter_id=adapter_id,
                     adapter_version=adapter_version,
                     cached_version=record_cached_version,
                     version_gap=version_gap,

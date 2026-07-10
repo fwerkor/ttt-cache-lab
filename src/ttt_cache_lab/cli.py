@@ -10,6 +10,7 @@ from ttt_cache_lab.experiments.failure_map import generate_failure_map
 from ttt_cache_lab.experiments.pareto import generate_pareto
 from ttt_cache_lab.experiments.report import generate_report
 from ttt_cache_lab.experiments.runner import ExperimentRunner
+from ttt_cache_lab.experiments.static_adapters import StaticAdapterExperimentRunner
 from ttt_cache_lab.experiments.summarize import (
     first_table_markdown,
     summarize_csv,
@@ -43,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     versioned = subparsers.add_parser("versioned-run", help="Run a multi-step versioned adapter experiment")
     versioned.add_argument("--config", required=True, type=Path)
     versioned.add_argument("--version-summary", action="store_true")
+
+    static_run = subparsers.add_parser("static-run", help="Run a fixed multi-adapter cache experiment")
+    static_run.add_argument("--config", required=True, type=Path)
+    static_run.add_argument("--version-summary", action="store_true")
 
     version_summary = subparsers.add_parser("version-summary", help="Summarize a versioned records CSV")
     version_summary.add_argument("--input", required=True, type=Path)
@@ -99,6 +104,16 @@ def main(argv: list[str] | None = None) -> None:
         if args.version_summary:
             output = versioned_config.output_dir / "version_summary.csv"
             write_version_summary(versioned_artifacts.csv_path, output)
+            console.print(f"Wrote {output}")
+        return
+    if args.command == "static-run":
+        static_config = VersionedExperimentConfig.from_yaml(args.config)
+        static_artifacts = StaticAdapterExperimentRunner(static_config).run()
+        console.print(f"Wrote {static_artifacts.jsonl_path}")
+        console.print(f"Wrote {static_artifacts.csv_path}")
+        if args.version_summary:
+            output = static_config.output_dir / "version_summary.csv"
+            write_version_summary(static_artifacts.csv_path, output)
             console.print(f"Wrote {output}")
         return
     if args.command == "version-summary":

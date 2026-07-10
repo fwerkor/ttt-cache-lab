@@ -242,7 +242,14 @@ class StaticBaseDeltaStrategy(CacheStrategy):
         self.update_norm_threshold = update_norm_threshold
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
-        if target.kind in {ModuleKind.ATTENTION_K, ModuleKind.ATTENTION_V, ModuleKind.LORA_K, ModuleKind.LORA_V}:
+        if target.kind in {
+            ModuleKind.ATTENTION_K,
+            ModuleKind.ATTENTION_V,
+            ModuleKind.ATTENTION_QV,
+            ModuleKind.LORA_K,
+            ModuleKind.LORA_V,
+            ModuleKind.LORA_QV,
+        }:
             return StrategyDecision(
                 self.name,
                 CacheAction.DELTA_CORRECT,

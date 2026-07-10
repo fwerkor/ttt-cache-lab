@@ -22,6 +22,7 @@ class ExperimentRecord:
     latency_units: float
     reason: str
     experiment_id: str = "single_step"
+    adapter_id: str = "adapter"
     adapter_version: int = 1
     cached_version: int = 0
     version_gap: int = 1

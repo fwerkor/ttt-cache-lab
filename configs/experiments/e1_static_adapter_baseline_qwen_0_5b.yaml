@@ -1,0 +1,38 @@
+name: e1-static-adapter-baseline-qwen-0-5b
+output_dir: runs/e1_static_adapter_baseline_qwen_0_5b
+experiment_id: e1_static_adapter_baseline
+seed: 7
+model:
+  backend: hf
+  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  modelscope_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  device: auto
+  torch_dtype: auto
+  max_length: 2048
+  trust_remote_code: true
+data:
+  task: passkey
+  num_samples: 4
+  context_length: 2048
+  answer_length: 4
+updates:
+  targets: [lora.q, lora.k, lora.v, lora.qv]
+  update_norm: 0.00001
+cache:
+  strategies:
+    - full_recompute
+    - no_adaptation
+    - base_cache_reuse
+    - adapter_specific_cache
+    - static_base_delta
+    - stale_reuse
+  update_norm_threshold: 0.05
+adapter:
+  update_mode: static_lora
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+  static_adapter_sequence: [0, 1, 2, 0, 2, 1, 0]
+version_steps: [0]

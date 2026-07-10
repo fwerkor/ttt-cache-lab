@@ -10,7 +10,14 @@ with open(sys.argv[1], 'r', encoding='utf-8') as handle:
     print(yaml.safe_load(handle)['output_dir'])
 PY
 )"
-  python -m ttt_cache_lab.cli versioned-run --config "$config" --version-summary
+  case "$config" in
+    *e1_static_adapter_baseline*)
+      python -m ttt_cache_lab.cli static-run --config "$config" --version-summary
+      ;;
+    *)
+      python -m ttt_cache_lab.cli versioned-run --config "$config" --version-summary
+      ;;
+  esac
   python -m ttt_cache_lab.cli version-report --input "$output_dir/summary.csv" --output-dir "$output_dir/report"
   case "$output_dir" in
     *e3_failure_map*)
