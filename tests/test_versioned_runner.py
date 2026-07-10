@@ -155,3 +155,52 @@ def test_oracle_selects_measured_safe_candidate(tmp_path: Path) -> None:
     record = VersionedExperimentRunner(config).run().records[0]
     assert record.action == "reuse_stale"
     assert record.reason.startswith("Measured oracle selected")
+
+
+
+def test_cached_version_initializes_cache_after_real_updates(tmp_path: Path) -> None:
+    import pytest
+
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-cached-version",
+            "experiment_id": "unit_cached_version",
+            "seed": 5,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"], "step_count": 1, "update_norm": 0.02},
+            "cache": {"strategies": ["stale_reuse"]},
+            "adapter": {"update_mode": "random"},
+            "cached_version": 2,
+            "version_steps": [2, 3],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    assert [record.adapter_version for record in records] == [2, 3]
+    assert records[0].action == "reuse_exact"
+    assert records[0].cached_version == 2
+    assert records[0].update_norm_since_cache == 0.0
+    assert records[1].cached_version == 2
+    assert records[1].update_norm_since_cache == pytest.approx(0.02)
+    assert records[0].accumulated_update_norm == pytest.approx(0.04)
+    assert records[1].accumulated_update_norm == pytest.approx(0.06)
+
+
+def test_cached_version_rejects_backward_version_steps(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-cached-version-invalid",
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"]},
+            "cache": {"strategies": ["stale_reuse"]},
+            "cached_version": 2,
+            "version_steps": [1, 2],
+        }
+    )
+    import pytest
+
+    with pytest.raises(ValueError, match="older than cached_version"):
+        VersionedExperimentRunner(config).run()

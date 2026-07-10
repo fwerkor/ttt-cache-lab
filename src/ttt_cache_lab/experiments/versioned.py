@@ -10,7 +10,6 @@ from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState, CacheSem
 from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
-from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.metrics import (
     estimate_recompute_fraction,
     is_cache_hit,
@@ -30,6 +29,7 @@ from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agr
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
 from ttt_cache_lab.updates.targets import UpdateTarget, parse_update_target
+from ttt_cache_lab.updates.updater import TTTUpdater, UpdateResult, build_updater
 
 
 @dataclass
@@ -40,13 +40,6 @@ class _StrategyCache:
     cached_update_norm: float = 0.0
     blocks: tuple[CacheBlockMetadata, ...] = field(default_factory=tuple)
     manager: VersionedCacheManager = field(default_factory=VersionedCacheManager)
-
-
-@dataclass(frozen=True)
-class _VersionUpdate:
-    output: BackendOutput
-    update_norm: float
-    adaptation_latency: float
 
 
 class VersionedExperimentRunner:
@@ -71,7 +64,12 @@ class VersionedExperimentRunner:
             )
             for name in self.config.cache.strategies
         ]
-        max_version = max(self.config.version_steps or [0])
+        cached_version = self.config.cached_version
+        if cached_version < 0:
+            raise ValueError("cached_version must be non-negative")
+        if any(step < cached_version for step in self.config.version_steps):
+            raise ValueError("version_steps cannot contain versions older than cached_version")
+        max_version = max(self.config.version_steps or [cached_version])
         target_steps = set(self.config.version_steps)
         records: list[ExperimentRecord] = []
 
@@ -81,10 +79,35 @@ class VersionedExperimentRunner:
                 target = parse_update_target(target_name, num_layers=backend.num_layers)
                 backend.restore_after_update()
                 self._prepare_backend_for_target(backend, target)
-                cached_v0 = backend.prefill(sample.prompt)
+                base_v0 = backend.prefill(sample.prompt)
+                updater = build_updater(
+                    backend,
+                    mode=self.config.adapter.update_mode,
+                    sample=sample,
+                    target=target,
+                    rank=self.config.adapter.lora_rank,
+                    alpha=self.config.adapter.lora_alpha,
+                    learning_rate=self.config.adapter.learning_rate,
+                    freeze_base_model=self.config.adapter.freeze_base_model,
+                )
+                accumulated_update_norm = 0.0
+                accumulated_adaptation_latency = 0.0
+                current = base_v0
+                for _ in range(1, cached_version + 1):
+                    version_update = self._update_one_version(updater, target, current)
+                    accumulated_update_norm += version_update.update_norm
+                    accumulated_adaptation_latency += version_update.adaptation_latency
+                    current = version_update.output
+                cached_output = (
+                    backend.full_recompute(sample.prompt, current)
+                    if cached_version > 0
+                    else base_v0
+                )
+                current = cached_output
+
                 adapter_id = f"sample-{sample_id}:{target_name}"
-                initial_blocks = self._make_cache_blocks(
-                    output=cached_v0,
+                base_blocks = self._make_cache_blocks(
+                    output=base_v0,
                     adapter_id=adapter_id,
                     adapter_version=0,
                     cached_step=0,
@@ -92,22 +115,34 @@ class VersionedExperimentRunner:
                     accumulated_update_norm=0.0,
                     state=CacheBlockState.VALID_EXACT,
                 )
+                cached_blocks = self._make_cache_blocks(
+                    output=cached_output,
+                    adapter_id=adapter_id,
+                    adapter_version=cached_version,
+                    cached_step=cached_version,
+                    target_name=target_name,
+                    accumulated_update_norm=accumulated_update_norm,
+                    state=CacheBlockState.VALID_EXACT,
+                )
                 strategy_caches = {}
                 for strategy in strategies:
                     manager = VersionedCacheManager()
-                    manager.put(adapter_id, 0, VersionedCacheEntry(cached_v0, initial_blocks))
+                    manager.put(adapter_id, 0, VersionedCacheEntry(base_v0, base_blocks))
+                    if cached_version != 0:
+                        manager.put(
+                            adapter_id,
+                            cached_version,
+                            VersionedCacheEntry(cached_output, cached_blocks),
+                        )
                     strategy_caches[str(strategy.name)] = _StrategyCache(
-                        output=cached_v0,
-                        cached_version=0,
-                        blocks=initial_blocks,
+                        output=cached_output,
+                        cached_version=cached_version,
+                        cached_update_norm=accumulated_update_norm,
+                        blocks=cached_blocks,
                         manager=manager,
                     )
-                accumulated_update_norm = 0.0
-                accumulated_adaptation_latency = 0.0
-                current = cached_v0
 
-                if 0 in target_steps:
-                    full = backend.full_recompute(sample.prompt, cached_v0)
+                if cached_version in target_steps:
                     self._record_step(
                         records,
                         backend=backend,
@@ -119,14 +154,14 @@ class VersionedExperimentRunner:
                         strategies=strategies,
                         strategy_caches=strategy_caches,
                         current=current,
-                        full=full,
-                        adapter_version=0,
-                        accumulated_update_norm=0.0,
-                        accumulated_adaptation_latency=0.0,
+                        full=cached_output,
+                        adapter_version=cached_version,
+                        accumulated_update_norm=accumulated_update_norm,
+                        accumulated_adaptation_latency=accumulated_adaptation_latency,
                     )
 
-                for step in range(1, max_version + 1):
-                    version_update = self._update_one_version(backend, sample, target, current)
+                for step in range(cached_version + 1, max_version + 1):
+                    version_update = self._update_one_version(updater, target, current)
                     accumulated_update_norm += version_update.update_norm
                     accumulated_adaptation_latency += version_update.adaptation_latency
                     current = version_update.output
@@ -168,46 +203,20 @@ class VersionedExperimentRunner:
 
     def _update_one_version(
         self,
-        backend: ModelBackend,
-        sample: TaskSample,
+        updater: TTTUpdater,
         target: UpdateTarget,
         current: BackendOutput,
-    ) -> _VersionUpdate:
-        if (
-            self.config.adapter.update_mode == "lora_train"
-            and target.is_lora
-            and hasattr(backend, "train_lora_step")
-        ):
-            norms = []
-            adaptation_latencies = []
-            for _ in range(self.config.adapter.train_steps_per_version):
-                norm = backend.train_lora_step(
-                    sample,
-                    target,
-                    rank=self.config.adapter.lora_rank,
-                    alpha=self.config.adapter.lora_alpha,
-                    learning_rate=self.config.adapter.learning_rate,
-                    freeze_base_model=self.config.adapter.freeze_base_model,
-                )
-                norms.append(float(norm))
-                adaptation_latencies.append(float(backend.last_adaptation_latency()))
-            next_version = int(getattr(backend, "parameter_version", current.parameter_version + 1))
-            return _VersionUpdate(
-                output=BackendOutput(
-                    logits=current.logits,
-                    cache_tensor=current.cache_tensor,
-                    hidden_tensor=current.hidden_tensor,
-                    parameter_version=next_version,
-                    extras=current.extras,
-                ),
-                update_norm=sum(norms),
-                adaptation_latency=sum(adaptation_latencies),
-            )
-        updated = backend.simulate_update(current, target, update_norm=self.config.updates.update_norm)
-        return _VersionUpdate(
-            output=updated,
+    ) -> UpdateResult:
+        step_count = (
+            self.config.adapter.train_steps_per_version
+            if self.config.adapter.update_mode == "lora_train" and target.is_lora
+            else self.config.updates.step_count
+        )
+        return updater.update(
+            current,
+            target,
+            step_count=step_count,
             update_norm=self.config.updates.update_norm,
-            adaptation_latency=float(backend.last_adaptation_latency()),
         )
 
     def _record_step(

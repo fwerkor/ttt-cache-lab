@@ -24,6 +24,7 @@ from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRec
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.updates.targets import parse_update_target
+from ttt_cache_lab.updates.updater import RandomPerturbationUpdater
 
 
 class ExperimentRunner:
@@ -49,7 +50,13 @@ class ExperimentRunner:
             baseline = backend.prefill(sample.prompt)
             for target_name in self.config.updates.targets:
                 target = parse_update_target(target_name, num_layers=backend.num_layers)
-                updated = backend.simulate_update(baseline, target, update_norm=self.config.updates.update_norm)
+                update_result = RandomPerturbationUpdater(backend).update(
+                    baseline,
+                    target,
+                    step_count=self.config.updates.step_count,
+                    update_norm=self.config.updates.update_norm,
+                )
+                updated = update_result.output
                 full = backend.full_recompute(sample.prompt, updated)
 
                 for strategy in strategies:
@@ -72,7 +79,7 @@ class ExperimentRunner:
                     strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
                     decode_latency = output_decode_latency(approx)
                     maintenance_latency = output_cache_maintenance_latency(approx)
-                    adaptation_latency = float(backend.last_adaptation_latency())
+                    adaptation_latency = update_result.adaptation_latency
                     records.append(
                         ExperimentRecord(
                             sample_id=sample_id,
