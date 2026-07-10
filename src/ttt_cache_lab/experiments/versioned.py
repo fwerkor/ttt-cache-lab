@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ttt_cache_lab.cache.blocks import CacheBlockMetadata, VersionedCacheEntry, VersionedCacheManager
-from ttt_cache_lab.cache.planner import PlannerRuntime
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState, CacheSemantics
 from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
@@ -29,6 +28,7 @@ from ttt_cache_lab.experiments.metrics import (
     output_strategy_mode,
     output_throughput,
 )
+from ttt_cache_lab.experiments.planner_runtime import build_planner_runtime
 from ttt_cache_lab.experiments.provenance import planner_provenance
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
@@ -280,22 +280,17 @@ class VersionedExperimentRunner:
                 target,
                 step=version_gap,
                 update_norm=update_norm_since_cache,
-                runtime=PlannerRuntime(
+                runtime=build_planner_runtime(
+                    backend,
+                    target,
+                    context_length=self.config.data.context_length,
                     total_cache_bytes=cached.manager.total_cache_bytes(),
                     candidate_cache_bytes=output_cache_bytes(cached.output),
-                    full_recompute_latency=max(
-                        1e-9,
-                        backend.estimate_latency(
-                            full_decision,
-                            context_length=self.config.data.context_length,
-                        ),
-                    ),
                     model_name=(
                         self.config.model.model_name_or_path
                         or self.config.model.modelscope_model_id
                         or "toy"
                     ),
-                    context_length=self.config.data.context_length,
                     lora_rank=self.config.adapter.lora_rank,
                     configured_update_norm=self.config.updates.update_norm,
                     update_mode=self.config.adapter.update_mode,

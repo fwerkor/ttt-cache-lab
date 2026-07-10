@@ -23,11 +23,28 @@ class PlannerRuntime:
     total_cache_bytes: int = 0
     candidate_cache_bytes: int = 0
     full_recompute_latency: float = 1.0
+    reuse_latency: float | None = None
+    delta_correction_latency: float | None = None
+    partial_recompute_latency: float | None = None
     model_name: str = ""
     context_length: int = 0
     lora_rank: int = 0
     configured_update_norm: float = 0.0
     update_mode: str = ""
+
+    def action_latency(self, action: CacheAction, *, target: UpdateTarget | None = None) -> float:
+        if action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
+            return self.full_recompute_latency
+        if (
+            action in {CacheAction.REUSE_EXACT, CacheAction.REUSE_FROZEN, CacheAction.REUSE_STALE}
+            and self.reuse_latency is not None
+        ):
+            return self.reuse_latency
+        if action is CacheAction.DELTA_CORRECT and self.delta_correction_latency is not None:
+            return self.delta_correction_latency
+        if action is CacheAction.PARTIAL_RECOMPUTE and self.partial_recompute_latency is not None:
+            return self.partial_recompute_latency
+        return self.full_recompute_latency * _action_cost(action, target=target)
 
 
 @dataclass(frozen=True)
@@ -164,6 +181,7 @@ class CachePlanner:
             return self._refresh_decision(
                 target,
                 "Periodic safety fallback reached its configured version-gap interval.",
+                runtime=runtime,
             )
 
         proxy = self._error_proxy(target, effective_gap, effective_norm)
@@ -171,6 +189,7 @@ class CachePlanner:
             return self._refresh_decision(
                 target,
                 f"Error proxy {proxy:.6g} exceeds threshold {self.policy.error_proxy_threshold:.6g}.",
+                runtime=runtime,
             )
 
         if not self.policy.use_target_rules:
@@ -183,6 +202,7 @@ class CachePlanner:
             return self._refresh_decision(
                 target,
                 "Target-rule ablation has no safe generic reuse rule.",
+                runtime=runtime,
             )
 
         if target.kind is ModuleKind.OUTPUT_HEAD:
@@ -216,7 +236,9 @@ class CachePlanner:
             if (
                 self.policy.allow_delta_correction
                 and self._small_enough_for_delta(effective_gap, effective_norm)
-                and self._fits_latency_budget(CacheAction.DELTA_CORRECT)
+                and self._fits_latency_budget(
+                    CacheAction.DELTA_CORRECT, runtime=runtime, target=target
+                )
                 and not self._memory_pressure(runtime)
             ):
                 return PlannerDecision(
@@ -229,6 +251,7 @@ class CachePlanner:
             return self._refresh_decision(
                 target,
                 "K/V-affecting update is outside the configured correction region or budget.",
+                runtime=runtime,
             )
 
         if target.kind in {
@@ -243,6 +266,7 @@ class CachePlanner:
             return self._refresh_decision(
                 target,
                 "State-changing module updates require recomputing downstream layers.",
+                runtime=runtime,
             )
 
         if target.kind is ModuleKind.NORM:
@@ -287,15 +311,16 @@ class CachePlanner:
                 not self.policy.allow_layerwise_recompute or target.layer is None
             ):
                 continue
-            if not self._fits_latency_budget(action):
+            if not self._fits_latency_budget(action, runtime=runtime, target=target):
                 continue
             if self._memory_pressure(runtime) and action is CacheAction.DELTA_CORRECT:
                 continue
-            candidates.append((_action_cost(action, target=target), cell, action))
+            candidates.append((runtime.action_latency(action, target=target), cell, action))
         if not candidates:
             return self._refresh_decision(
                 target,
                 "E3 failure map contains no safe strategy within the configured budgets.",
+                runtime=runtime,
             )
         _, cell, action = min(candidates, key=lambda item: item[0])
         return PlannerDecision(
@@ -314,11 +339,19 @@ class CachePlanner:
             recompute_fraction=_action_cost(action, target=target),
         )
 
-    def _refresh_decision(self, target: UpdateTarget, reason: str) -> PlannerDecision:
+    def _refresh_decision(
+        self,
+        target: UpdateTarget,
+        reason: str,
+        *,
+        runtime: PlannerRuntime,
+    ) -> PlannerDecision:
         if (
             target.layer is not None
             and self.policy.allow_layerwise_recompute
-            and self._fits_latency_budget(CacheAction.PARTIAL_RECOMPUTE)
+            and self._fits_latency_budget(
+                CacheAction.PARTIAL_RECOMPUTE, runtime=runtime, target=target
+            )
         ):
             return PlannerDecision(
                 CacheBlockState.INVALID,
@@ -361,8 +394,16 @@ class CachePlanner:
         }.get(target.kind, 2.0)
         return risk * max(1, version_gap) * max(0.0, update_norm)
 
-    def _fits_latency_budget(self, action: CacheAction) -> bool:
-        return _action_cost(action) <= self.policy.latency_budget_fraction
+    def _fits_latency_budget(
+        self,
+        action: CacheAction,
+        *,
+        runtime: PlannerRuntime,
+        target: UpdateTarget | None = None,
+    ) -> bool:
+        full_latency = max(1e-9, runtime.full_recompute_latency)
+        action_latency = runtime.action_latency(action, target=target)
+        return action_latency / full_latency <= self.policy.latency_budget_fraction
 
     def _memory_pressure(self, runtime: PlannerRuntime) -> bool:
         limit = self.policy.memory_budget_bytes

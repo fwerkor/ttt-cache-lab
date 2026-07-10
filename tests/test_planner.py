@@ -251,3 +251,30 @@ def test_planner_latency_budget_disables_delta() -> None:
         parse_update_target("lora.k:2"), update_norm=0.01, version_gap=1
     )
     assert decision.action is CacheAction.FULL_RECOMPUTE
+
+
+def test_planner_uses_runtime_action_latencies() -> None:
+    planner = CachePlanner(PlannerPolicy(latency_budget_fraction=0.2))
+    target = parse_update_target("lora.k:2")
+    fast_delta = planner.plan(
+        target,
+        update_norm=0.01,
+        version_gap=1,
+        runtime=PlannerRuntime(
+            full_recompute_latency=10.0,
+            delta_correction_latency=1.0,
+            partial_recompute_latency=4.0,
+        ),
+    )
+    slow_delta = planner.plan(
+        target,
+        update_norm=0.01,
+        version_gap=1,
+        runtime=PlannerRuntime(
+            full_recompute_latency=10.0,
+            delta_correction_latency=5.0,
+            partial_recompute_latency=1.0,
+        ),
+    )
+    assert fast_delta.action is CacheAction.DELTA_CORRECT
+    assert slow_delta.action is CacheAction.PARTIAL_RECOMPUTE

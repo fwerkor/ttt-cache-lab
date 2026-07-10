@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 
-from ttt_cache_lab.cache.planner import PlannerRuntime
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import ExperimentConfig
@@ -25,6 +24,7 @@ from ttt_cache_lab.experiments.metrics import (
     output_strategy_mode,
     output_throughput,
 )
+from ttt_cache_lab.experiments.planner_runtime import build_planner_runtime
 from ttt_cache_lab.experiments.provenance import planner_provenance
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
@@ -87,26 +87,18 @@ class ExperimentRunner:
                         target,
                         step=self.config.updates.step_count,
                         update_norm=self.config.updates.update_norm,
-                        runtime=PlannerRuntime(
+                        runtime=build_planner_runtime(
+                            backend,
+                            target,
+                            context_length=self.config.data.context_length,
                             total_cache_bytes=output_cache_bytes(baseline),
                             candidate_cache_bytes=output_cache_bytes(baseline),
-                            full_recompute_latency=max(
-                                1e-9,
-                                backend.estimate_latency(
-                                    strategy.decide(
-                                        target,
-                                        step=self.config.updates.step_count,
-                                        update_norm=self.config.updates.update_norm,
-                                    ),
-                                    context_length=self.config.data.context_length,
-                                ),
-                            ),
                             model_name=(
                                 self.config.model.model_name_or_path
                                 or self.config.model.modelscope_model_id
                                 or "toy"
                             ),
-                            context_length=self.config.data.context_length,
+                            lora_rank=0,
                             configured_update_norm=self.config.updates.update_norm,
                             update_mode="random",
                         ),
