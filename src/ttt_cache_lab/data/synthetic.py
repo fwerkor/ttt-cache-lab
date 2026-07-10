@@ -6,6 +6,52 @@ from typing import Any, Literal
 
 SyntheticDifficulty = Literal["easy", "medium", "hard"]
 
+_NEUTRAL_ADJECTIVES = (
+    "quiet",
+    "ordinary",
+    "distant",
+    "familiar",
+    "gentle",
+    "modest",
+    "plain",
+    "calm",
+)
+_NEUTRAL_SUBJECTS = (
+    "forest",
+    "garden",
+    "library",
+    "harbor",
+    "meadow",
+    "village",
+    "workshop",
+    "gallery",
+)
+_NEUTRAL_TOPICS = (
+    "weather",
+    "books",
+    "rivers",
+    "windows",
+    "music",
+    "lanterns",
+    "clouds",
+    "pathways",
+)
+
+
+def neutral_background_sentences(count: int, *, offset: int = 0) -> list[str]:
+    if count < 0:
+        raise ValueError("count must be non-negative")
+    sentences: list[str] = []
+    for index in range(offset, offset + count):
+        adjective = _NEUTRAL_ADJECTIVES[index % len(_NEUTRAL_ADJECTIVES)]
+        subject = _NEUTRAL_SUBJECTS[(index // len(_NEUTRAL_ADJECTIVES)) % len(_NEUTRAL_SUBJECTS)]
+        topic = _NEUTRAL_TOPICS[
+            (index // (len(_NEUTRAL_ADJECTIVES) * len(_NEUTRAL_SUBJECTS)))
+            % len(_NEUTRAL_TOPICS)
+        ]
+        sentences.append(f"{adjective} {subject} {topic}.")
+    return sentences
+
 
 def _difficulty_value(
     difficulty: SyntheticDifficulty,
@@ -121,7 +167,10 @@ class SyntheticTaskFactory:
             distractors.add(distractor)
             lines.append(f"Step {idx}: {distractor} = tmp_{self.rng.randrange(10_000)}.")
             lines.append(f"Step {idx}: {variable} = {value}.")
-        filler = [f"trace_{self.rng.randrange(100_000)}" for _ in range(max(1, context_length // 12))]
+        filler = neutral_background_sentences(
+            max(1, context_length // 12),
+            offset=self.rng.randrange(512),
+        )
         insert_at = self.rng.randrange(len(filler))
         filler.insert(insert_at, "\n".join(lines))
         prompt = "\n".join(filler) + (
@@ -211,12 +260,10 @@ class SyntheticTaskFactory:
             source = next_entity()
             destination = next_entity()
             distractors.append(f"{source} points to {destination}.")
-        neutral = [
-            "Background note "
-            + "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(8))
-            + "."
-            for _ in range(hard_distractor_count - distractor_count)
-        ]
+        neutral = neutral_background_sentences(
+            hard_distractor_count - distractor_count,
+            offset=self.rng.randrange(512),
+        )
         combined = distractors + neutral + facts
         self.rng.shuffle(combined)
         prompt = "\n".join(combined) + (
@@ -265,8 +312,10 @@ class SyntheticTaskFactory:
                 distractor = f"group_{self.rng.randrange(1000)}"
             lines.append(f"Event belongs to {distractor}.")
         lines.extend(
-            f"doc{self.rng.randrange(1_000_000)}"
-            for _ in range(hard_distractor_count - distractor_count)
+            neutral_background_sentences(
+                hard_distractor_count - distractor_count,
+                offset=self.rng.randrange(512),
+            )
         )
         self.rng.shuffle(lines)
         prompt = "\n".join(lines) + (

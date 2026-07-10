@@ -40,10 +40,15 @@ def tiny_llama_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "alpha": 6,
         "Answer": 7,
         ":": 8,
-        "noteaaaa": 9,
-        "noteaaab": 10,
-        "noteaaac": 11,
-        "noteaaad": 12,
+        "The": 9,
+        "quiet": 10,
+        "forest": 11,
+        "contains": 12,
+        "ordinary": 13,
+        "prose": 14,
+        "about": 15,
+        "weather": 16,
+        "windows": 17,
     }
     tokenizer_object = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
     tokenizer_object.pre_tokenizer = Whitespace()

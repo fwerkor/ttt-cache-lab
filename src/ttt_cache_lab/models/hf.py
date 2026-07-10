@@ -11,7 +11,7 @@ import numpy as np
 from ttt_cache_lab.cache.semantics import CacheAction
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName
 from ttt_cache_lab.data.scoring import score_prediction
-from ttt_cache_lab.data.synthetic import TaskSample
+from ttt_cache_lab.data.synthetic import TaskSample, neutral_background_sentences
 from ttt_cache_lab.models.accelerator import (
     max_memory_allocated,
     memory_allocated,
@@ -347,11 +347,8 @@ class HuggingFaceBackend:
         if count < 1:
             return self.torch.empty((1, 0), dtype=dtype)
         if self._neutral_padding_pool is None:
-            labels = " ".join(
-                f"note{self._alphabetic_suffix(index)}"
-                for index in range(8192)
-            )
-            raw_ids = self.tokenizer(labels, add_special_tokens=False).get("input_ids", [])
+            background = " ".join(neutral_background_sentences(512))
+            raw_ids = self.tokenizer(background, add_special_tokens=False).get("input_ids", [])
             special_ids = {int(value) for value in getattr(self.tokenizer, "all_special_ids", [])}
             pool = tuple(int(value) for value in raw_ids if int(value) not in special_ids)
             if not pool:
@@ -365,17 +362,6 @@ class HuggingFaceBackend:
         repeats = (count + len(rotated) - 1) // len(rotated)
         values = (rotated * repeats)[:count]
         return self.torch.tensor([values], dtype=dtype)
-
-    @staticmethod
-    def _alphabetic_suffix(index: int) -> str:
-        if index < 0:
-            raise ValueError("index must be non-negative")
-        chars = ["a"] * 4
-        value = index
-        for position in range(len(chars) - 1, -1, -1):
-            value, remainder = divmod(value, 26)
-            chars[position] = chr(ord("a") + remainder)
-        return "".join(chars)
 
     def _resolve_device(self, device: str) -> str:
         return resolve_device(self.torch, device)
