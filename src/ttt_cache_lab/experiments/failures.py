@@ -19,7 +19,9 @@ def capture_run_failure[T](
     operation: Callable[[], T],
 ) -> T:
     try:
-        return operation()
+        result = operation()
+        (output_dir / "run_failure.json").unlink(missing_ok=True)
+        return result
     except Exception as exc:
         write_run_failure(output_dir, config=config, error=exc)
         raise
