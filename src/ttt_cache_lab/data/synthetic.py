@@ -259,7 +259,7 @@ class SyntheticTaskFactory:
                 distractor = f"group_{self.rng.randrange(1000)}"
             lines.append(f"Event belongs to {distractor}.")
         lines.extend(
-            f"Background note event_{self.rng.randrange(1_000_000)}."
+            f"doc{self.rng.randrange(1_000_000)}"
             for _ in range(hard_distractor_count - distractor_count)
         )
         self.rng.shuffle(lines)
