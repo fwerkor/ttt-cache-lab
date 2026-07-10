@@ -53,5 +53,3 @@ base:
 axes:
   - path: updates.update_norm
     values: [0.001, 0.005, 0.01, 0.03, 0.05, 0.1]
-  - path: adapter.lora_rank
-    values: [4, 8, 16]

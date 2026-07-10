@@ -1,6 +1,8 @@
 import csv
 from pathlib import Path
 
+import pytest
+
 from ttt_cache_lab.experiments.results import ExperimentRecord, write_records
 from ttt_cache_lab.experiments.study_analysis import generate_study_analysis
 
@@ -145,8 +147,12 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
         "e5_safe_region_heatmap.svg",
         "e6_context_model_scaling.csv",
         "e6_latency_by_context.svg",
+        "e6_speedup_by_context.svg",
+        "e6_task_drop_by_context.svg",
         "e7_failure_boundary.csv",
         "e7_false_safe_rate.svg",
+        "e7_ablation_effect.csv",
+        "adaptation_effect.csv",
     }
     assert expected <= {path.name for path in artifacts}
     assert all((output / name).exists() for name in expected)
@@ -154,6 +160,49 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
     assert (output / "e3_failure_map" / "attention_shift_heatmap.svg").exists()
     assert (output / "e4_pareto" / "pareto.csv").exists()
     assert (output / "e4_pareto" / "pareto.svg").exists()
+    with (output / "e5_safe_region.csv").open(newline="", encoding="utf-8") as handle:
+        e5_rows = list(csv.DictReader(handle))
+    assert "relative_error_mean" in e5_rows[0]
+    assert "physical_cache_bytes_mean" in e5_rows[0]
+    assert "fallback_rate" in e5_rows[0]
+
+
+def test_e7_analysis_computes_paired_ablation_effects(tmp_path: Path) -> None:
+    adaptive = _record(
+        experiment_id="e7_ablation",
+        strategy="adaptive",
+        version=2,
+        gap=2,
+        task_score=0.9,
+        logits_kl=0.01,
+        top1=1.0,
+    )
+    ablated = _record(
+        experiment_id="e7_ablation",
+        strategy="adaptive_no_delta",
+        version=2,
+        gap=2,
+        task_score=0.7,
+        logits_kl=0.2,
+        top1=0.0,
+    )
+    full = _record(
+        experiment_id="e7_ablation",
+        strategy="full_recompute",
+        version=2,
+        gap=2,
+        task_score=1.0,
+        logits_kl=0.0,
+        top1=1.0,
+    )
+    source = write_records([full, adaptive, ablated], tmp_path / "run").csv_path
+    output = tmp_path / "analysis"
+    generate_study_analysis(source, output)
+    with (output / "e7_ablation_effect.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["cache_strategy"] == "adaptive_no_delta"
+    assert float(rows[0]["task_score_delta_vs_adaptive_mean"]) == pytest.approx(-0.2)
 
 
 def test_e2_analysis_preserves_context_and_update_norm_axes(tmp_path: Path) -> None:

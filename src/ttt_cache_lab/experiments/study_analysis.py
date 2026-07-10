@@ -6,7 +6,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ttt_cache_lab.experiments.conditions import condition_fields, with_full_reference_metrics
+from ttt_cache_lab.experiments.conditions import (
+    condition_fields,
+    reference_key,
+    with_full_reference_metrics,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,8 @@ def generate_study_analysis(
         artifacts.extend(_analyze_e6(rows, output_dir))
     if any("e7" in experiment for experiment in experiment_ids):
         artifacts.extend(_analyze_e7(rows, output_dir, thresholds=thresholds))
+    if any(any(tag in experiment for tag in ("e2", "e3", "e4", "e5", "e6", "e7")) for experiment in experiment_ids):
+        artifacts.extend(_analyze_adaptation_effect(rows, output_dir))
     return artifacts
 
 
@@ -328,8 +334,18 @@ def _analyze_e5(
                 "count": len(records),
                 "safe_rate": safe_rate,
                 "task_drop_vs_full_mean": _mean(records, "task_drop_vs_full"),
+                "relative_error_mean": _mean(records, "relative_error"),
+                "hidden_relative_error_mean": _mean(records, "hidden_relative_error"),
                 "logits_kl_mean": _mean(records, "logits_kl"),
                 "top1_agreement_mean": _mean(records, "top1_agreement"),
+                "cache_maintenance_latency_mean": _mean(
+                    records, "cache_maintenance_latency"
+                ),
+                "strategy_flops_mean": _mean(records, "strategy_flops"),
+                "cache_bytes_mean": _mean(records, "cache_bytes"),
+                "physical_cache_bytes_mean": _mean(records, "physical_cache_bytes"),
+                "strategy_available_rate": _mean(records, "strategy_available"),
+                "fallback_rate": 1.0 - _mean(records, "strategy_available"),
                 "attention_shift_mean": _mean(records, "attention_shift"),
                 "attention_metric_available_rate": _mean(
                     records, "attention_metric_available"
@@ -348,8 +364,16 @@ def _analyze_e5(
                 *group_fields,
                 "safe_rate",
                 "task_drop_vs_full_mean",
+                "relative_error_mean",
+                "hidden_relative_error_mean",
                 "logits_kl_mean",
                 "top1_agreement_mean",
+                "cache_maintenance_latency_mean",
+                "strategy_flops_mean",
+                "cache_bytes_mean",
+                "physical_cache_bytes_mean",
+                "strategy_available_rate",
+                "fallback_rate",
                 "attention_shift_mean",
                 "attention_metric_available_rate",
                 "flops_fraction_mean",
@@ -431,20 +455,49 @@ def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
         ),
         encoding="utf-8",
     )
+    series_fields = condition_fields(
+        e6_rows, "model_name", "cache_strategy", "update_target"
+    )
     svg_path = output_dir / "e6_latency_by_context.svg"
     svg_path.write_text(
         _line_svg(
             summary,
             x_field="context_length",
             y_field="end_to_end_latency_mean",
-            series_fields=condition_fields(e6_rows, "model_name", "cache_strategy", "update_target"),
+            series_fields=series_fields,
             title="E6 end-to-end latency by context and model",
             x_label="context length",
             y_label="end-to-end latency",
         ),
         encoding="utf-8",
     )
-    return [csv_path, md_path, svg_path]
+    speedup_svg = output_dir / "e6_speedup_by_context.svg"
+    speedup_svg.write_text(
+        _line_svg(
+            summary,
+            x_field="context_length",
+            y_field="speedup_vs_full_mean",
+            series_fields=series_fields,
+            title="E6 speedup versus full recompute by context",
+            x_label="context length",
+            y_label="speedup versus full recompute",
+        ),
+        encoding="utf-8",
+    )
+    task_drop_svg = output_dir / "e6_task_drop_by_context.svg"
+    task_drop_svg.write_text(
+        _line_svg(
+            summary,
+            x_field="context_length",
+            y_field="task_drop_vs_full_mean",
+            series_fields=series_fields,
+            title="E6 task drop versus full recompute by context",
+            x_label="context length",
+            y_label="task drop versus full recompute",
+        ),
+        encoding="utf-8",
+    )
+    return [csv_path, md_path, svg_path, speedup_svg, task_drop_svg]
 
 
 def _analyze_e7(
@@ -521,7 +574,128 @@ def _analyze_e7(
         ),
         encoding="utf-8",
     )
-    return [csv_path, md_path, svg_path]
+    effect_csv, effect_md = _write_e7_ablation_effect(e7_rows, output_dir)
+    return [csv_path, md_path, svg_path, effect_csv, effect_md]
+
+
+def _write_e7_ablation_effect(
+    rows: list[dict[str, str]], output_dir: Path
+) -> tuple[Path, Path]:
+    adaptive = {
+        reference_key(row): row
+        for row in rows
+        if row.get("cache_strategy") == "adaptive"
+    }
+    paired: list[dict[str, str]] = []
+    for row in rows:
+        strategy = row.get("cache_strategy", "")
+        if not strategy.startswith("adaptive_no_"):
+            continue
+        baseline = adaptive.get(reference_key(row))
+        if baseline is None:
+            raise ValueError(
+                f"Missing adaptive reference for E7 ablation {strategy!r}: "
+                f"{reference_key(row)!r}"
+            )
+        item = dict(row)
+        item["task_score_delta_vs_adaptive"] = str(
+            _number(row, "task_score") - _number(baseline, "task_score")
+        )
+        item["latency_delta_vs_adaptive"] = str(
+            _number(row, "end_to_end_latency")
+            - _number(baseline, "end_to_end_latency")
+        )
+        item["false_safe_delta_vs_adaptive"] = str(
+            float(_bool(row, "false_safe")) - float(_bool(baseline, "false_safe"))
+        )
+        item["refresh_count_delta_vs_adaptive"] = str(
+            _number(row, "refresh_count") - _number(baseline, "refresh_count")
+        )
+        item["flops_fraction_delta_vs_adaptive"] = str(
+            _number(row, "flops_fraction") - _number(baseline, "flops_fraction")
+        )
+        paired.append(item)
+    fields = condition_fields(paired, "update_target", "cache_strategy")
+    summary = _aggregate(
+        paired,
+        keys=fields,
+        metrics=(
+            "task_score_delta_vs_adaptive",
+            "latency_delta_vs_adaptive",
+            "false_safe_delta_vs_adaptive",
+            "refresh_count_delta_vs_adaptive",
+            "flops_fraction_delta_vs_adaptive",
+        ),
+    )
+    csv_path = output_dir / "e7_ablation_effect.csv"
+    _write_dicts(csv_path, summary)
+    md_path = output_dir / "e7_ablation_effect.md"
+    md_path.write_text(
+        _markdown_table(
+            "E7 paired ablation effects versus the full adaptive planner",
+            summary,
+            columns=(
+                *fields,
+                "count",
+                "task_score_delta_vs_adaptive_mean",
+                "latency_delta_vs_adaptive_mean",
+                "false_safe_delta_vs_adaptive_mean",
+                "refresh_count_delta_vs_adaptive_mean",
+                "flops_fraction_delta_vs_adaptive_mean",
+            ),
+        ),
+        encoding="utf-8",
+    )
+    return csv_path, md_path
+
+
+def _analyze_adaptation_effect(
+    rows: list[dict[str, str]], output_dir: Path
+) -> list[Path]:
+    full_rows = [
+        row
+        for row in rows
+        if row.get("cache_strategy") == "full_recompute"
+        and any(tag in row.get("experiment_id", "").lower() for tag in ("e2", "e3", "e4", "e5", "e6", "e7"))
+    ]
+    fields = condition_fields(
+        full_rows, "update_target", "adapter_version", "version_gap"
+    )
+    summary = _aggregate(
+        full_rows,
+        keys=fields,
+        metrics=(
+            "baseline_task_score",
+            "full_task_score",
+            "adaptation_gain_vs_base",
+            "accumulated_update_norm",
+            "accumulated_raw_update_norm",
+            "update_scale",
+            "adaptation_latency",
+        ),
+    )
+    csv_path = output_dir / "adaptation_effect.csv"
+    _write_dicts(csv_path, summary)
+    md_path = output_dir / "adaptation_effect.md"
+    md_path.write_text(
+        _markdown_table(
+            "Adaptation effectiveness and update diagnostics",
+            summary,
+            columns=(
+                *fields,
+                "count",
+                "baseline_task_score_mean",
+                "full_task_score_mean",
+                "adaptation_gain_vs_base_mean",
+                "accumulated_update_norm_mean",
+                "accumulated_raw_update_norm_mean",
+                "update_scale_mean",
+                "adaptation_latency_mean",
+            ),
+        ),
+        encoding="utf-8",
+    )
+    return [csv_path, md_path]
 
 
 def _safe(row: dict[str, str], *, thresholds: StudyThresholds) -> bool:
