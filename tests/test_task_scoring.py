@@ -34,3 +34,30 @@ def test_contains_supports_retrieval_answers() -> None:
 def test_code_similarity_ignores_outer_whitespace() -> None:
     sample = _sample(scorer="code_similarity", answers=("function value() { return 1; }",))
     assert score_prediction(sample, "  function value() { return 1; }  ") == 1.0
+
+
+def test_multiple_choice_accepts_label_or_option_text() -> None:
+    sample = TaskSample(
+        prompt="prompt",
+        answer="C",
+        metadata={
+            "scorer": "multiple_choice",
+            "answers": ("C", "planner"),
+            "choice_labels": ("A", "B", "C", "D"),
+            "choices": ("cache", "runtime", "planner", "metrics"),
+        },
+    )
+    assert score_prediction(sample, "The answer is C.") == 1.0
+    assert score_prediction(sample, "planner") == 1.0
+    assert score_prediction(sample, "B") == 0.0
+
+
+def test_numeric_match_extracts_formatted_number() -> None:
+    sample = _sample(scorer="numeric_match", answers=("1200",))
+    assert score_prediction(sample, "There are 1,200 events.") == 1.0
+
+
+def test_set_f1_is_order_invariant() -> None:
+    sample = _sample(scorer="set_f1", answers=("alpha, beta, gamma",))
+    assert score_prediction(sample, "gamma; alpha; beta") == 1.0
+    assert 0.0 < score_prediction(sample, "alpha, gamma") < 1.0

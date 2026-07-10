@@ -102,3 +102,70 @@ def test_activation_marker_is_inserted_before_answer() -> None:
     sample = build_task_samples(config, seed=1)[0]
     assert "<ADAPTER> Answer:" in sample.prompt
     assert sample.metadata["adapter_activation_marker"] == "<ADAPTER>"
+
+
+def test_selection_seed_and_offset_define_disjoint_model_seed_independent_partitions(tmp_path: Path) -> None:
+    dataset = tmp_path / "records.jsonl"
+    dataset.write_text(
+        "".join(
+            json.dumps({"prompt": f"prompt-{index}", "answer": f"answer-{index}", "id": index}) + "\n"
+            for index in range(12)
+        ),
+        encoding="utf-8",
+    )
+    calibration = DataConfig(
+        source="jsonl",
+        task="partitioned",
+        dataset_path=dataset,
+        id_field="id",
+        selection_seed=123,
+        sample_offset=0,
+        num_samples=4,
+        evaluation_partition="calibration",
+    )
+    test = calibration.model_copy(
+        update={"sample_offset": 4, "evaluation_partition": "test"}
+    )
+    first = build_task_samples(calibration, seed=1)
+    repeated = build_task_samples(calibration, seed=999)
+    held_out = build_task_samples(test, seed=1)
+    assert [sample.metadata["dataset_sample_id"] for sample in first] == [
+        sample.metadata["dataset_sample_id"] for sample in repeated
+    ]
+    assert {sample.metadata["dataset_sample_id"] for sample in first}.isdisjoint(
+        {sample.metadata["dataset_sample_id"] for sample in held_out}
+    )
+    assert all(sample.metadata["evaluation_partition"] == "test" for sample in held_out)
+
+
+def test_multiple_choice_loader_formats_choices_and_normalizes_answer(tmp_path: Path) -> None:
+    dataset = tmp_path / "choices.jsonl"
+    dataset.write_text(
+        json.dumps(
+            {
+                "context": "Long repository context",
+                "question": "Which module owns the planner?",
+                "choices": ["cache", "runtime", "planner", "metrics"],
+                "answer": 2,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = DataConfig(
+        source="jsonl",
+        task="longbench_v2",
+        dataset_path=dataset,
+        context_field="context",
+        question_field="question",
+        choices_field="choices",
+        answer_field="answer",
+        prompt_template="{context}\nQuestion: {question}\n{choices}\nAnswer:",
+        scorer="multiple_choice",
+        num_samples=1,
+    )
+    sample = build_task_samples(config, seed=7)[0]
+    assert "A. cache" in sample.prompt
+    assert "C. planner" in sample.prompt
+    assert sample.answer == "C"
+    assert sample.metadata["answers"] == ("C", "planner")

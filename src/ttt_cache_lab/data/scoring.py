@@ -21,6 +21,12 @@ def score_prediction(sample: TaskSample, prediction: str) -> float:
         return max(_rouge_l(prediction, reference) for reference in references)
     if scorer == "code_similarity":
         return max(_code_similarity(prediction, reference) for reference in references)
+    if scorer == "multiple_choice":
+        return _multiple_choice(sample, prediction)
+    if scorer == "numeric_match":
+        return max(_numeric_match(prediction, reference) for reference in references)
+    if scorer == "set_f1":
+        return max(_set_f1(prediction, reference) for reference in references)
     raise ValueError(f"Unsupported task scorer: {scorer}")
 
 
@@ -34,6 +40,63 @@ def _references(sample: TaskSample) -> tuple[str, ...]:
             return references
     return (sample.answer,)
 
+
+
+def _multiple_choice(sample: TaskSample, prediction: str) -> float:
+    labels = tuple(str(value) for value in sample.metadata.get("choice_labels", ()))
+    choices = tuple(str(value) for value in sample.metadata.get("choices", ()))
+    references = _references(sample)
+    correct_label = references[0].strip().upper()
+    normalized_prediction = _normalize(prediction)
+    for reference in references[1:]:
+        if _normalize(reference) and _normalize(reference) == normalized_prediction:
+            return 1.0
+    if choices:
+        for label, choice in zip(labels, choices, strict=True):
+            if _normalize(choice) == normalized_prediction:
+                return float(label.upper() == correct_label)
+    candidates = re.findall(r"(?<![A-Za-z0-9])([A-Za-z])(?:[\s\).,:]|$)", prediction.strip())
+    valid = [candidate.upper() for candidate in candidates if candidate.upper() in {label.upper() for label in labels}]
+    if valid:
+        return float(valid[-1] == correct_label)
+    return 0.0
+
+
+def _numeric_match(prediction: str, reference: str) -> float:
+    predicted = _first_number(prediction)
+    expected = _first_number(reference)
+    if predicted is None or expected is None:
+        return 0.0
+    tolerance = 1e-9 * max(1.0, abs(expected))
+    return float(abs(predicted - expected) <= tolerance)
+
+
+def _first_number(text: str) -> float | None:
+    match = re.search(r"[-+]?(?:\d[\d,]*\.?\d*|\.\d+)", text)
+    if match is None:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _set_f1(prediction: str, reference: str) -> float:
+    predicted = _normalized_items(prediction)
+    expected = _normalized_items(reference)
+    if not predicted or not expected:
+        return float(predicted == expected)
+    overlap = len(predicted & expected)
+    if overlap == 0:
+        return 0.0
+    precision = overlap / len(predicted)
+    recall = overlap / len(expected)
+    return 2.0 * precision * recall / (precision + recall)
+
+
+def _normalized_items(text: str) -> set[str]:
+    chunks = re.split(r"[,;\n]+", text)
+    return {normalized for chunk in chunks if (normalized := _normalize(chunk))}
 
 def _normalize(text: str) -> str:
     lowered = text.lower().strip()

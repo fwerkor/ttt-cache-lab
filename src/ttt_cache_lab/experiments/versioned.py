@@ -11,6 +11,7 @@ from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState, CacheSem
 from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
+from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.cache_managers import build_strategy_managers
 from ttt_cache_lab.experiments.metrics import (
     attention_distribution_shift,
@@ -214,7 +215,7 @@ class VersionedExperimentRunner:
                         records,
                         backend=backend,
                         sample_id=sample_id,
-                        sample_answer=sample,
+                        sample=sample,
                         target=target,
                         target_name=target_name,
                         adapter_id=adapter_id,
@@ -241,7 +242,7 @@ class VersionedExperimentRunner:
                         records,
                         backend=backend,
                         sample_id=sample_id,
-                        sample_answer=sample,
+                        sample=sample,
                         target=target,
                         target_name=target_name,
                         adapter_id=adapter_id,
@@ -307,7 +308,7 @@ class VersionedExperimentRunner:
         *,
         backend: ModelBackend,
         sample_id: int,
-        sample_answer: object,
+        sample: TaskSample,
         target: UpdateTarget,
         target_name: str,
         adapter_id: str,
@@ -329,12 +330,12 @@ class VersionedExperimentRunner:
             recompute_fraction=1.0,
         )
         baseline_task_score = (
-            backend.score_answer(sample_answer, next(iter(strategy_caches.values())).original_output)  # type: ignore[arg-type]
+            backend.score_answer(sample, next(iter(strategy_caches.values())).original_output)
             if self.config.metrics.compute_task_metrics
             else 0.0
         )
         full_task_score = (
-            backend.score_answer(sample_answer, full)  # type: ignore[arg-type]
+            backend.score_answer(sample, full)
             if self.config.metrics.compute_task_metrics
             else 0.0
         )
@@ -417,7 +418,7 @@ class VersionedExperimentRunner:
                     full=full,
                     current=current,
                     target=target,
-                    sample=sample_answer,
+                    sample=sample,
                 )
             else:
                 approx = backend.apply_cache_strategy(
@@ -484,7 +485,7 @@ class VersionedExperimentRunner:
             decode_latency = output_decode_latency(approx)
             maintenance_latency = output_cache_maintenance_latency(approx)
             task_score = (
-                backend.score_answer(sample_answer, approx)  # type: ignore[arg-type]
+                backend.score_answer(sample, approx)
                 if self.config.metrics.compute_task_metrics
                 else 0.0
             )
@@ -631,7 +632,7 @@ class VersionedExperimentRunner:
                     failure_map_path=failure_map_path,
                     failure_map_sha256=failure_map_sha256,
                     cache_manager_scope=self.config.cache.manager_scope,
-                    **record_run_fields(self.config, approx, self._run_metadata),
+                    **record_run_fields(self.config, approx, self._run_metadata, sample=sample),
                 )
             )
 

@@ -81,6 +81,13 @@ class ExperimentRecord:
     cache_manager_scope: str = ""
     seed: int = 0
     task_name: str = ""
+    task_family: str = ""
+    benchmark_name: str = ""
+    evaluation_partition: str = "all"
+    dataset_split: str = ""
+    dataset_sample_id: str = ""
+    dataset_category: str = ""
+    selection_seed: int = 0
     backend_name: str = ""
     torch_dtype: str = ""
     attention_implementation: str = ""
@@ -93,7 +100,8 @@ class ExperimentRecord:
     def identity(self) -> tuple[Any, ...]:
         return (
             self.experiment_id,
-            self.sample_id,
+            self.dataset_sample_id or self.sample_id,
+            self.evaluation_partition,
             self.update_target,
             self.cache_strategy,
             self.adapter_id,

@@ -81,6 +81,83 @@ class SyntheticTaskFactory:
             metadata={"task": "variable_tracking", "updates": updates, "variable": variable},
         )
 
+    def needle_absent(self, *, context_length: int, answer_length: int) -> TaskSample:
+        del answer_length
+        requested = f"needle_{self.rng.randrange(100_000, 200_000)}"
+        records = [
+            f"Record needle_{self.rng.randrange(100_000)} has code {self.rng.randrange(10_000):04d}."
+            for _ in range(max(4, context_length // 10))
+        ]
+        prompt = " ".join(records) + (
+            f"\nQuestion: What code is stored in {requested}? "
+            "Reply NOT_FOUND when the record is absent.\nAnswer:"
+        )
+        return TaskSample(
+            prompt=prompt,
+            answer="NOT_FOUND",
+            metadata={"task": "needle_absent", "target": requested},
+        )
+
+    def multi_hop_tracing(self, *, context_length: int, answer_length: int) -> TaskSample:
+        hop_count = max(3, min(12, context_length // 512))
+        entities = [f"entity_{self.rng.randrange(1_000_000)}" for _ in range(hop_count + 1)]
+        answer = "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length))
+        facts = [f"{entities[index]} points to {entities[index + 1]}." for index in range(hop_count)]
+        facts.append(f"{entities[-1]} stores value {answer}.")
+        distractors = [
+            f"entity_{self.rng.randrange(1_000_000)} points to entity_{self.rng.randrange(1_000_000)}."
+            for _ in range(max(hop_count, context_length // 12))
+        ]
+        combined = distractors + facts
+        self.rng.shuffle(combined)
+        prompt = "\n".join(combined) + (
+            f"\nQuestion: Follow the pointer chain beginning at {entities[0]}. "
+            "What value is stored at the final entity?\nAnswer:"
+        )
+        return TaskSample(
+            prompt=prompt,
+            answer=answer,
+            metadata={"task": "multi_hop_tracing", "hop_count": hop_count},
+        )
+
+    def aggregation(self, *, context_length: int, answer_length: int) -> TaskSample:
+        del answer_length
+        target = f"group_{self.rng.randrange(1000)}"
+        target_count = self.rng.randrange(3, 12)
+        lines = [f"Event belongs to {target}." for _ in range(target_count)]
+        lines.extend(
+            f"Event belongs to group_{self.rng.randrange(1000)}."
+            for _ in range(max(target_count, context_length // 10))
+        )
+        self.rng.shuffle(lines)
+        prompt = "\n".join(lines) + (
+            f"\nQuestion: How many events belong to {target}? Reply with one integer.\nAnswer:"
+        )
+        return TaskSample(
+            prompt=prompt,
+            answer=str(target_count),
+            metadata={"task": "aggregation", "target": target, "count": target_count},
+        )
+
+    def common_words(self, *, context_length: int, answer_length: int) -> TaskSample:
+        common_count = max(2, min(6, answer_length))
+        common = [f"shared_{self.rng.randrange(100_000)}" for _ in range(common_count)]
+        list_count = max(3, min(8, context_length // 512))
+        lists: list[list[str]] = []
+        for _ in range(list_count):
+            unique = [f"item_{self.rng.randrange(1_000_000)}" for _ in range(max(3, context_length // 128))]
+            items = unique + common
+            self.rng.shuffle(items)
+            lists.append(items)
+        prompt = "\n".join(
+            f"List {index + 1}: {', '.join(items)}" for index, items in enumerate(lists)
+        ) + "\nQuestion: Which words occur in every list? Return a comma-separated set.\nAnswer:"
+        return TaskSample(
+            prompt=prompt,
+            answer=", ".join(sorted(common)),
+            metadata={"task": "common_words", "list_count": list_count, "common_count": common_count},
+        )
+
     def build(
         self,
         task: str,
@@ -105,6 +182,26 @@ class SyntheticTaskFactory:
         if task == "variable_tracking":
             return [
                 self.variable_tracking(context_length=context_length, answer_length=answer_length)
+                for _ in range(num_samples)
+            ]
+        if task == "needle_absent":
+            return [
+                self.needle_absent(context_length=context_length, answer_length=answer_length)
+                for _ in range(num_samples)
+            ]
+        if task == "multi_hop_tracing":
+            return [
+                self.multi_hop_tracing(context_length=context_length, answer_length=answer_length)
+                for _ in range(num_samples)
+            ]
+        if task == "aggregation":
+            return [
+                self.aggregation(context_length=context_length, answer_length=answer_length)
+                for _ in range(num_samples)
+            ]
+        if task == "common_words":
+            return [
+                self.common_words(context_length=context_length, answer_length=answer_length)
                 for _ in range(num_samples)
             ]
         raise ValueError(f"Unsupported synthetic task: {task}")

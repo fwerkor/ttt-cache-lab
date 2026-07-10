@@ -34,3 +34,11 @@ def test_build_supports_new_tasks() -> None:
         samples = factory.build(task, num_samples=2, context_length=512, answer_length=4)
         assert len(samples) == 2
         assert all(sample.answer for sample in samples)
+
+
+def test_extended_long_context_tasks_are_deterministic() -> None:
+    for task in ("needle_absent", "multi_hop_tracing", "aggregation", "common_words"):
+        first = SyntheticTaskFactory(19).build(task, num_samples=2, context_length=2048, answer_length=4)
+        second = SyntheticTaskFactory(19).build(task, num_samples=2, context_length=2048, answer_length=4)
+        assert first == second
+        assert all(sample.answer for sample in first)

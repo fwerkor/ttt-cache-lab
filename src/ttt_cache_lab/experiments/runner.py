@@ -274,7 +274,7 @@ class ExperimentRunner:
                             failure_map_path=failure_map_path,
                             failure_map_sha256=failure_map_sha256,
                             cache_manager_scope="condition",
-                            **record_run_fields(self.config, approx, run_metadata),
+                            **record_run_fields(self.config, approx, run_metadata, sample=sample),
                         )
                     )
                 backend.restore_after_update()

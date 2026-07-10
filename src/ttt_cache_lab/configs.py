@@ -28,6 +28,12 @@ class ModelConfig(BaseModel):
 class DataConfig(BaseModel):
     source: Literal["synthetic", "jsonl", "huggingface"] = "synthetic"
     task: str = "passkey"
+    benchmark_name: str = ""
+    task_family: str = ""
+    evaluation_partition: Literal["all", "calibration", "validation", "test"] = "all"
+    selection_seed: int = 0
+    shuffle: bool = True
+    sample_offset: int = Field(default=0, ge=0)
     num_samples: int = 16
     context_length: int = 512
     answer_length: int = 4
@@ -37,12 +43,34 @@ class DataConfig(BaseModel):
     dataset_split: str = "test"
     prompt_field: str = "prompt"
     answer_field: str = "answer"
-    scorer: Literal["exact_match", "contains", "token_f1", "rouge_l", "code_similarity"] = "exact_match"
+    scorer: Literal[
+        "exact_match",
+        "contains",
+        "token_f1",
+        "rouge_l",
+        "code_similarity",
+        "multiple_choice",
+        "numeric_match",
+        "set_f1",
+    ] = "exact_match"
     context_field: str | None = None
     question_field: str | None = None
+    choices_field: str | None = None
+    id_field: str | None = None
+    category_field: str | None = None
+    metadata_fields: list[str] = Field(default_factory=list)
+    filters: dict[str, Any] = Field(default_factory=dict)
     prompt_template: str = "{context}\n\nQuestion: {question}\nAnswer:"
+    choice_template: str = "{label}. {choice}"
     truncation_strategy: Literal["error", "left", "middle"] = "error"
     adapter_activation_marker: str | None = None
+
+
+class MeasurementConfig(BaseModel):
+    warmup_runs: int = Field(default=0, ge=0)
+    timed_runs: int = Field(default=1, ge=1)
+    bootstrap_resamples: int = Field(default=2000, ge=100)
+    confidence_level: float = Field(default=0.95, gt=0.0, lt=1.0)
 
 
 class UpdateConfig(BaseModel):
@@ -86,6 +114,7 @@ class ExperimentConfig(BaseModel):
     updates: UpdateConfig = Field(default_factory=UpdateConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    measurement: MeasurementConfig = Field(default_factory=MeasurementConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> ExperimentConfig:
@@ -168,6 +197,7 @@ class VersionedExperimentConfig(BaseModel):
     updates: UpdateConfig = Field(default_factory=UpdateConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    measurement: MeasurementConfig = Field(default_factory=MeasurementConfig)
     adapter: AdapterConfig = Field(default_factory=AdapterConfig)
     version_steps: list[int] = Field(default_factory=lambda: [1, 2, 4, 8, 16])
     cached_version: int = 0

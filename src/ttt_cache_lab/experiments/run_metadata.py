@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.models.interface import BackendOutput
 
 _SAFE_ENVIRONMENT_KEYS = (
@@ -72,14 +73,26 @@ def record_run_fields(
     config: BaseModel,
     output: BackendOutput,
     metadata: dict[str, Any],
+    *,
+    sample: TaskSample | None = None,
 ) -> dict[str, Any]:
     payload = config.model_dump(mode="json")
     model = payload.get("model", {})
     data = payload.get("data", {})
     extras = output.extras or {}
+    sample_metadata = sample.metadata if sample is not None else {}
     return {
         "seed": int(payload.get("seed", 0)),
         "task_name": str(data.get("task", "")),
+        "task_family": str(sample_metadata.get("task_family", data.get("task_family", ""))),
+        "benchmark_name": str(sample_metadata.get("benchmark_name", data.get("benchmark_name", ""))),
+        "evaluation_partition": str(
+            sample_metadata.get("evaluation_partition", data.get("evaluation_partition", "all"))
+        ),
+        "dataset_split": str(sample_metadata.get("dataset_split", data.get("dataset_split", ""))),
+        "dataset_sample_id": str(sample_metadata.get("dataset_sample_id", "")),
+        "dataset_category": str(sample_metadata.get("category", "")),
+        "selection_seed": int(data.get("selection_seed", 0)),
         "backend_name": str(model.get("backend", "")),
         "torch_dtype": str(model.get("torch_dtype", "")),
         "attention_implementation": str(
