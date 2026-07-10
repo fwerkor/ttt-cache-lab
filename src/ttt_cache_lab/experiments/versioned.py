@@ -8,7 +8,7 @@ from pathlib import Path
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
-from ttt_cache_lab.data.synthetic import SyntheticTaskFactory
+from ttt_cache_lab.data.synthetic import SyntheticTaskFactory, TaskSample
 from ttt_cache_lab.experiments.metrics import (
     estimate_recompute_fraction,
     is_cache_hit,
@@ -100,7 +100,7 @@ class VersionedExperimentRunner:
                     )
 
                 for step in range(1, max_version + 1):
-                    version_update = self._update_one_version(backend, sample.prompt, target, current)
+                    version_update = self._update_one_version(backend, sample, target, current)
                     accumulated_update_norm += version_update.update_norm
                     current = version_update.output
                     if step not in target_steps:
@@ -140,7 +140,7 @@ class VersionedExperimentRunner:
     def _update_one_version(
         self,
         backend: ModelBackend,
-        prompt: str,
+        sample: TaskSample,
         target: UpdateTarget,
         current: BackendOutput,
     ) -> _VersionUpdate:
@@ -148,7 +148,7 @@ class VersionedExperimentRunner:
             norms = []
             for _ in range(self.config.adapter.train_steps_per_version):
                 norm = backend.train_lora_step(
-                    prompt,
+                    sample,
                     target,
                     rank=self.config.adapter.lora_rank,
                     alpha=self.config.adapter.lora_alpha,

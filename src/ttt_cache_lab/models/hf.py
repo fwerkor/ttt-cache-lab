@@ -79,6 +79,8 @@ class HuggingFaceBackend:
         self._active_lora_modules: list[Any] = []
         self._lora_target_key: str | None = None
         self._prepared_input_ids: dict[str, Any] = {}
+        self._sample_answers: dict[str, str] = {}
+        self._sample_answer_token_counts: dict[str, int] = {}
 
     def _infer_num_layers(self) -> int:
         config = self.model.config
@@ -110,6 +112,9 @@ class HuggingFaceBackend:
             padding = self.torch.full((1, context_length - current), filler_id, dtype=input_ids.dtype)
             input_ids = self.torch.cat([padding, input_ids], dim=1)
         self._prepared_input_ids[sample.prompt] = input_ids
+        answer_ids = self.tokenizer(sample.answer, add_special_tokens=False).get("input_ids", [])
+        self._sample_answers[sample.prompt] = sample.answer
+        self._sample_answer_token_counts[sample.prompt] = max(1, len(answer_ids))
         metadata = dict(sample.metadata)
         metadata["token_length"] = context_length
         return TaskSample(prompt=sample.prompt, answer=sample.answer, metadata=metadata)
@@ -142,11 +147,11 @@ class HuggingFaceBackend:
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             self._set_lora_capture(False)
-            probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
+            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
         synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
         return BackendOutput(
-            logits=self._to_numpy(probe.logits[:, -1, :]),
+            logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
             hidden_tensor=self._summarize_hidden(prefill.hidden_states),
             parameter_version=self.parameter_version,
@@ -155,6 +160,8 @@ class HuggingFaceBackend:
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
+                "generated_text": generated_text,
+                "decode_latency": decode_s,
             },
         )
 
@@ -188,11 +195,11 @@ class HuggingFaceBackend:
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             self._set_lora_capture(False)
-            probe = self.model(input_ids=state.probe_ids, past_key_values=prefill.past_key_values, use_cache=True)
+            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
         synchronize(self.torch, self.device)
         self._last_prefill_s = time.perf_counter() - start
         return BackendOutput(
-            logits=self._to_numpy(probe.logits[:, -1, :]),
+            logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
             hidden_tensor=self._summarize_hidden(prefill.hidden_states),
             parameter_version=self.parameter_version,
@@ -201,6 +208,8 @@ class HuggingFaceBackend:
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
+                "generated_text": generated_text,
+                "decode_latency": decode_s,
             },
         )
 
@@ -223,10 +232,14 @@ class HuggingFaceBackend:
         return full
 
     def score_answer(self, sample: TaskSample, output: BackendOutput) -> float:
+        extras = output.extras or {}
+        generated = extras.get("generated_text")
+        if isinstance(generated, str):
+            return 1.0 if generated.strip() == sample.answer.strip() else 0.0
         logits = output.logits[0]
         top_token = int(np.argmax(logits))
         decoded = self.tokenizer.decode([top_token]).strip()
-        return 1.0 if decoded and sample.answer and sample.answer.startswith(decoded) else 0.0
+        return 1.0 if decoded and decoded == sample.answer.strip() else 0.0
 
     def estimate_latency(self, decision: StrategyDecision, *, context_length: int) -> float:
         if decision.action is CacheAction.FULL_RECOMPUTE:
@@ -316,7 +329,7 @@ class HuggingFaceBackend:
 
     def train_lora_step(
         self,
-        prompt: str,
+        sample: TaskSample,
         target: UpdateTarget,
         *,
         rank: int,
@@ -328,19 +341,33 @@ class HuggingFaceBackend:
         if count == 0:
             raise ValueError(f"No Linear modules matched LoRA target {target.raw!r}")
         self.model.train()
-        encoded = self.tokenizer(
-            prompt,
+        prompt_ids = self._prepared_input_ids.get(sample.prompt)
+        if prompt_ids is None:
+            prompt_ids = self.tokenizer(
+                sample.prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self.max_length,
+                add_special_tokens=True,
+            )["input_ids"]
+        answer_ids = self.tokenizer(
+            sample.answer,
             return_tensors="pt",
-            truncation=True,
-            max_length=self.max_length,
-            add_special_tokens=True,
-        )
-        input_ids = encoded["input_ids"].to(self.device)
-        if input_ids.shape[1] < 2:
+            add_special_tokens=False,
+        )["input_ids"]
+        if answer_ids.shape[1] == 0:
             self.model.eval()
             return 0.0
-        labels = input_ids.clone()
-        outputs = self.model(input_ids=input_ids, labels=labels, use_cache=False)
+        input_ids = self.torch.cat([prompt_ids, answer_ids], dim=1).to(self.device)
+        labels = self.torch.full_like(input_ids, -100)
+        labels[:, -answer_ids.shape[1] :] = answer_ids.to(self.device)
+        attention_mask = self.torch.ones_like(input_ids, device=self.device)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+            use_cache=False,
+        )
         loss = outputs.loss
         loss.backward()
         total_norm = 0.0
@@ -406,6 +433,30 @@ class HuggingFaceBackend:
             probe_ids=input_ids[:, -1:],
             attention_mask=attention_mask,
         )
+
+    def _generate_answer(self, state: _PromptState, past: Any) -> tuple[Any, str, float]:
+        max_new_tokens = self._sample_answer_token_counts.get(state.prompt, 1)
+        current = state.probe_ids
+        current_past = past
+        generated: list[Any] = []
+        first_logits = None
+        start = time.perf_counter()
+        for _ in range(max_new_tokens):
+            result = self.model(input_ids=current, past_key_values=current_past, use_cache=True)
+            logits = result.logits[:, -1, :]
+            if first_logits is None:
+                first_logits = logits
+            next_token = self.torch.argmax(logits, dim=-1, keepdim=True)
+            generated.append(next_token)
+            current = next_token
+            current_past = result.past_key_values
+        synchronize(self.torch, self.device)
+        decode_s = time.perf_counter() - start
+        if first_logits is None:
+            raise RuntimeError("Answer generation produced no logits")
+        generated_ids = self.torch.cat(generated, dim=1)[0].detach().cpu().tolist()
+        generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        return first_logits, generated_text, decode_s
 
     def _reuse_old_prefix_cache(self, baseline: BackendOutput) -> BackendOutput:
         if not baseline.extras:
@@ -509,7 +560,7 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
-            probe = self.model(input_ids=state.probe_ids, past_key_values=past, use_cache=True)
+            probe_logits, generated_text, decode_s = self._generate_answer(state, past)
         synchronize(self.torch, self.device)
         latency = time.perf_counter() - start
         extras = {
@@ -518,11 +569,13 @@ class HuggingFaceBackend:
             "lora_cache": lora_cache if lora_cache is not None else baseline.extras.get("lora_cache", {}),
             "memory_allocated": memory_allocated(self.torch, self.device),
             "strategy_latency": latency,
+            "generated_text": generated_text,
+            "decode_latency": decode_s,
         }
         if extra_metadata:
             extras.update(extra_metadata)
         return BackendOutput(
-            logits=self._to_numpy(probe.logits[:, -1, :]),
+            logits=self._to_numpy(probe_logits),
             cache_tensor=cache_tensor,
             hidden_tensor=hidden_tensor,
             parameter_version=self.parameter_version,

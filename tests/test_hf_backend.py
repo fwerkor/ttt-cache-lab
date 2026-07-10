@@ -41,7 +41,7 @@ def test_hf_score_rejects_empty_decoded_token() -> None:
     assert backend.score_answer(sample, output) == 0.0
 
 
-def test_hf_score_accepts_nonempty_prefix_match() -> None:
+def test_hf_score_requires_complete_exact_match() -> None:
     backend = _backend_with_tokenizer(_TextDecodeTokenizer("4"))
     sample = TaskSample(prompt="", answer="42", metadata={})
     output = BackendOutput(
@@ -49,6 +49,19 @@ def test_hf_score_accepts_nonempty_prefix_match() -> None:
         cache_tensor=np.zeros((1, 2, 1), dtype=np.float64),
         hidden_tensor=np.zeros((1, 1), dtype=np.float64),
         parameter_version=0,
+    )
+    assert backend.score_answer(sample, output) == 0.0
+
+
+def test_hf_score_accepts_generated_exact_match() -> None:
+    backend = _backend_with_tokenizer(_TextDecodeTokenizer("unused"))
+    sample = TaskSample(prompt="", answer="42", metadata={})
+    output = BackendOutput(
+        logits=np.array([[1.0]], dtype=np.float64),
+        cache_tensor=np.zeros((1, 2, 1), dtype=np.float64),
+        hidden_tensor=np.zeros((1, 1), dtype=np.float64),
+        parameter_version=0,
+        extras={"generated_text": "42"},
     )
     assert backend.score_answer(sample, output) == 1.0
 

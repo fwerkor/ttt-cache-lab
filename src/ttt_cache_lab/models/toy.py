@@ -135,7 +135,7 @@ class ToyBackend:
 
     def train_lora_step(
         self,
-        prompt: str,
+        sample: TaskSample,
         target: UpdateTarget,
         *,
         rank: int,
@@ -143,7 +143,7 @@ class ToyBackend:
         learning_rate: float,
         freeze_base_model: bool = True,
     ) -> float:
-        del prompt, rank, alpha, freeze_base_model
+        del sample, rank, alpha, freeze_base_model
         # Toy mode has no persistent parameters. Return a deterministic update-norm proxy.
         return learning_rate * self._target_multiplier(target)
 
