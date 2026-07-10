@@ -133,6 +133,7 @@ class HuggingFaceBackend:
             raise ValueError(f"Unsupported parallelism mode: {parallelism}")
         self.model.eval()
         self.num_layers = self._infer_num_layers()
+        self._parameter_count = sum(int(parameter.numel()) for parameter in self.model.parameters())
         self.max_length = max_length
         self.parameter_version = 0
         self._deltas: list[tuple[Any, Any]] = []
@@ -155,6 +156,14 @@ class HuggingFaceBackend:
         self._last_correction_flops = 0.0
         self._last_low_rank_cache_bytes = 0
         self._last_residual_cache_bytes = 0
+
+    @property
+    def hidden_size(self) -> int:
+        return self._hidden_size()
+
+    @property
+    def parameter_count(self) -> int:
+        return self._parameter_count
 
     def _infer_num_layers(self) -> int:
         return self._infer_num_layers_from_config(self.model.config)

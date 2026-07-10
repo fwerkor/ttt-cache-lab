@@ -72,6 +72,7 @@ class ExperimentRecord:
     model_name: str = ""
     model_num_layers: int = 0
     model_hidden_size: int = 0
+    model_parameter_count: int = 0
     configured_update_norm: float = 0.0
     baseline_task_score: float = 0.0
     full_task_score: float = 0.0

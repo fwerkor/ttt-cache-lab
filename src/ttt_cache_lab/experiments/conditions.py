@@ -18,6 +18,7 @@ REFERENCE_FIELDS = (
     "model_name",
     "model_num_layers",
     "model_hidden_size",
+    "model_parameter_count",
     "configured_update_norm",
     "seed",
 )
@@ -28,6 +29,7 @@ CONDITION_FIELDS = (
     "model_name",
     "model_num_layers",
     "model_hidden_size",
+    "model_parameter_count",
     "context_length",
     "task_name",
     "task_family",

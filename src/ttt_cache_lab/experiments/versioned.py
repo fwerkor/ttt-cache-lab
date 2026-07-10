@@ -628,7 +628,8 @@ class VersionedExperimentRunner:
                         or "toy"
                     ),
                     model_num_layers=backend.num_layers,
-                    model_hidden_size=self.config.model.hidden_size,
+                    model_hidden_size=backend.hidden_size,
+                    model_parameter_count=backend.parameter_count,
                     configured_update_norm=self.config.updates.update_norm,
                     baseline_task_score=baseline_task_score,
                     full_task_score=full_task_score,

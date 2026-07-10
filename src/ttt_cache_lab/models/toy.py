@@ -30,6 +30,10 @@ class ToyBackend:
         self._last_raw_update_norm = 0.0
         self._last_applied_update_norm = 0.0
 
+    @property
+    def parameter_count(self) -> int:
+        return self.num_layers * self.hidden_size * self.hidden_size + self.hidden_size * self.vocab_size
+
     def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample:
         del context_length
         self._sample_answers[sample.prompt] = sample.answer
