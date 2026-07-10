@@ -87,7 +87,9 @@ def test_generate_failure_map(tmp_path: Path) -> None:
     assert policy.exists()
     assert "full_recompute" in policy.read_text(encoding="utf-8")
     assert (tmp_path / "failure" / "failure_map.csv").exists()
-    assert (tmp_path / "failure" / "logits_kl_heatmap.svg").exists()
+    heatmap = tmp_path / "failure" / "logits_kl_heatmap.svg"
+    assert heatmap.exists()
+    assert "stale_reuse / lora.k" in heatmap.read_text(encoding="utf-8")
 
 
 def test_generate_pareto(tmp_path: Path) -> None:
@@ -100,3 +102,6 @@ def test_generate_pareto(tmp_path: Path) -> None:
     assert output.exists()
     assert "dominated" in output.read_text(encoding="utf-8")
     assert (tmp_path / "pareto" / "pareto.md").exists()
+    svg = tmp_path / "pareto" / "pareto.svg"
+    assert svg.exists()
+    assert "Planner quality-cost Pareto frontier" in svg.read_text(encoding="utf-8")

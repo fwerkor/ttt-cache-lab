@@ -6,7 +6,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig
-from ttt_cache_lab.experiments.failure_map import generate_failure_map
+from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
 from ttt_cache_lab.experiments.pareto import generate_pareto
 from ttt_cache_lab.experiments.report import generate_report
 from ttt_cache_lab.experiments.runner import ExperimentRunner
@@ -62,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     failure_map = subparsers.add_parser("failure-map", help="Generate E3 failure-map tables and heatmap")
     failure_map.add_argument("--input", required=True, type=Path)
     failure_map.add_argument("--output-dir", required=True, type=Path)
+    failure_map.add_argument("--safe-kl", type=float, default=0.05)
+    failure_map.add_argument("--safe-top1", type=float, default=0.99)
+    failure_map.add_argument("--safe-task-drop", type=float, default=0.01)
 
     pareto = subparsers.add_parser("pareto", help="Generate E4 quality-cost Pareto table")
     pareto.add_argument("--input", required=True, type=Path)
@@ -125,7 +128,15 @@ def main(argv: list[str] | None = None) -> None:
         console.print(f"Wrote {report}")
         return
     if args.command == "failure-map":
-        policy = generate_failure_map(args.input, args.output_dir)
+        policy = generate_failure_map(
+            args.input,
+            args.output_dir,
+            thresholds=FailureThresholds(
+                safe_kl=args.safe_kl,
+                safe_top1=args.safe_top1,
+                safe_task_drop=args.safe_task_drop,
+            ),
+        )
         console.print(f"Wrote {policy}")
         return
     if args.command == "pareto":
