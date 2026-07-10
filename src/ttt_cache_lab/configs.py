@@ -19,6 +19,8 @@ class ModelConfig(BaseModel):
     torch_dtype: str = "auto"
     max_length: int = 2048
     trust_remote_code: bool = False
+    parallelism: Literal["single", "model_shard"] = "single"
+    device_ids: list[int] = Field(default_factory=list)
 
 
 class DataConfig(BaseModel):

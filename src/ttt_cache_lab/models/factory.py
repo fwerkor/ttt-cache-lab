@@ -24,6 +24,8 @@ def build_backend(config: ModelConfig, *, seed: int) -> ModelBackend:
             torch_dtype=config.torch_dtype,
             max_length=config.max_length,
             trust_remote_code=config.trust_remote_code,
+            parallelism=config.parallelism,
+            device_ids=config.device_ids,
             seed=seed,
         )
     if config.backend == "ascend_hf":
@@ -37,6 +39,8 @@ def build_backend(config: ModelConfig, *, seed: int) -> ModelBackend:
             torch_dtype=config.torch_dtype,
             max_length=config.max_length,
             trust_remote_code=config.trust_remote_code,
+            parallelism=config.parallelism,
+            device_ids=config.device_ids,
             seed=seed,
         )
     raise ValueError(f"Unsupported model backend: {config.backend}")

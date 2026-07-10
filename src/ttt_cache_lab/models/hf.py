@@ -52,30 +52,67 @@ class HuggingFaceBackend:
         torch_dtype: str,
         max_length: int,
         trust_remote_code: bool,
+        parallelism: str = "single",
+        device_ids: list[int] | None = None,
         seed: int,
     ) -> None:
         try:
             import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
         except ImportError as exc:  # pragma: no cover - exercised only without optional deps
             raise RuntimeError("Install the HF backend with: pip install -e '.[hf]'") from exc
 
         self.torch = torch
         self.seed = seed
         torch.manual_seed(seed)
-        self.device = self._resolve_device(device)
         dtype = self._resolve_dtype(torch_dtype)
         load_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
         if dtype is not None:
-            load_kwargs["torch_dtype"] = dtype
+            load_kwargs["dtype"] = dtype
         tokenizer_factory = cast(Any, AutoTokenizer)
         model_factory = cast(Any, AutoModelForCausalLM)
+        config_factory = cast(Any, AutoConfig)
         self.tokenizer: Any = tokenizer_factory.from_pretrained(
             model_name_or_path,
             trust_remote_code=trust_remote_code,
         )
-        self.model: Any = model_factory.from_pretrained(model_name_or_path, **load_kwargs)
-        self.model.to(self.device)
+        if parallelism == "model_shard":
+            from ttt_cache_lab.models.sharding import build_model_shard_plan, resolve_shard_device_ids
+
+            resolved = self._resolve_device(device)
+            device_type = resolved.split(":", maxsplit=1)[0]
+            ids = resolve_shard_device_ids(
+                torch,
+                device_type=device_type,
+                configured=list(device_ids or []),
+            )
+            model_config = config_factory.from_pretrained(
+                model_name_or_path,
+                trust_remote_code=trust_remote_code,
+            )
+            shard_plan = build_model_shard_plan(
+                model_config,
+                device_type=device_type,
+                device_ids=ids,
+            )
+            load_kwargs["device_map"] = shard_plan.device_map
+            load_kwargs["low_cpu_mem_usage"] = True
+            self.device = shard_plan.input_device
+            self.devices = shard_plan.devices
+            self.model: Any = model_factory.from_pretrained(model_name_or_path, **load_kwargs)
+            self.parallelism = "model_shard"
+            self.layer_to_device = shard_plan.layer_to_device
+        elif parallelism == "single":
+            self.device = self._resolve_device(device)
+            self.devices = (self.device,)
+            self.model = model_factory.from_pretrained(model_name_or_path, **load_kwargs)
+            self.model.to(self.device)
+            self.parallelism = "single"
+            self.layer_to_device = tuple(
+                self.device for _ in range(self._infer_num_layers_from_config(self.model.config))
+            )
+        else:
+            raise ValueError(f"Unsupported parallelism mode: {parallelism}")
         self.model.eval()
         self.num_layers = self._infer_num_layers()
         self.max_length = max_length
@@ -95,7 +132,9 @@ class HuggingFaceBackend:
         self._sample_answer_token_counts: dict[str, int] = {}
 
     def _infer_num_layers(self) -> int:
-        config = self.model.config
+        return self._infer_num_layers_from_config(self.model.config)
+
+    def _infer_num_layers_from_config(self, config: Any) -> int:
         for name in ("num_hidden_layers", "n_layer", "num_layers", "n_layers"):
             value = getattr(config, name, None)
             if isinstance(value, int) and value > 0:
@@ -106,9 +145,7 @@ class HuggingFaceBackend:
         if context_length < 2:
             raise ValueError("context_length must be at least 2")
         if context_length > self.max_length:
-            raise ValueError(
-                f"Requested context_length={context_length} exceeds model.max_length={self.max_length}"
-            )
+            raise ValueError(f"Requested context_length={context_length} exceeds model.max_length={self.max_length}")
         encoded = self.tokenizer(sample.prompt, return_tensors="pt", add_special_tokens=True)
         input_ids = encoded["input_ids"]
         current = int(input_ids.shape[1])
@@ -166,14 +203,14 @@ class HuggingFaceBackend:
     def prefill(self, prompt: str) -> BackendOutput:
         state = self._encode_prompt(prompt)
         self._last_state = state
-        reset_peak_memory(self.torch, self.device)
-        synchronize(self.torch, self.device)
+        reset_peak_memory(self.torch, self.devices)
+        synchronize(self.torch, self.devices)
         start = time.perf_counter()
         self._set_lora_capture(True)
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             self._set_lora_capture(False)
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         prefill_s = time.perf_counter() - start
         with self.torch.no_grad():
             probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
@@ -188,8 +225,8 @@ class HuggingFaceBackend:
                 "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
-                "memory_allocated": memory_allocated(self.torch, self.device),
-                "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+                "memory_allocated": memory_allocated(self.torch, self.devices),
+                "peak_memory_allocated": max_memory_allocated(self.torch, self.devices),
                 "cache_bytes": self._past_nbytes(prefill.past_key_values),
                 "token_length": int(state.input_ids.shape[1]),
                 "attention_implementation": self._attention_implementation(),
@@ -207,7 +244,7 @@ class HuggingFaceBackend:
         if not selected:
             raise ValueError(f"No HF parameters matched update target {target.raw!r}")
         self.torch.manual_seed(self.seed + self.parameter_version + 1)
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         start = time.perf_counter()
         for param in selected:
             if not param.is_floating_point():
@@ -216,7 +253,7 @@ class HuggingFaceBackend:
             with self.torch.no_grad():
                 param.add_(noise)
             self._deltas.append((param, noise))
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         self._last_adaptation_s = time.perf_counter() - start
         self.parameter_version += 1
         return BackendOutput(
@@ -229,14 +266,14 @@ class HuggingFaceBackend:
 
     def full_recompute(self, prompt: str, updated: BackendOutput) -> BackendOutput:
         state = self._encode_prompt(prompt)
-        reset_peak_memory(self.torch, self.device)
-        synchronize(self.torch, self.device)
+        reset_peak_memory(self.torch, self.devices)
+        synchronize(self.torch, self.devices)
         start = time.perf_counter()
         self._set_lora_capture(True)
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             self._set_lora_capture(False)
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         prefill_s = time.perf_counter() - start
         with self.torch.no_grad():
             probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
@@ -251,8 +288,8 @@ class HuggingFaceBackend:
                 "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
-                "memory_allocated": memory_allocated(self.torch, self.device),
-                "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+                "memory_allocated": memory_allocated(self.torch, self.devices),
+                "peak_memory_allocated": max_memory_allocated(self.torch, self.devices),
                 "cache_bytes": self._past_nbytes(prefill.past_key_values),
                 "token_length": int(state.input_ids.shape[1]),
                 "attention_implementation": self._attention_implementation(),
@@ -358,7 +395,7 @@ class HuggingFaceBackend:
             if isinstance(module, nn.Linear):
                 wrapped = make_lora_linear(self.torch, nn, module, rank=rank, alpha=alpha)
                 wrapped.lora_name = module_name
-                wrapped.to(self.device)
+                wrapped.to(module.weight.device)
                 setattr(parent, child_name, wrapped)
                 self._lora_modules.append(wrapped)
                 self._activate_lora_module(wrapped)
@@ -396,7 +433,7 @@ class HuggingFaceBackend:
         if count == 0:
             raise ValueError(f"No Linear modules matched LoRA target {target.raw!r}")
         self.model.train()
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         adaptation_start = time.perf_counter()
         prompt_ids = self._prepared_input_ids.get(sample.prompt)
         if prompt_ids is None:
@@ -439,16 +476,13 @@ class HuggingFaceBackend:
                     param.grad = None
         self.model.zero_grad(set_to_none=True)
         self.model.eval()
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         self._last_adaptation_s = time.perf_counter() - adaptation_start
         self.parameter_version += 1
         return total_norm
 
     def snapshot_adapter_state(self) -> tuple[tuple[Any, Any], ...]:
-        return tuple(
-            (module.lora_a.detach().clone(), module.lora_b.detach().clone())
-            for module in self._lora_modules
-        )
+        return tuple((module.lora_a.detach().clone(), module.lora_b.detach().clone()) for module in self._lora_modules)
 
     def load_adapter_state(self, state: tuple[tuple[Any, Any], ...], *, version: int) -> None:
         if len(state) != len(self._lora_modules):
@@ -524,7 +558,7 @@ class HuggingFaceBackend:
             generated.append(next_token)
             current = next_token
             current_past = result.past_key_values
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         decode_s = time.perf_counter() - start
         if first_logits is None:
             raise RuntimeError("Answer generation produced no logits")
@@ -626,8 +660,8 @@ class HuggingFaceBackend:
                 replacements.append((layer_index, original))
                 layer_container[layer_index] = wrapper
 
-            reset_peak_memory(self.torch, self.device)
-            synchronize(self.torch, self.device)
+            reset_peak_memory(self.torch, self.devices)
+            synchronize(self.torch, self.devices)
             start = time.perf_counter()
             self._set_lora_capture(True)
             with self.torch.no_grad():
@@ -638,7 +672,7 @@ class HuggingFaceBackend:
                     output_hidden_states=True,
                 )
                 self._set_lora_capture(False)
-            synchronize(self.torch, self.device)
+            synchronize(self.torch, self.devices)
             maintenance_s = time.perf_counter() - start
             with self.torch.no_grad():
                 probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
@@ -660,8 +694,8 @@ class HuggingFaceBackend:
                 "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
                 "prompt_state": state,
                 "lora_cache": lora_cache,
-                "memory_allocated": memory_allocated(self.torch, self.device),
-                "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+                "memory_allocated": memory_allocated(self.torch, self.devices),
+                "peak_memory_allocated": max_memory_allocated(self.torch, self.devices),
                 "cache_bytes": self._past_nbytes(prefill.past_key_values),
                 "token_length": int(state.input_ids.shape[1]),
                 "attention_implementation": self._attention_implementation(),
@@ -717,6 +751,7 @@ class HuggingFaceBackend:
 
         module = torch.nn.Module()
         if family == "gpt2":
+
             def gpt2_forward(_module: Any, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
                 del _module, args
                 output: tuple[Any, ...] = (cached_hidden,)
@@ -751,8 +786,8 @@ class HuggingFaceBackend:
         if not baseline.extras:
             raise ValueError("Delta correction requires cached HF state from the baseline output")
         split_layer = decision.first_invalid_layer or 0
-        reset_peak_memory(self.torch, self.device)
-        synchronize(self.torch, self.device)
+        reset_peak_memory(self.torch, self.devices)
+        synchronize(self.torch, self.devices)
         start = time.perf_counter()
         corrected_past, corrected_lora_cache = self._apply_lora_weight_delta_to_past(
             baseline.extras["past_key_values"],
@@ -763,7 +798,7 @@ class HuggingFaceBackend:
             result = self._reuse_old_prefix_cache(baseline, reset_memory_stats=False)
             if result.extras is not None:
                 result.extras["delta_mode"] = "unavailable_weight_delta_fallback_to_stale"
-            synchronize(self.torch, self.device)
+            synchronize(self.torch, self.devices)
             total_s = time.perf_counter() - start
             if result.extras is not None:
                 decode_s = float(result.extras.get("decode_latency", 0.0))
@@ -779,13 +814,13 @@ class HuggingFaceBackend:
             lora_cache=corrected_lora_cache,
             extra_metadata={"delta_mode": "lora_weight_delta"},
         )
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         total_s = time.perf_counter() - start
         if result.extras is not None:
             decode_s = float(result.extras.get("decode_latency", 0.0))
             result.extras["cache_maintenance_latency"] = max(0.0, total_s - decode_s)
             result.extras["strategy_latency"] = total_s
-            result.extras["peak_memory_allocated"] = max_memory_allocated(self.torch, self.device)
+            result.extras["peak_memory_allocated"] = max_memory_allocated(self.torch, self.devices)
         self._last_delta_s = total_s
         return result
 
@@ -804,19 +839,19 @@ class HuggingFaceBackend:
             raise ValueError("Baseline output does not contain prompt state")
         state = baseline.extras["prompt_state"]
         if reset_memory_stats:
-            reset_peak_memory(self.torch, self.device)
-        synchronize(self.torch, self.device)
+            reset_peak_memory(self.torch, self.devices)
+        synchronize(self.torch, self.devices)
         start = time.perf_counter()
         with self.torch.no_grad():
             probe_logits, generated_text, decode_s = self._generate_answer(state, past)
-        synchronize(self.torch, self.device)
+        synchronize(self.torch, self.devices)
         latency = time.perf_counter() - start
         extras = {
             "past_key_values": past,
             "prompt_state": state,
             "lora_cache": lora_cache if lora_cache is not None else baseline.extras.get("lora_cache", {}),
-            "memory_allocated": memory_allocated(self.torch, self.device),
-            "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+            "memory_allocated": memory_allocated(self.torch, self.devices),
+            "peak_memory_allocated": max_memory_allocated(self.torch, self.devices),
             "cache_bytes": self._past_nbytes(past),
             "token_length": int(state.input_ids.shape[1]),
             "attention_implementation": self._attention_implementation(),
@@ -1052,8 +1087,7 @@ class HuggingFaceBackend:
         old_layers = list(old_past)
         new_layers = list(new_past)
         merged = [
-            old if idx < split_layer else new
-            for idx, (old, new) in enumerate(zip(old_layers, new_layers, strict=True))
+            old if idx < split_layer else new for idx, (old, new) in enumerate(zip(old_layers, new_layers, strict=True))
         ]
         return tuple(merged)
 
