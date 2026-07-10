@@ -39,8 +39,8 @@ class VersionedCacheManager:
         return self._entries.get((adapter_id, adapter_version))
 
     def put(self, adapter_id: str, adapter_version: int, entry: VersionedCacheEntry) -> None:
-        if any(block.adapter_version != adapter_version for block in entry.blocks):
-            raise ValueError("Cache block version does not match the cache index")
+        if any(block.adapter_version > adapter_version for block in entry.blocks):
+            raise ValueError("Cache block version cannot be newer than the cache index")
         if any(block.adapter_id != adapter_id for block in entry.blocks):
             raise ValueError("Cache block adapter id does not match the cache index")
         self._entries[(adapter_id, adapter_version)] = entry

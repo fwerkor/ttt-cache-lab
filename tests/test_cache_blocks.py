@@ -44,7 +44,14 @@ def test_versioned_cache_manager_indexes_adapter_versions() -> None:
     assert manager.total_block_count() == 2
 
 
-def test_versioned_cache_manager_rejects_mismatched_metadata() -> None:
+def test_versioned_cache_manager_accepts_older_unaffected_blocks() -> None:
     manager = VersionedCacheManager()
-    with pytest.raises(ValueError, match="version"):
-        manager.put("a", 2, VersionedCacheEntry(_output(2), (_block(version=1),)))
+    entry = VersionedCacheEntry(_output(2), (_block(version=1, layer=0), _block(version=2, layer=1)))
+    manager.put("a", 2, entry)
+    assert manager.get("a", 2) == entry
+
+
+def test_versioned_cache_manager_rejects_future_block_metadata() -> None:
+    manager = VersionedCacheManager()
+    with pytest.raises(ValueError, match="newer"):
+        manager.put("a", 2, VersionedCacheEntry(_output(2), (_block(version=3),)))
