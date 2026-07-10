@@ -55,9 +55,16 @@ scripts/run_ascend_e2_parallel.sh
 
 This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVICES` values. It is useful for parallel seeds/configs and is separate from one-model multi-NPU sharding. Each process resolves its ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before loading Transformers.
 
-## 6. Shard one model across all NPUs
+## 6. Shard one model across multiple NPUs
 
-The HF/torch-npu backend supports explicit decoder-layer sharding through an Accelerate device map:
+The HF/torch-npu backend supports explicit decoder-layer sharding through an Accelerate device map. The checked-in 7B E2 configuration uses two NPUs because single-NPU LoRA training at 8K context exhausts a 64 GiB 910B, while the same condition has been validated with two-way layer sharding:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0,1 scripts/run_model_sharded.sh \
+  configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
+```
+
+The 32B template uses all eight NPUs:
 
 ```bash
 scripts/run_model_sharded.sh \
@@ -83,7 +90,7 @@ configs/experiments/ascend_smoke_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
-configs/experiments/ascend_e2_version_drift_qwen_7b.yaml         # manual large-model template
+configs/experiments/ascend_e2_version_drift_qwen_7b.yaml         # 2-NPU model sharding
 configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml  # manual large-model template
 configs/experiments/ascend_e2_version_drift_qwen_32b_8npu.yaml     # 8-NPU model sharding
 configs/experiments/ascend_e5_delta_correction_qwen_0_5b.yaml

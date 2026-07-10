@@ -50,6 +50,15 @@ def test_default_ascend_parallel_excludes_large_manual_templates() -> None:
     assert "ascend_e2_version_drift_llama_3_2_1b.yaml" in script
 
 
+def test_ascend_7b_uses_two_npu_model_sharding() -> None:
+    config = VersionedExperimentConfig.from_yaml(
+        Path("configs/experiments/ascend_e2_version_drift_qwen_7b.yaml")
+    )
+    assert config.model.device == "npu"
+    assert config.model.parallelism == "model_shard"
+    assert config.model.device_ids == [0, 1]
+
+
 def test_attention_metric_sweep_uses_eager_attention() -> None:
     config = VersionedSweepConfig.from_yaml(
         Path("configs/versioned_sweep_e7_boundary_qwen_0_5b.yaml")

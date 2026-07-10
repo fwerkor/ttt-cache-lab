@@ -6,7 +6,9 @@ model:
   backend: ascend_hf
   modelscope_model_id: Qwen/Qwen2.5-7B-Instruct
   model_name_or_path: Qwen/Qwen2.5-7B-Instruct
-  device: npu:0
+  device: npu
+  parallelism: model_shard
+  device_ids: [0, 1]
   torch_dtype: bfloat16
   max_length: 8192
   trust_remote_code: true

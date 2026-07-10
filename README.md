@@ -37,7 +37,7 @@ Implemented:
 - fixed-adapter E1 baselines, including executable aLoRA-style invocation-prefix reuse, LRAgent-style per-adapter caches, and ForkKV-style base/delta decomposition;
 - real KV tensor byte counts, peak allocated memory, adaptation/cache/decode/end-to-end latency, throughput, cache-entry counts, and configurable tensor/task metrics;
 - lightweight E1-E7 templates plus a frozen E1-E8 paper matrix with controlled, LongBench, LongBench v2, code, scaling, ablation, and cache-pressure workloads;
-- single-model layer sharding across multiple CUDA GPUs, including a 6×GPU Qwen2.5-32B template;
+- single-model decoder-layer sharding across CUDA GPUs and Ascend NPUs, including a hardware-validated 2×NPU Qwen2.5-7B 8K path and 6×GPU/8×NPU Qwen2.5-32B templates;
 - condition-preserving E1-E7 analyses that retain model, context, rank, update norm, seed, and sweep axes and pair every strategy with the exact full-recompute reference;
 - E3-calibrated E4 planning with failure-map artifact hashes, runtime action-latency budgets, explicit cache-manager scopes, and measured-oracle provenance;
 - E5 correction/fallback diagnostics, E6 latency/speedup/task-drop scaling plots, E7 paired ablation effects, E8 tail-latency/cache-pressure reports, and adaptation-gain/update-scale reports;
@@ -46,7 +46,7 @@ Implemented:
 - atomic per-target checkpoints, record-level resume, cross-run record merging, structured failure manifests, and run metadata with config/git/package provenance;
 - CI for linting, strict type checking, unit tests, and offline tiny-Llama integration tests that execute real LoRA, KV delta correction, and native layer restart paths.
 
-Remaining work is hardware validation rather than placeholder implementation: the 7B/32B and long-context templates still need to be run on the selected accelerator infrastructure. The aLoRA/LRAgent/ForkKV-style methods are explicitly labeled as paper reimplementations and should still be compared with official upstream implementations where licensing and environments permit.
+Remaining work is paper-scale hardware validation rather than placeholder implementation: Qwen2.5-7B has passed real Ascend smoke and 8K two-NPU feasibility runs, while the full long-context matrix and 14B/32B configurations still need complete measurements on the selected accelerator infrastructure. The aLoRA/LRAgent/ForkKV-style methods are explicitly labeled as paper reimplementations and should still be compared with official upstream implementations where licensing and environments permit.
 
 ## Repository layout
 
@@ -70,7 +70,7 @@ docs/
   runbook.md                  general run instructions
 scripts/
   run_toy_study.sh            run all E1-E7 toy templates
-  run_model_sharded.sh        one-model multi-GPU layer-sharding launcher
+  run_model_sharded.sh        one-model multi-GPU/NPU layer-sharding launcher
 tests/
   unit tests for configs, runners, metrics, planner, reports, and backends
 ```
