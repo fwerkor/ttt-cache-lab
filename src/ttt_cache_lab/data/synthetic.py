@@ -109,7 +109,7 @@ class SyntheticTaskFactory:
         maximum = max(3, min(16, context_length // 256))
         updates = min(
             maximum,
-            _difficulty_value(difficulty, easy=4, medium=8, hard=16),
+            _difficulty_value(difficulty, easy=3, medium=6, hard=16),
         )
         values = ["".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length)) for _ in range(updates)]
         lines = [f"Initial state: {variable} = {values[0]}."]
@@ -177,7 +177,7 @@ class SyntheticTaskFactory:
         maximum = max(3, min(12, context_length // 512))
         hop_count = min(
             maximum,
-            _difficulty_value(difficulty, easy=3, medium=6, hard=12),
+            _difficulty_value(difficulty, easy=2, medium=4, hard=12),
         )
         used_entities: set[str] = set()
 
@@ -192,12 +192,26 @@ class SyntheticTaskFactory:
         answer = "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length))
         facts = [f"{entities[index]} points to {entities[index + 1]}." for index in range(hop_count)]
         facts.append(f"{entities[-1]} stores value {answer}.")
+        hard_distractor_count = max(hop_count, context_length // 24)
+        distractor_count = min(
+            hard_distractor_count,
+            _difficulty_value(
+                difficulty,
+                easy=16,
+                medium=64,
+                hard=hard_distractor_count,
+            ),
+        )
         distractors = []
-        for _ in range(max(hop_count, context_length // 24)):
+        for _ in range(distractor_count):
             source = next_entity()
             destination = next_entity()
             distractors.append(f"{source} points to {destination}.")
-        combined = distractors + facts
+        neutral = [
+            f"Background note doc_{self.rng.randrange(1_000_000)}."
+            for _ in range(hard_distractor_count - distractor_count)
+        ]
+        combined = distractors + neutral + facts
         self.rng.shuffle(combined)
         prompt = "\n".join(combined) + (
             f"\nQuestion: Follow the pointer chain beginning at {entities[0]} until an entity stores a value. "
@@ -223,17 +237,31 @@ class SyntheticTaskFactory:
         del answer_length
         target = f"group_{self.rng.randrange(1000)}"
         lower, upper = {
-            "easy": (20, 33),
-            "medium": (10, 21),
+            "easy": (4, 9),
+            "medium": (6, 13),
             "hard": (3, 12),
         }[difficulty]
         target_count = self.rng.randrange(lower, upper)
         lines = [f"Event belongs to {target}." for _ in range(target_count)]
-        for _ in range(max(target_count, context_length // 10)):
+        hard_distractor_count = max(target_count, context_length // 10)
+        distractor_count = min(
+            hard_distractor_count,
+            _difficulty_value(
+                difficulty,
+                easy=24,
+                medium=96,
+                hard=hard_distractor_count,
+            ),
+        )
+        for _ in range(distractor_count):
             distractor = f"group_{self.rng.randrange(1000)}"
             while distractor == target:
                 distractor = f"group_{self.rng.randrange(1000)}"
             lines.append(f"Event belongs to {distractor}.")
+        lines.extend(
+            f"Background note event_{self.rng.randrange(1_000_000)}."
+            for _ in range(hard_distractor_count - distractor_count)
+        )
         self.rng.shuffle(lines)
         prompt = "\n".join(lines) + (
             f"\nQuestion: How many events belong to {target}? Reply with one integer.\nAnswer:"
@@ -263,8 +291,12 @@ class SyntheticTaskFactory:
             maximum,
             _difficulty_value(difficulty, easy=3, medium=5, hard=8),
         )
-        total_unique = max(24, context_length // 16)
-        unique_per_list = max(3, total_unique // list_count)
+        unique_per_list = _difficulty_value(
+            difficulty,
+            easy=16,
+            medium=32,
+            hard=max(3, context_length // 128),
+        )
         lists: list[list[str]] = []
         for _ in range(list_count):
             unique = [f"item_{self.rng.randrange(1_000_000)}" for _ in range(unique_per_list)]

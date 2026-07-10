@@ -154,4 +154,14 @@ def test_synthetic_difficulty_controls_structural_complexity() -> None:
         answer_length=4,
         difficulty="hard",
     )
-    assert int(easy_aggregation.answer) > int(hard_aggregation.answer)
+    easy_semantic_events = easy_aggregation.prompt.count("Event belongs to group_")
+    hard_semantic_events = hard_aggregation.prompt.count("Event belongs to group_")
+    assert easy_semantic_events < hard_semantic_events
+
+    easy_edges = easy_hop.prompt.count(" points to ")
+    hard_edges = hard_hop.prompt.count(" points to ")
+    assert easy_edges < hard_edges
+
+    easy_items = easy_set.prompt.count("item_")
+    hard_items = hard_set.prompt.count("item_")
+    assert easy_items < hard_items
