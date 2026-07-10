@@ -56,6 +56,7 @@ class DataConfig(BaseModel):
     context_field: str | None = None
     question_field: str | None = None
     choices_field: str | None = None
+    choice_fields: list[str] = Field(default_factory=list)
     id_field: str | None = None
     category_field: str | None = None
     metadata_fields: list[str] = Field(default_factory=list)

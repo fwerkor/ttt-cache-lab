@@ -125,8 +125,10 @@ def _records_to_samples(
 ) -> list[TaskSample]:
     samples: list[TaskSample] = []
     for selection_index, (record_index, record) in enumerate(records):
-        choices = _coerce_choices(
-            _field(record, config.choices_field) if config.choices_field else None
+        choices = (
+            _coerce_choices(_field(record, config.choices_field))
+            if config.choices_field
+            else _choices_from_fields(record, config.choice_fields)
         )
         prompt = _attach_activation_marker(
             _build_prompt(record, config=config, choices=choices),
@@ -234,6 +236,19 @@ def _coerce_answers(value: Any) -> tuple[str, ...]:
         return ()
     return (str(value),)
 
+
+
+def _choices_from_fields(
+    record: Mapping[str, Any],
+    fields: Sequence[str],
+) -> tuple[tuple[str, str], ...]:
+    choices: list[tuple[str, str]] = []
+    for index, field in enumerate(fields):
+        label = field.rsplit("_", maxsplit=1)[-1]
+        if len(label) != 1 or not label.isalpha():
+            label = _choice_label(index)
+        choices.append((label.upper(), str(_field(record, field))))
+    return tuple(choices)
 
 def _coerce_choices(value: Any) -> tuple[tuple[str, str], ...]:
     if value is None:
