@@ -147,3 +147,17 @@ def test_layer_specific_updates_never_fall_back_to_other_layers(tiny_llama_dir: 
             UpdateTarget(kind=ModuleKind.ATTENTION_K, layer=99, raw="attention.k:99"),
             update_norm=0.01,
         )
+
+
+
+def test_direct_update_uses_all_matching_parameters_and_global_norm(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    baseline = backend.prefill("key is alpha Answer :")
+    target = parse_update_target("attention.k", num_layers=backend.num_layers)
+    matching = backend._select_parameters(target)
+    assert len(matching) == backend.num_layers
+    backend.simulate_update(baseline, target, update_norm=0.125)
+    measured = torch.sqrt(
+        sum(torch.sum(delta.detach().double() ** 2) for _, delta in backend._deltas)
+    ).item()
+    assert measured == pytest.approx(0.125, rel=1e-6)

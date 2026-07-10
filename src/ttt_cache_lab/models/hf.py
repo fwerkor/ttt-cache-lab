@@ -243,16 +243,26 @@ class HuggingFaceBackend:
         selected = self._select_parameters(target)
         if not selected:
             raise ValueError(f"No HF parameters matched update target {target.raw!r}")
+        if update_norm < 0.0:
+            raise ValueError("update_norm must be non-negative")
         self.torch.manual_seed(self.seed + self.parameter_version + 1)
         synchronize(self.torch, self.devices)
         start = time.perf_counter()
+        pending: list[tuple[Any, Any]] = []
+        squared_norm = self.torch.zeros((), dtype=self.torch.float64, device=self.device)
         for param in selected:
             if not param.is_floating_point():
                 continue
-            noise = self.torch.randn_like(param) * update_norm
-            with self.torch.no_grad():
-                param.add_(noise)
-            self._deltas.append((param, noise))
+            noise = self.torch.randn_like(param)
+            pending.append((param, noise))
+            squared_norm += self.torch.sum(noise.detach().double() ** 2).to(self.device)
+        raw_norm = float(self.torch.sqrt(squared_norm).cpu())
+        scale = update_norm / raw_norm if raw_norm > 0.0 else 0.0
+        with self.torch.no_grad():
+            for param, noise in pending:
+                delta = noise * scale
+                param.add_(delta)
+                self._deltas.append((param, delta))
         synchronize(self.torch, self.devices)
         self._last_adaptation_s = time.perf_counter() - start
         self.parameter_version += 1
@@ -1022,7 +1032,7 @@ class HuggingFaceBackend:
                 continue
             if any(part in lower for part in filters):
                 selected.append(param)
-        return selected[:4]
+        return selected
 
     def _target_filters(self, kind: ModuleKind) -> tuple[str, ...]:
         mapping = {
