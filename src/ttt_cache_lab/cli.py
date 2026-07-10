@@ -7,8 +7,10 @@ from rich.console import Console
 
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig, VersionedSweepConfig
 from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
+from ttt_cache_lab.experiments.failures import capture_run_failure
 from ttt_cache_lab.experiments.pareto import generate_pareto
 from ttt_cache_lab.experiments.report import generate_report
+from ttt_cache_lab.experiments.results import merge_record_files
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.static_adapters import StaticAdapterExperimentRunner
 from ttt_cache_lab.experiments.summarize import (
@@ -56,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     version_summary.add_argument("--input", required=True, type=Path)
     version_summary.add_argument("--output", required=True, type=Path)
 
+    merge_records = subparsers.add_parser(
+        "merge-records", help="Merge one or more records.jsonl files for cross-run analysis"
+    )
+    merge_records.add_argument("--input", required=True, type=Path, nargs="+")
+    merge_records.add_argument("--output-dir", required=True, type=Path)
+
     version_report = subparsers.add_parser(
         "version-report", help="Generate Markdown and SVG report from versioned records"
     )
@@ -82,7 +90,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "run":
         config = ExperimentConfig.from_yaml(args.config)
         console.print(f"[bold]Running experiment:[/bold] {config.name}")
-        result = ExperimentRunner(config).run()
+        result = capture_run_failure(
+            config.output_dir,
+            config,
+            lambda: ExperimentRunner(config).run(),
+        )
         console.print(f"Wrote {result.jsonl_path}")
         console.print(f"Wrote {result.csv_path}")
         return
@@ -98,19 +110,31 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "sweep":
         sweep_config = SweepConfig.from_yaml(args.config)
-        artifacts = run_sweep(sweep_config)
+        artifacts = capture_run_failure(
+            sweep_config.output_dir,
+            sweep_config,
+            lambda: run_sweep(sweep_config),
+        )
         console.print(f"Wrote {artifacts.merged_records_csv}")
         console.print(f"Wrote {artifacts.grouped_csv}")
         return
     if args.command == "versioned-sweep":
         versioned_sweep_config = VersionedSweepConfig.from_yaml(args.config)
-        artifacts = run_versioned_sweep(versioned_sweep_config)
+        artifacts = capture_run_failure(
+            versioned_sweep_config.output_dir,
+            versioned_sweep_config,
+            lambda: run_versioned_sweep(versioned_sweep_config),
+        )
         console.print(f"Wrote {artifacts.merged_records_csv}")
         console.print(f"Wrote {artifacts.grouped_csv}")
         return
     if args.command == "versioned-run":
         versioned_config = VersionedExperimentConfig.from_yaml(args.config)
-        versioned_artifacts = VersionedExperimentRunner(versioned_config).run()
+        versioned_artifacts = capture_run_failure(
+            versioned_config.output_dir,
+            versioned_config,
+            lambda: VersionedExperimentRunner(versioned_config).run(),
+        )
         console.print(f"Wrote {versioned_artifacts.jsonl_path}")
         console.print(f"Wrote {versioned_artifacts.csv_path}")
         if args.version_summary:
@@ -120,13 +144,22 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "static-run":
         static_config = VersionedExperimentConfig.from_yaml(args.config)
-        static_artifacts = StaticAdapterExperimentRunner(static_config).run()
+        static_artifacts = capture_run_failure(
+            static_config.output_dir,
+            static_config,
+            lambda: StaticAdapterExperimentRunner(static_config).run(),
+        )
         console.print(f"Wrote {static_artifacts.jsonl_path}")
         console.print(f"Wrote {static_artifacts.csv_path}")
         if args.version_summary:
             output = static_config.output_dir / "version_summary.csv"
             write_version_summary(static_artifacts.csv_path, output)
             console.print(f"Wrote {output}")
+        return
+    if args.command == "merge-records":
+        merged_artifacts = merge_record_files(args.input, args.output_dir)
+        console.print(f"Wrote {merged_artifacts.jsonl_path}")
+        console.print(f"Wrote {merged_artifacts.csv_path}")
         return
     if args.command == "version-summary":
         write_version_summary(args.input, args.output)
