@@ -1,0 +1,50 @@
+name: e4-planner-main-qwen-0-5b
+output_dir: runs/e4_planner_main_qwen_0_5b
+experiment_id: e4_planner_main
+seed: 7
+model:
+  backend: hf
+  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  modelscope_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  device: auto
+  torch_dtype: auto
+  max_length: 2048
+  trust_remote_code: true
+data:
+  task: key_value
+  num_samples: 4
+  context_length: 2048
+  answer_length: 4
+updates:
+  targets:
+    - lora.q
+    - lora.k
+    - lora.v
+    - lora.qv
+    - lora.mlp_late
+    - norm
+  update_norm: 0.00001
+cache:
+  strategies:
+    - no_adaptation
+    - full_recompute
+    - stale_reuse
+    - periodic_refresh
+    - threshold_refresh
+    - static_base_delta
+    - delta_correction
+    - layerwise_recompute
+    - adaptive
+    - oracle_planner
+  refresh_period: 4
+  update_norm_threshold: 0.05
+  oracle_kl_threshold: 0.05
+  oracle_task_drop_threshold: 0.01
+adapter:
+  update_mode: lora_train
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps: [0, 1, 2, 4, 8]

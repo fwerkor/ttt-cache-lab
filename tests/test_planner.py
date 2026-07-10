@@ -51,12 +51,8 @@ def test_strategy_update_norm_threshold_is_configurable() -> None:
     from ttt_cache_lab.cache.strategies import build_strategy
 
     target = parse_update_target("lora.k")
-    low_threshold = build_strategy("adaptive", update_norm_threshold=0.0).decide(
-        target, step=1, update_norm=0.01
-    )
-    default_threshold = build_strategy("adaptive", update_norm_threshold=0.05).decide(
-        target, step=1, update_norm=0.01
-    )
+    low_threshold = build_strategy("adaptive", update_norm_threshold=0.0).decide(target, step=1, update_norm=0.01)
+    default_threshold = build_strategy("adaptive", update_norm_threshold=0.05).decide(target, step=1, update_norm=0.01)
     assert low_threshold.action is CacheAction.PARTIAL_RECOMPUTE
     assert default_threshold.action is CacheAction.DELTA_CORRECT
 
@@ -81,3 +77,37 @@ def test_static_baseline_strategies_are_buildable() -> None:
     ):
         decision = build_strategy(name).decide(parse_update_target("lora.k"), step=1, update_norm=0.01)
         assert str(decision.strategy) == name
+
+
+def test_adaptive_component_ablation_strategies() -> None:
+    from ttt_cache_lab.cache.strategies import build_strategy
+
+    target = parse_update_target("lora.k:2")
+    assert (
+        build_strategy("adaptive_no_version").decide(target, step=0, update_norm=0.01).action
+        is not CacheAction.REUSE_EXACT
+    )
+    assert (
+        build_strategy("adaptive_no_target").decide(target, step=1, update_norm=0.01).action is CacheAction.REUSE_STALE
+    )
+    assert (
+        build_strategy("adaptive_no_norm").decide(target, step=1, update_norm=100.0).action is CacheAction.DELTA_CORRECT
+    )
+    assert (
+        build_strategy("adaptive_no_delta").decide(target, step=1, update_norm=0.01).action
+        is CacheAction.PARTIAL_RECOMPUTE
+    )
+    assert (
+        build_strategy("adaptive_no_partial").decide(target, step=1, update_norm=1.0).action
+        is CacheAction.FULL_RECOMPUTE
+    )
+
+
+def test_adaptive_periodic_fallback_ablation() -> None:
+    from ttt_cache_lab.cache.strategies import build_strategy
+
+    target = parse_update_target("attention.q")
+    full = build_strategy("adaptive", refresh_period=4).decide(target, step=8, update_norm=0.01)
+    no_periodic = build_strategy("adaptive_no_periodic", refresh_period=4).decide(target, step=8, update_norm=0.01)
+    assert full.action is CacheAction.FULL_RECOMPUTE
+    assert no_periodic.action is CacheAction.REUSE_FROZEN

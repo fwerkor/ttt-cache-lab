@@ -1,16 +1,19 @@
-name: e7-ablation-failure-toy
-output_dir: runs/e7_ablation_failure
+name: ascend-e7-ablation-failure-qwen-0-5b
+output_dir: runs/ascend_e7_ablation_failure_qwen_0_5b
 experiment_id: e7_ablation_failure
 seed: 7
 model:
-  backend: toy
-  num_layers: 6
-  hidden_size: 32
-  vocab_size: 256
+  backend: ascend_hf
+  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  modelscope_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  device: npu:0
+  torch_dtype: bfloat16
+  max_length: 2048
+  trust_remote_code: true
 data:
   task: variable_tracking
-  num_samples: 8
-  context_length: 1024
+  num_samples: 4
+  context_length: 2048
   answer_length: 4
 updates:
   targets:
@@ -22,8 +25,7 @@ updates:
     - lora.mlp_early
     - lora.mlp_late
     - norm
-  step_count: 1
-  update_norm: 0.05
+  update_norm: 0.00001
 cache:
   strategies:
     - no_adaptation
@@ -39,9 +41,10 @@ cache:
   refresh_period: 4
   update_norm_threshold: 0.03
 adapter:
-  update_mode: random
+  update_mode: lora_train
   lora_rank: 8
   lora_alpha: 16.0
-  learning_rate: 0.01
+  learning_rate: 0.0002
   train_steps_per_version: 1
-version_steps: [0, 1, 2, 4, 8, 16, 32]
+  freeze_base_model: true
+version_steps: [0, 1, 2, 4, 8]

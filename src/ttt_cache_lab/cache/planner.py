@@ -23,6 +23,10 @@ class PlannerPolicy:
     allow_delta_correction: bool = True
     allow_layerwise_recompute: bool = True
     reject_high_risk_reuse: bool = True
+    use_version_id: bool = True
+    use_target_rules: bool = True
+    use_update_norm: bool = True
+    periodic_refresh_interval: int | None = None
 
 
 class CachePlanner:
@@ -37,11 +41,48 @@ class CachePlanner:
         self.policy = policy or PlannerPolicy()
 
     def plan(self, target: UpdateTarget, *, update_norm: float, version_gap: int = 1) -> PlannerDecision:
-        if version_gap == 0:
+        effective_gap = version_gap if self.policy.use_version_id else 1
+        effective_norm = update_norm if self.policy.use_update_norm else 0.0
+        if self.policy.use_version_id and version_gap == 0:
             return PlannerDecision(
                 CacheBlockState.VALID_EXACT,
                 CacheAction.REUSE_EXACT,
                 "Cache version matches the current adapter version.",
+            )
+
+        if (
+            self.policy.periodic_refresh_interval is not None
+            and effective_gap >= self.policy.periodic_refresh_interval
+        ):
+            return PlannerDecision(
+                CacheBlockState.INVALID,
+                CacheAction.PARTIAL_RECOMPUTE
+                if target.layer is not None and self.policy.allow_layerwise_recompute
+                else CacheAction.FULL_RECOMPUTE,
+                "Periodic safety fallback reached its configured version-gap interval.",
+                first_invalid_layer=target.layer,
+                recompute_fraction=0.0 if target.layer is not None else 1.0,
+            )
+
+        if not self.policy.use_target_rules:
+            if self._small_enough_for_delta(effective_gap, effective_norm):
+                return PlannerDecision(
+                    CacheBlockState.VALID_APPROX,
+                    CacheAction.REUSE_STALE,
+                    "Target-rule ablation treats every update as generic bounded staleness.",
+                )
+            if target.layer is not None and self.policy.allow_layerwise_recompute:
+                return PlannerDecision(
+                    CacheBlockState.INVALID,
+                    CacheAction.PARTIAL_RECOMPUTE,
+                    "Target-rule ablation refreshes from the only available layer boundary.",
+                    first_invalid_layer=target.layer,
+                )
+            return PlannerDecision(
+                CacheBlockState.INVALID,
+                CacheAction.FULL_RECOMPUTE,
+                "Target-rule ablation has no safe generic reuse rule.",
+                recompute_fraction=1.0,
             )
 
         if target.kind is ModuleKind.OUTPUT_HEAD:
@@ -52,7 +93,7 @@ class CachePlanner:
             )
 
         if target.kind in {ModuleKind.ATTENTION_Q, ModuleKind.LORA_Q}:
-            if self._high_gap_or_norm(version_gap, update_norm):
+            if self._high_gap_or_norm(effective_gap, effective_norm):
                 return PlannerDecision(
                     CacheBlockState.VALID_APPROX,
                     CacheAction.REUSE_STALE,
@@ -72,7 +113,7 @@ class CachePlanner:
             ModuleKind.LORA_V,
             ModuleKind.LORA_QV,
         }:
-            if self.policy.allow_delta_correction and self._small_enough_for_delta(version_gap, update_norm):
+            if self.policy.allow_delta_correction and self._small_enough_for_delta(effective_gap, effective_norm):
                 return PlannerDecision(
                     CacheBlockState.VALID_APPROX,
                     CacheAction.DELTA_CORRECT,

@@ -22,6 +22,12 @@ class StrategyName(StrEnum):
     STATIC_BASE_DELTA = "static_base_delta"
     ORACLE_PLANNER = "oracle_planner"
     ADAPTIVE = "adaptive"
+    ADAPTIVE_NO_VERSION = "adaptive_no_version"
+    ADAPTIVE_NO_TARGET = "adaptive_no_target"
+    ADAPTIVE_NO_NORM = "adaptive_no_norm"
+    ADAPTIVE_NO_DELTA = "adaptive_no_delta"
+    ADAPTIVE_NO_PARTIAL = "adaptive_no_partial"
+    ADAPTIVE_NO_PERIODIC = "adaptive_no_periodic"
 
 
 @dataclass(frozen=True)
@@ -164,8 +170,14 @@ class LayerwiseRecomputeStrategy(CacheStrategy):
 class AdaptiveStrategy(CacheStrategy):
     name = StrategyName.ADAPTIVE
 
-    def __init__(self, planner: CachePlanner | None = None) -> None:
+    def __init__(
+        self,
+        planner: CachePlanner | None = None,
+        *,
+        name: StrategyName = StrategyName.ADAPTIVE,
+    ) -> None:
         self.planner = planner or CachePlanner()
+        self.name = name
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
         decision: PlannerDecision = self.planner.plan(target, update_norm=update_norm, version_gap=step)
@@ -184,7 +196,12 @@ class DeltaCorrectionStrategy(CacheStrategy):
     name = StrategyName.DELTA_CORRECTION
 
     def __init__(self, update_norm_threshold: float = 0.05) -> None:
-        self.planner = CachePlanner(PlannerPolicy(update_norm_threshold=update_norm_threshold))
+        self.planner = CachePlanner(
+            PlannerPolicy(
+                update_norm_threshold=update_norm_threshold,
+                periodic_refresh_interval=None,
+            )
+        )
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
         decision: PlannerDecision = self.planner.plan(target, update_norm=update_norm, version_gap=step)
@@ -280,7 +297,11 @@ class OraclePlannerStrategy(CacheStrategy):
 
     def __init__(self, update_norm_threshold: float = 0.05) -> None:
         self.planner = CachePlanner(
-            PlannerPolicy(update_norm_threshold=update_norm_threshold, allow_delta_correction=True)
+            PlannerPolicy(
+                update_norm_threshold=update_norm_threshold,
+                allow_delta_correction=True,
+                periodic_refresh_interval=None,
+            )
         )
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
@@ -311,8 +332,27 @@ def build_strategy(name: str, *, refresh_period: int = 4, update_norm_threshold:
         return ThresholdRefreshStrategy(update_norm_threshold=update_norm_threshold)
     if parsed is StrategyName.LAYERWISE_RECOMPUTE:
         return LayerwiseRecomputeStrategy()
-    if parsed is StrategyName.ADAPTIVE:
-        return AdaptiveStrategy(CachePlanner(PlannerPolicy(update_norm_threshold=update_norm_threshold)))
+    if parsed in {
+        StrategyName.ADAPTIVE,
+        StrategyName.ADAPTIVE_NO_VERSION,
+        StrategyName.ADAPTIVE_NO_TARGET,
+        StrategyName.ADAPTIVE_NO_NORM,
+        StrategyName.ADAPTIVE_NO_DELTA,
+        StrategyName.ADAPTIVE_NO_PARTIAL,
+        StrategyName.ADAPTIVE_NO_PERIODIC,
+    }:
+        policy = PlannerPolicy(
+            update_norm_threshold=update_norm_threshold,
+            allow_delta_correction=parsed is not StrategyName.ADAPTIVE_NO_DELTA,
+            allow_layerwise_recompute=parsed is not StrategyName.ADAPTIVE_NO_PARTIAL,
+            use_version_id=parsed is not StrategyName.ADAPTIVE_NO_VERSION,
+            use_target_rules=parsed is not StrategyName.ADAPTIVE_NO_TARGET,
+            use_update_norm=parsed is not StrategyName.ADAPTIVE_NO_NORM,
+            periodic_refresh_interval=(
+                None if parsed is StrategyName.ADAPTIVE_NO_PERIODIC else refresh_period
+            ),
+        )
+        return AdaptiveStrategy(CachePlanner(policy), name=parsed)
     if parsed is StrategyName.DELTA_CORRECTION:
         return DeltaCorrectionStrategy(update_norm_threshold=update_norm_threshold)
     if parsed is StrategyName.BASE_CACHE_REUSE:

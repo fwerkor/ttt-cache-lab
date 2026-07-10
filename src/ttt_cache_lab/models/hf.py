@@ -191,7 +191,7 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.device)
         start = time.perf_counter()
         for param in selected:
-            if not param.requires_grad or not param.is_floating_point():
+            if not param.is_floating_point():
                 continue
             noise = self.torch.randn_like(param) * update_norm
             with self.torch.no_grad():

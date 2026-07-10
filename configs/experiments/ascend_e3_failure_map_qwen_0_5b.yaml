@@ -1,0 +1,48 @@
+name: ascend-e3-failure-map-qwen-0-5b
+output_dir: runs/ascend_e3_failure_map_qwen_0_5b
+experiment_id: e3_failure_map
+seed: 7
+model:
+  backend: ascend_hf
+  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  modelscope_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  device: npu:0
+  torch_dtype: bfloat16
+  max_length: 2048
+  trust_remote_code: true
+data:
+  task: multi_needle
+  num_samples: 4
+  context_length: 2048
+  answer_length: 4
+updates:
+  targets:
+    - lora.q
+    - lora.k
+    - lora.v
+    - lora.qv
+    - lora.o
+    - lora.mlp_early
+    - lora.mlp_middle
+    - lora.mlp_late
+    - norm
+    - output_head
+  update_norm: 0.00001
+cache:
+  strategies:
+    - full_recompute
+    - stale_reuse
+    - frozen_reuse
+    - delta_correction
+    - layerwise_recompute
+    - adaptive
+  refresh_period: 4
+  update_norm_threshold: 0.05
+adapter:
+  update_mode: lora_train
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps: [0, 1, 2, 4, 8]

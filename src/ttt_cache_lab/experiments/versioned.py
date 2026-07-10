@@ -158,7 +158,7 @@ class VersionedExperimentRunner:
         return write_records(records, self.config.output_dir)
 
     def _prepare_backend_for_target(self, backend: ModelBackend, target: UpdateTarget) -> None:
-        if self.config.adapter.update_mode != "lora_train":
+        if self.config.adapter.update_mode != "lora_train" or not target.is_lora:
             return
         prepare = getattr(backend, "prepare_update_target", None)
         if not callable(prepare):
@@ -177,7 +177,11 @@ class VersionedExperimentRunner:
         target: UpdateTarget,
         current: BackendOutput,
     ) -> _VersionUpdate:
-        if self.config.adapter.update_mode == "lora_train" and hasattr(backend, "train_lora_step"):
+        if (
+            self.config.adapter.update_mode == "lora_train"
+            and target.is_lora
+            and hasattr(backend, "train_lora_step")
+        ):
             norms = []
             adaptation_latencies = []
             for _ in range(self.config.adapter.train_steps_per_version):
@@ -273,7 +277,11 @@ class VersionedExperimentRunner:
                         "Adapter-version cache miss; build a dedicated cache entry.",
                         recompute_fraction=1.0,
                     )
-            elif adapter_version == cached.cached_version and decision.action is not CacheAction.FULL_RECOMPUTE:
+            elif (
+                strategy.name is not StrategyName.ADAPTIVE_NO_VERSION
+                and adapter_version == cached.cached_version
+                and decision.action is not CacheAction.FULL_RECOMPUTE
+            ):
                 decision = StrategyDecision(
                     decision.strategy,
                     CacheAction.REUSE_EXACT,
