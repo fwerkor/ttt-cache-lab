@@ -119,7 +119,6 @@ class HuggingFaceBackend:
         self.max_length = max_length
         self.parameter_version = 0
         self._deltas: list[tuple[Any, Any]] = []
-        self._last_state: _PromptState | None = None
         self._last_prefill_s = 0.0
         self._last_stale_s = 0.0
         self._last_partial_s = 0.0
@@ -128,9 +127,7 @@ class HuggingFaceBackend:
         self._last_adaptation_s = 0.0
         self._lora_modules: list[Any] = []
         self._active_lora_modules: list[Any] = []
-        self._lora_target_key: str | None = None
         self._prepared_input_ids: dict[str, Any] = {}
-        self._sample_answers: dict[str, str] = {}
         self._sample_answer_token_counts: dict[str, int] = {}
         self._sample_activation_boundaries: dict[str, int] = {}
         self._alora_base_cache: dict[str, tuple[Any, np.ndarray]] = {}
@@ -212,7 +209,6 @@ class HuggingFaceBackend:
             self._sample_activation_boundaries[sample.prompt] = activation_boundary
         self._prepared_input_ids[sample.prompt] = input_ids
         answer_ids = self.tokenizer(sample.answer, add_special_tokens=False).get("input_ids", [])
-        self._sample_answers[sample.prompt] = sample.answer
         self._sample_answer_token_counts[sample.prompt] = max(1, len(answer_ids))
         metadata = dict(sample.metadata)
         metadata["token_length"] = context_length
@@ -238,7 +234,6 @@ class HuggingFaceBackend:
 
     def prefill(self, prompt: str) -> BackendOutput:
         state = self._encode_prompt(prompt)
-        self._last_state = state
         reset_peak_memory(self.torch, self.devices)
         synchronize(self.torch, self.devices)
         start = time.perf_counter()
@@ -414,8 +409,6 @@ class HuggingFaceBackend:
 
         from ttt_cache_lab.models.lora import is_lora_linear, make_lora_linear
 
-        target_key = f"{target.kind.value}:{target.layer}:{rank}:{alpha}"
-
         if freeze_base_model:
             for param in self.model.parameters():
                 param.requires_grad_(False)
@@ -453,7 +446,6 @@ class HuggingFaceBackend:
                 self._activate_lora_module(wrapped)
                 seen_active.add(id(wrapped))
                 replaced += 1
-        self._lora_target_key = target_key
         return replaced
 
     def prepare_update_target(
@@ -1237,50 +1229,6 @@ class HuggingFaceBackend:
             f"decoder.{layer}.",
         )
         return any(candidate in name for candidate in candidates)
-
-    def _splice_past(self, old_past: Any, new_past: Any, *, split_layer: int) -> Any:
-        old_layers = list(old_past)
-        new_layers = list(new_past)
-        merged = [
-            old if idx < split_layer else new for idx, (old, new) in enumerate(zip(old_layers, new_layers, strict=True))
-        ]
-        return tuple(merged)
-
-    def _blend_past(self, old_past: Any, new_past: Any, *, split_layer: int, alpha: float) -> Any:
-        old_layers = list(old_past)
-        new_layers = list(new_past)
-        blended = []
-        for idx, (old_layer, new_layer) in enumerate(zip(old_layers, new_layers, strict=True)):
-            if idx < split_layer:
-                blended.append(old_layer)
-                continue
-            blended.append(self._blend_past_layer(old_layer, new_layer, alpha=alpha))
-        return tuple(blended)
-
-    def _blend_past_layer(self, old_layer: Any, new_layer: Any, *, alpha: float) -> Any:
-        old_items = list(old_layer)
-        new_items = list(new_layer)
-        out = []
-        for idx, (old_item, new_item) in enumerate(zip(old_items, new_items, strict=True)):
-            if idx < 2 and hasattr(old_item, "detach") and hasattr(new_item, "detach"):
-                out.append(old_item + (new_item - old_item) * alpha)
-            else:
-                out.append(new_item)
-        return tuple(out)
-
-    def _splice_summary(self, old: np.ndarray, new: np.ndarray, *, split_layer: int) -> np.ndarray:
-        if old.shape != new.shape:
-            return new
-        merged = old.copy()
-        merged[split_layer:] = new[split_layer:]
-        return merged
-
-    def _blend_summary(self, old: np.ndarray, new: np.ndarray, *, split_layer: int, alpha: float) -> np.ndarray:
-        if old.shape != new.shape:
-            return new
-        blended = old.copy()
-        blended[split_layer:] = old[split_layer:] + (new[split_layer:] - old[split_layer:]) * alpha
-        return blended
 
     def _past_nbytes(self, past_key_values: Any) -> int:
         total = 0

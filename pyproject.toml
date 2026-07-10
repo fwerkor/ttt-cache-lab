@@ -65,5 +65,5 @@ mypy_path = "src"
 
 
 [[tool.mypy.overrides]]
-module = ["torch", "torch.*", "transformers", "transformers.*", "tokenizers", "tokenizers.*", "datasets", "datasets.*"]
+module = ["torch", "torch.*", "transformers", "transformers.*", "tokenizers", "tokenizers.*", "datasets"]
 ignore_missing_imports = true
