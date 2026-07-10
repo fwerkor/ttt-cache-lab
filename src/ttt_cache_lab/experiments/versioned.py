@@ -70,8 +70,9 @@ class VersionedExperimentRunner:
         records: list[ExperimentRecord] = []
 
         for sample_id, sample in enumerate(data):
+            sample = backend.prepare_sample(sample, context_length=self.config.data.context_length)
             for target_name in self.config.updates.targets:
-                target = parse_update_target(target_name, num_layers=self.config.model.num_layers)
+                target = parse_update_target(target_name, num_layers=backend.num_layers)
                 backend.restore_after_update()
                 self._prepare_backend_for_target(backend, target)
                 cached_v0 = backend.prefill(sample.prompt)
@@ -229,10 +230,22 @@ class VersionedExperimentRunner:
                     action=str(decision.action),
                     cache_state=str(decision.state),
                     first_invalid_layer=decision.first_invalid_layer,
-                    task_score=backend.score_answer(sample_answer, approx),  # type: ignore[arg-type]
-                    logits_kl=kl_divergence(full.logits, approx.logits),
+                    task_score=(
+                        backend.score_answer(sample_answer, approx)  # type: ignore[arg-type]
+                        if self.config.metrics.compute_task_metrics
+                        else 0.0
+                    ),
+                    logits_kl=(
+                        kl_divergence(full.logits, approx.logits)
+                        if self.config.metrics.compute_tensor_metrics
+                        else 0.0
+                    ),
                     top1_agreement=top1,
-                    relative_error=relative_error(full.cache_tensor, approx.cache_tensor),
+                    relative_error=(
+                        relative_error(full.cache_tensor, approx.cache_tensor)
+                        if self.config.metrics.compute_tensor_metrics
+                        else 0.0
+                    ),
                     latency_units=backend.estimate_latency(decision, context_length=self.config.data.context_length),
                     reason=decision.reason,
                     experiment_id=self.config.experiment_id,
@@ -243,10 +256,14 @@ class VersionedExperimentRunner:
                     accumulated_update_norm=accumulated_update_norm,
                     lora_rank=self.config.adapter.lora_rank,
                     update_mode=self.config.adapter.update_mode,
-                    hidden_relative_error=relative_error(full.hidden_tensor, approx.hidden_tensor),
+                    hidden_relative_error=(
+                        relative_error(full.hidden_tensor, approx.hidden_tensor)
+                        if self.config.metrics.compute_tensor_metrics
+                        else 0.0
+                    ),
                     cache_bytes=output_cache_bytes(approx),
                     memory_allocated=output_memory_allocated(approx),
-                    recompute_fraction=estimate_recompute_fraction(decision, num_layers=self.config.model.num_layers),
+                    recompute_fraction=estimate_recompute_fraction(decision, num_layers=backend.num_layers),
                     cache_hit=is_cache_hit(decision),
                     refresh_count=new_refresh_count,
                     rejected_reuse=decision.reject_reuse,

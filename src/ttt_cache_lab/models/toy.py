@@ -26,6 +26,10 @@ class ToyBackend:
         self.vocab_size = vocab_size
         self.seed = seed
 
+    def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample:
+        del context_length
+        return sample
+
     def _rng_for(self, text: str, version: int) -> np.random.Generator:
         digest = hashlib.sha256(f"{self.seed}:{version}:{text}".encode()).digest()
         seed = int.from_bytes(digest[:8], "little") % (2**32)

@@ -20,6 +20,11 @@ class BackendOutput:
 
 
 class ModelBackend(Protocol):
+    @property
+    def num_layers(self) -> int: ...
+
+    def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample: ...
+
     def prefill(self, prompt: str) -> BackendOutput: ...
 
     def simulate_update(

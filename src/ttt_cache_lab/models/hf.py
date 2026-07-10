@@ -66,6 +66,7 @@ class HuggingFaceBackend:
         self.model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **load_kwargs)
         self.model.to(self.device)
         self.model.eval()
+        self.num_layers = self._infer_num_layers()
         self.max_length = max_length
         self.parameter_version = 0
         self._deltas: list[tuple[Any, Any]] = []
@@ -77,6 +78,41 @@ class HuggingFaceBackend:
         self._lora_modules: list[Any] = []
         self._active_lora_modules: list[Any] = []
         self._lora_target_key: str | None = None
+        self._prepared_input_ids: dict[str, Any] = {}
+
+    def _infer_num_layers(self) -> int:
+        config = self.model.config
+        for name in ("num_hidden_layers", "n_layer", "num_layers", "n_layers"):
+            value = getattr(config, name, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        raise ValueError(f"Cannot infer transformer layer count from {type(config).__name__}")
+
+    def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample:
+        if context_length < 2:
+            raise ValueError("context_length must be at least 2")
+        if context_length > self.max_length:
+            raise ValueError(
+                f"Requested context_length={context_length} exceeds model.max_length={self.max_length}"
+            )
+        encoded = self.tokenizer(sample.prompt, return_tensors="pt", add_special_tokens=True)
+        input_ids = encoded["input_ids"]
+        current = int(input_ids.shape[1])
+        if current > context_length:
+            raise ValueError(
+                "Synthetic prompt tokenization exceeded the requested context length; "
+                f"generated={current}, requested={context_length}. "
+                "Reduce filler density instead of silently truncating."
+            )
+        if current < context_length:
+            filler = self.tokenizer(" filler", add_special_tokens=False).get("input_ids", [])
+            filler_id = int(filler[0]) if filler else int(self.tokenizer.eos_token_id or 0)
+            padding = self.torch.full((1, context_length - current), filler_id, dtype=input_ids.dtype)
+            input_ids = self.torch.cat([padding, input_ids], dim=1)
+        self._prepared_input_ids[sample.prompt] = input_ids
+        metadata = dict(sample.metadata)
+        metadata["token_length"] = context_length
+        return TaskSample(prompt=sample.prompt, answer=sample.answer, metadata=metadata)
 
     def _resolve_device(self, device: str) -> str:
         return resolve_device(self.torch, device)
@@ -344,17 +380,22 @@ class HuggingFaceBackend:
         return items
 
     def _encode_prompt(self, prompt: str) -> _PromptState:
-        encoded = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=self.max_length,
-            add_special_tokens=True,
-        )
-        input_ids = encoded["input_ids"].to(self.device)
-        attention_mask = encoded.get("attention_mask")
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(self.device)
+        prepared = self._prepared_input_ids.get(prompt)
+        if prepared is None:
+            encoded = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self.max_length,
+                add_special_tokens=True,
+            )
+            input_ids = encoded["input_ids"].to(self.device)
+            attention_mask = encoded.get("attention_mask")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(self.device)
+        else:
+            input_ids = prepared.to(self.device)
+            attention_mask = self.torch.ones_like(input_ids, device=self.device)
         if input_ids.shape[1] < 2:
             eos = self.tokenizer.eos_token_id or 0
             input_ids = self.torch.cat([input_ids, self.torch.tensor([[eos]], device=self.device)], dim=1)
