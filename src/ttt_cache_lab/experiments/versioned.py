@@ -585,17 +585,32 @@ class VersionedExperimentRunner:
 
 def write_version_summary(input_csv: Path, output_csv: Path) -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    groups: dict[tuple[str, str, str, str], list[dict[str, str]]] = {}
     with input_csv.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        for row in reader:
-            key = (row["experiment_id"], row["update_target"], row["cache_strategy"], row["adapter_version"])
-            groups.setdefault(key, []).append(row)
-    fields = [
-        "experiment_id",
-        "update_target",
-        "cache_strategy",
-        "adapter_version",
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    sweep_fields = [field for field in fieldnames if field.startswith("sweep.")]
+    dimension_fields = [
+        field
+        for field in (
+            "run_name",
+            *sweep_fields,
+            "experiment_id",
+            "update_target",
+            "cache_strategy",
+            "adapter_version",
+            "lora_rank",
+            "update_mode",
+        )
+        if field in fieldnames
+    ]
+    groups: dict[tuple[str, ...], list[dict[str, str]]] = {}
+    for row in rows:
+        key = tuple(row.get(field, "") for field in dimension_fields)
+        groups.setdefault(key, []).append(row)
+
+    metric_fields = [
         "count",
         "task_score_mean",
         "logits_kl_mean",
@@ -619,16 +634,13 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "cache_entry_count_mean",
     ]
     with output_csv.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=[*dimension_fields, *metric_fields])
         writer.writeheader()
         for key, records in sorted(groups.items()):
-            experiment_id, target, strategy, version = key
+            dimensions = dict(zip(dimension_fields, key, strict=True))
             writer.writerow(
                 {
-                    "experiment_id": experiment_id,
-                    "update_target": target,
-                    "cache_strategy": strategy,
-                    "adapter_version": version,
+                    **dimensions,
                     "count": len(records),
                     "task_score_mean": _mean(records, "task_score"),
                     "logits_kl_mean": _mean(records, "logits_kl"),

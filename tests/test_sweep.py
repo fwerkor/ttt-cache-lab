@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 from ttt_cache_lab.configs import SweepConfig, VersionedSweepConfig
@@ -25,6 +26,9 @@ def test_sweep_expands_and_runs(tmp_path: Path) -> None:
     artifacts = run_sweep(config)
     assert artifacts.merged_records_csv.exists()
     assert artifacts.grouped_csv.exists()
+    with artifacts.merged_records_csv.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["sweep.updates.update_norm"] for row in rows} == {"0.01", "0.02"}
 
 
 
@@ -56,3 +60,13 @@ def test_versioned_sweep_expands_rank_and_update_norm(tmp_path: Path) -> None:
     assert len(artifacts.run_dirs) == 4
     assert artifacts.merged_records_csv.exists()
     assert artifacts.grouped_csv.exists()
+    with artifacts.merged_records_csv.open(newline="", encoding="utf-8") as handle:
+        merged = list(csv.DictReader(handle))
+    assert {row["sweep.adapter.lora_rank"] for row in merged} == {"4", "8"}
+    assert {row["sweep.updates.update_norm"] for row in merged} == {"0.01", "0.02"}
+    with artifacts.grouped_csv.open(newline="", encoding="utf-8") as handle:
+        grouped = list(csv.DictReader(handle))
+    assert len(grouped) == 16
+    assert len({row["run_name"] for row in grouped}) == 4
+    assert {row["sweep.adapter.lora_rank"] for row in grouped} == {"4", "8"}
+    assert {row["sweep.updates.update_norm"] for row in grouped} == {"0.01", "0.02"}

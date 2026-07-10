@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import csv
+import json
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from ttt_cache_lab.configs import SweepConfig, VersionedSweepConfig
+from ttt_cache_lab.configs import (
+    ExperimentConfig,
+    SweepAxis,
+    SweepConfig,
+    VersionedExperimentConfig,
+    VersionedSweepConfig,
+)
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.summarize import summarize_csv, write_summary
 from ttt_cache_lab.experiments.versioned import VersionedExperimentRunner, write_version_summary
@@ -33,9 +42,14 @@ def run_sweep(config: SweepConfig) -> SweepArtifacts:
         with artifacts.csv_path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             if fieldnames is None:
-                fieldnames = ["run_name", *list(reader.fieldnames or [])]
+                fieldnames = [
+                    "run_name",
+                    *(f"sweep.{axis.path}" for axis in config.axes),
+                    *list(reader.fieldnames or []),
+                ]
+            metadata = _sweep_metadata(experiment, config.axes)
             for row in reader:
-                merged_rows.append({"run_name": experiment.name, **row})
+                merged_rows.append({"run_name": experiment.name, **metadata, **row})
 
     merged = config.output_dir / "merged_records.csv"
     with merged.open("w", encoding="utf-8", newline="") as handle:
@@ -71,9 +85,14 @@ def run_versioned_sweep(config: VersionedSweepConfig) -> SweepArtifacts:
         with artifacts.csv_path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             if fieldnames is None:
-                fieldnames = ["run_name", *list(reader.fieldnames or [])]
+                fieldnames = [
+                    "run_name",
+                    *(f"sweep.{axis.path}" for axis in config.axes),
+                    *list(reader.fieldnames or []),
+                ]
+            metadata = _sweep_metadata(experiment, config.axes)
             for row in reader:
-                merged_rows.append({"run_name": experiment.name, **row})
+                merged_rows.append({"run_name": experiment.name, **metadata, **row})
 
     merged = config.output_dir / "merged_records.csv"
     with merged.open("w", encoding="utf-8", newline="") as handle:
@@ -89,3 +108,32 @@ def run_versioned_sweep(config: VersionedSweepConfig) -> SweepArtifacts:
         grouped_csv=grouped,
         run_dirs=run_dirs,
     )
+
+
+def _sweep_metadata(
+    experiment: ExperimentConfig | VersionedExperimentConfig,
+    axes: Sequence[SweepAxis],
+) -> dict[str, str]:
+    payload = experiment.model_dump(mode="json")
+    metadata: dict[str, str] = {}
+    for axis in axes:
+        path = axis.path
+        value: Any = payload
+        for part in path.split("."):
+            if not isinstance(value, dict) or part not in value:
+                raise ValueError(f"Expanded experiment is missing sweep axis {path!r}")
+            value = value[part]
+        metadata[f"sweep.{path}"] = _csv_value(value)
+    return metadata
+
+
+def _csv_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int | float):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
