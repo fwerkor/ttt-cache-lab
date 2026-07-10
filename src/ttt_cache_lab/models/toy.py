@@ -26,9 +26,11 @@ class ToyBackend:
         self.vocab_size = vocab_size
         self.seed = seed
         self._capture_attention_metrics = False
+        self._sample_answers: dict[str, str] = {}
 
     def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample:
         del context_length
+        self._sample_answers[sample.prompt] = sample.answer
         return sample
 
     def _rng_for(self, text: str, version: int) -> np.random.Generator:
@@ -41,7 +43,7 @@ class ToyBackend:
         cache = rng.normal(size=(self.num_layers, 2, self.hidden_size)).astype(np.float64)
         hidden = rng.normal(size=(self.num_layers, self.hidden_size)).astype(np.float64)
         logits = rng.normal(size=(1, self.vocab_size)).astype(np.float64)
-        answer = self._extract_answer(prompt)
+        answer = self._sample_answers.get(prompt) or self._extract_answer(prompt)
         if answer:
             logits[0, self._answer_bucket(answer)] += 8.0
         return BackendOutput(
