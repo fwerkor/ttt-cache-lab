@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
 class TaskSample:
     prompt: str
     answer: str
-    metadata: dict[str, int | str]
+    metadata: dict[str, Any]
 
 
 class SyntheticTaskFactory:

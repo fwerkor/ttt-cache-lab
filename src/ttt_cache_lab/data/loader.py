@@ -71,7 +71,8 @@ def _records_to_samples(records: Iterable[Mapping[str, Any]], *, config: DataCon
         if len(samples) >= config.num_samples:
             break
         prompt = _attach_activation_marker(_build_prompt(record, config=config), config=config)
-        answer = _coerce_answer(_field(record, config.answer_field))
+        answers = _coerce_answers(_field(record, config.answer_field))
+        answer = answers[0] if answers else ""
         if not prompt.strip():
             raise ValueError(f"Dataset record {index} produced an empty prompt")
         if not answer.strip():
@@ -86,6 +87,8 @@ def _records_to_samples(records: Iterable[Mapping[str, Any]], *, config: DataCon
                     "record_index": index,
                     "truncation_strategy": config.truncation_strategy,
                     "adapter_activation_marker": config.adapter_activation_marker or "",
+                    "scorer": config.scorer,
+                    "answers": answers,
                 },
             )
         )
@@ -110,16 +113,14 @@ def _field(record: Mapping[str, Any], path: str) -> Any:
     return value
 
 
-def _coerce_answer(value: Any) -> str:
+def _coerce_answers(value: Any) -> tuple[str, ...]:
     if isinstance(value, str):
-        return value
+        return (value,)
     if isinstance(value, list | tuple):
-        if not value:
-            return ""
-        return str(value[0])
+        return tuple(str(item) for item in value if str(item).strip())
     if value is None:
-        return ""
-    return str(value)
+        return ()
+    return (str(value),)
 
 
 
@@ -141,6 +142,8 @@ def _with_runtime_metadata(sample: TaskSample, *, config: DataConfig, index: int
             "record_index": index,
             "truncation_strategy": config.truncation_strategy,
             "adapter_activation_marker": config.adapter_activation_marker or "",
+            "scorer": config.scorer,
+            "answers": (sample.answer,),
         }
     )
     prompt = _attach_activation_marker(sample.prompt, config=config)

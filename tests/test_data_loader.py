@@ -38,6 +38,8 @@ def test_jsonl_loader_maps_context_question_and_answer(tmp_path: Path) -> None:
     assert "repository context" in sample.prompt
     assert "Which module owns the cache?" in sample.prompt
     assert sample.answer == "planner"
+    assert sample.metadata["answers"] == ("planner",)
+    assert sample.metadata["scorer"] == "exact_match"
     assert sample.metadata["source"] == "jsonl"
     assert sample.metadata["truncation_strategy"] == "middle"
 

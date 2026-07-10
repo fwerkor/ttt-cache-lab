@@ -35,6 +35,7 @@ class DataConfig(BaseModel):
     dataset_split: str = "test"
     prompt_field: str = "prompt"
     answer_field: str = "answer"
+    scorer: Literal["exact_match", "contains", "token_f1", "rouge_l", "code_similarity"] = "exact_match"
     context_field: str | None = None
     question_field: str | None = None
     prompt_template: str = "{context}\n\nQuestion: {question}\nAnswer:"

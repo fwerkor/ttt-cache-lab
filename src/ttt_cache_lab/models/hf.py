@@ -8,6 +8,7 @@ import numpy as np
 
 from ttt_cache_lab.cache.semantics import CacheAction
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName
+from ttt_cache_lab.data.scoring import score_prediction
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.models.accelerator import (
     max_memory_allocated,
@@ -373,11 +374,11 @@ class HuggingFaceBackend:
         extras = output.extras or {}
         generated = extras.get("generated_text")
         if isinstance(generated, str):
-            return 1.0 if generated.strip() == sample.answer.strip() else 0.0
+            return score_prediction(sample, generated)
         logits = output.logits[0]
         top_token = int(np.argmax(logits))
         decoded = self.tokenizer.decode([top_token]).strip()
-        return 1.0 if decoded and decoded == sample.answer.strip() else 0.0
+        return score_prediction(sample, decoded)
 
     def estimate_latency(self, decision: StrategyDecision, *, context_length: int) -> float:
         if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
