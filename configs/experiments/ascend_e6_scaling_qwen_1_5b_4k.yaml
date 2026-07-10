@@ -10,6 +10,7 @@ model:
   torch_dtype: bfloat16
   max_length: 4096
   trust_remote_code: true
+  use_chat_template: true
 data:
   task: variable_tracking
   num_samples: 4
@@ -17,20 +18,20 @@ data:
   answer_length: 4
 updates:
   targets:
-    - lora.q
-    - lora.k
-    - lora.v
-    - lora.qv
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
   step_count: 1
-  update_norm: 0.00001
+  update_norm: 1.0e-05
 cache:
   strategies:
-    - full_recompute
-    - stale_reuse
-    - periodic_refresh
-    - threshold_refresh
-    - adaptive
-    - oracle_planner
+  - full_recompute
+  - stale_reuse
+  - periodic_refresh
+  - threshold_refresh
+  - adaptive
+  - oracle_planner
   refresh_period: 4
   update_norm_threshold: 0.05
 adapter:
@@ -40,4 +41,9 @@ adapter:
   learning_rate: 0.0002
   train_steps_per_version: 1
   freeze_base_model: true
-version_steps: [0, 1, 2, 4, 8]
+version_steps:
+- 0
+- 1
+- 2
+- 4
+- 8

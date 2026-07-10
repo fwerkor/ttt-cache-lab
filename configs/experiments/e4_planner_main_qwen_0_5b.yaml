@@ -10,6 +10,7 @@ model:
   torch_dtype: auto
   max_length: 2048
   trust_remote_code: true
+  use_chat_template: true
 data:
   task: key_value
   num_samples: 4
@@ -17,25 +18,25 @@ data:
   answer_length: 4
 updates:
   targets:
-    - lora.q
-    - lora.k
-    - lora.v
-    - lora.qv
-    - lora.mlp_late
-    - norm
-  update_norm: 0.00001
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  - lora.mlp_late
+  - norm
+  update_norm: 1.0e-05
 cache:
   strategies:
-    - no_adaptation
-    - full_recompute
-    - stale_reuse
-    - periodic_refresh
-    - threshold_refresh
-    - static_base_delta
-    - delta_correction
-    - layerwise_recompute
-    - adaptive
-    - oracle_planner
+  - no_adaptation
+  - full_recompute
+  - stale_reuse
+  - periodic_refresh
+  - threshold_refresh
+  - static_base_delta
+  - delta_correction
+  - layerwise_recompute
+  - adaptive
+  - oracle_planner
   refresh_period: 4
   update_norm_threshold: 0.05
   failure_map_path: runs/e3_failure_map_qwen_0_5b/failure_map/failure_map.csv
@@ -48,4 +49,9 @@ adapter:
   learning_rate: 0.0002
   train_steps_per_version: 1
   freeze_base_model: true
-version_steps: [0, 1, 2, 4, 8]
+version_steps:
+- 0
+- 1
+- 2
+- 4
+- 8

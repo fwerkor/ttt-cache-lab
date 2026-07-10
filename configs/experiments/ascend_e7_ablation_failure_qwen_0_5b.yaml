@@ -10,6 +10,7 @@ model:
   torch_dtype: bfloat16
   max_length: 2048
   trust_remote_code: true
+  use_chat_template: true
 data:
   task: variable_tracking
   num_samples: 4
@@ -17,27 +18,27 @@ data:
   answer_length: 4
 updates:
   targets:
-    - lora.q
-    - lora.k
-    - lora.v
-    - lora.qv
-    - lora.attn
-    - lora.mlp_early
-    - lora.mlp_late
-    - norm
-  update_norm: 0.00001
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  - lora.attn
+  - lora.mlp_early
+  - lora.mlp_late
+  - norm
+  update_norm: 1.0e-05
 cache:
   strategies:
-    - no_adaptation
-    - full_recompute
-    - stale_reuse
-    - adaptive
-    - adaptive_no_version
-    - adaptive_no_target
-    - adaptive_no_norm
-    - adaptive_no_delta
-    - adaptive_no_partial
-    - adaptive_no_periodic
+  - no_adaptation
+  - full_recompute
+  - stale_reuse
+  - adaptive
+  - adaptive_no_version
+  - adaptive_no_target
+  - adaptive_no_norm
+  - adaptive_no_delta
+  - adaptive_no_partial
+  - adaptive_no_periodic
   refresh_period: 4
   update_norm_threshold: 0.03
 adapter:
@@ -47,4 +48,9 @@ adapter:
   learning_rate: 0.0002
   train_steps_per_version: 1
   freeze_base_model: true
-version_steps: [0, 1, 2, 4, 8]
+version_steps:
+- 0
+- 1
+- 2
+- 4
+- 8

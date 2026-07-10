@@ -66,6 +66,25 @@ def test_attention_metric_sweep_uses_eager_attention() -> None:
     assert config.base.model.attention_implementation == "eager"
 
 
+def test_all_instruct_model_configs_use_chat_templates() -> None:
+    paths = [
+        *Path("configs/experiments").glob("*.yaml"),
+        *Path("configs/paper").glob("*/*.yaml"),
+    ]
+    for path in paths:
+        config = VersionedExperimentConfig.from_yaml(path)
+        model_names = " ".join(
+            value
+            for value in (
+                config.model.model_name_or_path,
+                config.model.modelscope_model_id,
+            )
+            if value
+        )
+        if "Instruct" in model_names:
+            assert config.model.use_chat_template is True, path
+
+
 def test_llama_templates_use_small_1b_model() -> None:
     hf = VersionedExperimentConfig.from_yaml(Path("configs/experiments/e2_version_drift_llama_3_2_1b.yaml"))
     ascend = VersionedExperimentConfig.from_yaml(Path("configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml"))

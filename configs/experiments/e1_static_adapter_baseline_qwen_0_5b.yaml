@@ -10,6 +10,7 @@ model:
   torch_dtype: auto
   max_length: 2048
   trust_remote_code: true
+  use_chat_template: true
 data:
   task: passkey
   num_samples: 4

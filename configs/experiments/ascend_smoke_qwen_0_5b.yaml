@@ -10,6 +10,7 @@ model:
   torch_dtype: bfloat16
   max_length: 1024
   trust_remote_code: true
+  use_chat_template: true
 data:
   task: passkey
   num_samples: 1
@@ -17,14 +18,14 @@ data:
   answer_length: 4
 updates:
   targets:
-    - lora.q
+  - lora.q
   step_count: 1
-  update_norm: 0.00001
+  update_norm: 1.0e-05
 cache:
   strategies:
-    - full_recompute
-    - stale_reuse
-    - adaptive
+  - full_recompute
+  - stale_reuse
+  - adaptive
   refresh_period: 2
 adapter:
   update_mode: lora_train
@@ -33,4 +34,6 @@ adapter:
   learning_rate: 0.0005
   train_steps_per_version: 1
   freeze_base_model: true
-version_steps: [0, 1]
+version_steps:
+- 0
+- 1

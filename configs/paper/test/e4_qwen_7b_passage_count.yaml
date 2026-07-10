@@ -11,6 +11,7 @@ model:
   trust_remote_code: true
   parallelism: single
   device_ids: []
+  use_chat_template: true
 data:
   source: huggingface
   task: longbench_passage_count

@@ -10,7 +10,14 @@ model:
   max_length: 4096
   trust_remote_code: true
   parallelism: model_shard
-  device_ids: [0, 1, 2, 3, 4, 5]
+  device_ids:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  use_chat_template: true
 data:
   task: key_value
   num_samples: 2
@@ -18,19 +25,19 @@ data:
   answer_length: 4
 updates:
   targets:
-    - lora.q
-    - lora.k
-    - lora.v
-    - lora.qv
-    - lora.mlp_late
-  update_norm: 0.00001
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  - lora.mlp_late
+  update_norm: 1.0e-05
 cache:
   strategies:
-    - full_recompute
-    - stale_reuse
-    - delta_correction
-    - layerwise_recompute
-    - adaptive
+  - full_recompute
+  - stale_reuse
+  - delta_correction
+  - layerwise_recompute
+  - adaptive
   refresh_period: 4
   update_norm_threshold: 0.05
 adapter:
@@ -40,4 +47,7 @@ adapter:
   learning_rate: 0.0001
   train_steps_per_version: 1
   freeze_base_model: true
-version_steps: [0, 1, 2]
+version_steps:
+- 0
+- 1
+- 2

@@ -11,6 +11,7 @@ model:
   trust_remote_code: true
   parallelism: model_shard
   device_ids: []
+  use_chat_template: true
 data:
   source: synthetic
   task: common_words
