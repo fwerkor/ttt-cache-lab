@@ -25,6 +25,7 @@ class TaskProbeRecord:
     model_name: str
     context_length: int
     synthetic_difficulty: str
+    prompt_format: str
     answer: str
     generated_text: str
     task_score: float
@@ -109,6 +110,7 @@ def run_task_probe(
                 synthetic_difficulty=str(
                     sample.metadata.get("synthetic_difficulty", config.data.synthetic_difficulty)
                 ),
+                prompt_format="chat_template" if config.model.use_chat_template else "plain",
                 answer=sample.answer,
                 generated_text=str(extras.get("generated_text", "")),
                 task_score=score,

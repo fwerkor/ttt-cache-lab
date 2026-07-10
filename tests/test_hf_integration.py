@@ -48,6 +48,11 @@ def tiny_llama_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         pad_token="[PAD]",
         eos_token="[EOS]",
     )
+    tokenizer.chat_template = (
+        "{% for message in messages %}<|{{ message['role'] }}|> "
+        "{{ message['content'] }} {% endfor %}"
+        "{% if add_generation_prompt %}<|assistant|> {% endif %}"
+    )
     tokenizer.save_pretrained(output)
 
     config = LlamaConfig(
@@ -66,15 +71,35 @@ def tiny_llama_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return output
 
 
-def _backend(model_dir: Path) -> HuggingFaceBackend:
+def _backend(model_dir: Path, *, use_chat_template: bool = False) -> HuggingFaceBackend:
     return HuggingFaceBackend(
         model_name_or_path=str(model_dir),
         device="cpu",
         torch_dtype="float32",
         max_length=32,
         trust_remote_code=False,
+        use_chat_template=use_chat_template,
         seed=7,
     )
+
+
+def test_chat_template_prompt_preparation_preserves_context_and_format(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir, use_chat_template=True)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 4},
+        ),
+        context_length=24,
+    )
+    prepared = backend._prepared_input_ids[sample.prompt]
+    assert prepared.shape[1] == 24
+    assert sample.metadata["prompt_format"] == "chat_template"
+    assert backend.use_chat_template is True
+    output = backend.prefill(sample.prompt)
+    assert output.extras is not None
+    assert output.extras["token_length"] == 24
 
 
 def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:

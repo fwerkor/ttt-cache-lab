@@ -55,6 +55,7 @@ class HuggingFaceBackend:
         torch_dtype: str,
         max_length: int,
         trust_remote_code: bool,
+        use_chat_template: bool = False,
         revision: str | None = None,
         attention_implementation: str | None = None,
         parallelism: str = "single",
@@ -90,6 +91,11 @@ class HuggingFaceBackend:
             model_name_or_path,
             **tokenizer_kwargs,
         )
+        self.use_chat_template = use_chat_template
+        if self.use_chat_template and not getattr(self.tokenizer, "chat_template", None):
+            raise ValueError(
+                "model.use_chat_template=true requires a tokenizer with a configured chat template"
+            )
         if parallelism == "model_shard":
             from ttt_cache_lab.models.sharding import build_model_shard_plan, resolve_shard_device_ids
 
@@ -181,62 +187,98 @@ class HuggingFaceBackend:
             raise ValueError("context_length must be at least 2")
         if context_length > self.max_length:
             raise ValueError(f"Requested context_length={context_length} exceeds model.max_length={self.max_length}")
-        encoded = self.tokenizer(sample.prompt, return_tensors="pt", add_special_tokens=True)
-        input_ids = encoded["input_ids"]
+
+        input_ids, content_start, content_end = self._tokenize_prompt_ids(sample.prompt)
         current = int(input_ids.shape[1])
-        activation_boundary: int | None = None
-        activation_marker = str(sample.metadata.get("adapter_activation_marker", ""))
-        if activation_marker:
-            marker_index = sample.prompt.find(activation_marker)
-            if marker_index < 0:
-                raise ValueError("Configured adapter activation marker is absent from the prompt")
-            marker_end = marker_index + len(activation_marker)
-            marker_prefix = self.tokenizer(
-                sample.prompt[:marker_end],
-                return_tensors="pt",
-                add_special_tokens=True,
-            )["input_ids"]
-            activation_boundary = int(marker_prefix.shape[1])
+        activation_boundary = self._activation_boundary(
+            input_ids,
+            str(sample.metadata.get("adapter_activation_marker", "")),
+        )
+
         if current > context_length:
-            original_length = current
             strategy = str(sample.metadata.get("truncation_strategy", "error"))
-            if strategy == "left":
-                removed = current - context_length
-                input_ids = input_ids[:, -context_length:]
-                if activation_boundary is not None:
-                    activation_boundary -= removed
-            elif strategy == "middle":
-                left = (context_length + 1) // 2
-                right = context_length - left
-                right_start = original_length - right
-                input_ids = self.torch.cat(
-                    [input_ids[:, :left], input_ids[:, -right:] if right else input_ids[:, :0]],
-                    dim=1,
-                )
-                if activation_boundary is not None:
-                    if activation_boundary <= left:
-                        pass
-                    elif activation_boundary >= right_start:
-                        activation_boundary = left + activation_boundary - right_start
-                    else:
-                        raise ValueError("Middle truncation removed the adapter activation marker")
-            elif strategy == "error":
+            if strategy == "error":
                 raise ValueError(
                     "Prompt tokenization exceeded the requested context length; "
                     f"generated={current}, requested={context_length}. "
                     "Set data.truncation_strategy to left or middle for external datasets."
                 )
-            else:
+            if strategy not in {"left", "middle"}:
                 raise ValueError(f"Unsupported truncation strategy: {strategy}")
+
+            if self.use_chat_template:
+                prefix = input_ids[:, :content_start]
+                content = input_ids[:, content_start:content_end]
+                suffix = input_ids[:, content_end:]
+                available = context_length - int(prefix.shape[1]) - int(suffix.shape[1])
+                if available < 1:
+                    raise ValueError("Chat-template control tokens leave no room for prompt content")
+                content_length = int(content.shape[1])
+                activation_in_content = (
+                    activation_boundary - content_start
+                    if activation_boundary is not None
+                    else None
+                )
+                if strategy == "left":
+                    removed = content_length - available
+                    content = content[:, -available:]
+                    if activation_in_content is not None:
+                        activation_in_content -= removed
+                else:
+                    left = (available + 1) // 2
+                    right = available - left
+                    right_start = content_length - right
+                    content = self.torch.cat(
+                        [content[:, :left], content[:, -right:] if right else content[:, :0]],
+                        dim=1,
+                    )
+                    if activation_in_content is not None:
+                        if activation_in_content <= left:
+                            pass
+                        elif activation_in_content >= right_start:
+                            activation_in_content = left + activation_in_content - right_start
+                        else:
+                            raise ValueError("Middle truncation removed the adapter activation marker")
+                input_ids = self.torch.cat([prefix, content, suffix], dim=1)
+                if activation_in_content is not None:
+                    activation_boundary = int(prefix.shape[1]) + activation_in_content
+            else:
+                original_length = current
+                if strategy == "left":
+                    removed = current - context_length
+                    input_ids = input_ids[:, -context_length:]
+                    if activation_boundary is not None:
+                        activation_boundary -= removed
+                else:
+                    left = (context_length + 1) // 2
+                    right = context_length - left
+                    right_start = original_length - right
+                    input_ids = self.torch.cat(
+                        [input_ids[:, :left], input_ids[:, -right:] if right else input_ids[:, :0]],
+                        dim=1,
+                    )
+                    if activation_boundary is not None:
+                        if activation_boundary <= left:
+                            pass
+                        elif activation_boundary >= right_start:
+                            activation_boundary = left + activation_boundary - right_start
+                        else:
+                            raise ValueError("Middle truncation removed the adapter activation marker")
             current = int(input_ids.shape[1])
+
         if current < context_length:
             filler = self.tokenizer(" filler", add_special_tokens=False).get("input_ids", [])
             filler_id = int(filler[0]) if filler else int(self.tokenizer.eos_token_id or 0)
             pad_count = context_length - current
             padding = self.torch.full((1, pad_count), filler_id, dtype=input_ids.dtype)
-            input_ids = self.torch.cat([padding, input_ids], dim=1)
-            if activation_boundary is not None:
+            insertion = content_start if self.use_chat_template else 0
+            input_ids = self.torch.cat(
+                [input_ids[:, :insertion], padding, input_ids[:, insertion:]],
+                dim=1,
+            )
+            if activation_boundary is not None and activation_boundary >= insertion:
                 activation_boundary += pad_count
+
         if activation_boundary is not None:
             if activation_boundary <= 0 or activation_boundary >= context_length:
                 raise ValueError("Adapter activation marker must remain inside the retained prompt context")
@@ -248,7 +290,56 @@ class HuggingFaceBackend:
         self._sample_answer_token_counts[sample.prompt] = configured_limit
         metadata = dict(sample.metadata)
         metadata["token_length"] = context_length
+        metadata["prompt_format"] = "chat_template" if self.use_chat_template else "plain"
         return TaskSample(prompt=sample.prompt, answer=sample.answer, metadata=metadata)
+
+    def _tokenize_prompt_ids(self, prompt: str) -> tuple[Any, int, int]:
+        if not self.use_chat_template:
+            encoded = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
+            input_ids = encoded["input_ids"]
+            return input_ids, 0, int(input_ids.shape[1])
+
+        encoded = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+        )
+        input_ids = encoded["input_ids"]
+        content_ids = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"]
+        start = self._find_token_subsequence(
+            input_ids[0].tolist(),
+            content_ids[0].tolist(),
+        )
+        if start is None:
+            raise RuntimeError("Could not locate user content inside the tokenizer chat template")
+        return input_ids, start, start + int(content_ids.shape[1])
+
+    def _activation_boundary(self, input_ids: Any, marker: str) -> int | None:
+        if not marker:
+            return None
+        marker_ids = self.tokenizer(marker, add_special_tokens=False).get("input_ids", [])
+        if not marker_ids:
+            raise ValueError("Configured adapter activation marker tokenized to an empty sequence")
+        start = self._find_token_subsequence(input_ids[0].tolist(), list(marker_ids))
+        if start is None:
+            raise ValueError("Configured adapter activation marker is absent from the tokenized prompt")
+        return start + len(marker_ids)
+
+    @staticmethod
+    def _find_token_subsequence(tokens: list[int], subsequence: list[int]) -> int | None:
+        if not subsequence or len(subsequence) > len(tokens):
+            return None
+        stop = len(tokens) - len(subsequence) + 1
+        for index in range(stop):
+            if tokens[index : index + len(subsequence)] == subsequence:
+                return index
+        return None
 
     def _resolve_device(self, device: str) -> str:
         return resolve_device(self.torch, device)
@@ -579,13 +670,11 @@ class HuggingFaceBackend:
         adaptation_start = time.perf_counter()
         prompt_ids = self._prepared_input_ids.get(sample.prompt)
         if prompt_ids is None:
-            prompt_ids = self.tokenizer(
-                sample.prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=self.max_length,
-                add_special_tokens=True,
-            )["input_ids"]
+            prompt_ids, _, _ = self._tokenize_prompt_ids(sample.prompt)
+            if prompt_ids.shape[1] > self.max_length:
+                raise ValueError(
+                    "Unprepared training prompt exceeds model.max_length; call prepare_sample first"
+                )
         answer_ids = self.tokenizer(
             sample.answer,
             return_tensors="pt",
@@ -672,17 +761,13 @@ class HuggingFaceBackend:
     def _encode_prompt(self, prompt: str) -> _PromptState:
         prepared = self._prepared_input_ids.get(prompt)
         if prepared is None:
-            encoded = self.tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=self.max_length,
-                add_special_tokens=True,
-            )
-            input_ids = encoded["input_ids"].to(self.device)
-            attention_mask = encoded.get("attention_mask")
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(self.device)
+            input_ids, _, _ = self._tokenize_prompt_ids(prompt)
+            if input_ids.shape[1] > self.max_length:
+                raise ValueError(
+                    "Unprepared prompt exceeds model.max_length; call prepare_sample with an explicit truncation policy"
+                )
+            input_ids = input_ids.to(self.device)
+            attention_mask = self.torch.ones_like(input_ids, device=self.device)
         else:
             input_ids = prepared.to(self.device)
             attention_mask = self.torch.ones_like(input_ids, device=self.device)

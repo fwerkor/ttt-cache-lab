@@ -98,6 +98,7 @@ def record_run_fields(
         ),
         "backend_name": str(model.get("backend", "")),
         "torch_dtype": str(model.get("torch_dtype", "")),
+        "prompt_format": "chat_template" if bool(model.get("use_chat_template", False)) else "plain",
         "attention_implementation": str(
             extras.get("attention_implementation", "")
         ),

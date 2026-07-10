@@ -98,6 +98,7 @@ class ExperimentRecord:
     selection_seed: int = 0
     backend_name: str = ""
     torch_dtype: str = ""
+    prompt_format: str = ""
     attention_implementation: str = ""
     git_commit: str = ""
     run_config_sha256: str = ""
@@ -121,6 +122,7 @@ class ExperimentRecord:
             self.context_length,
             self.synthetic_difficulty,
             self.model_name,
+            self.prompt_format,
             self.seed,
         )
 

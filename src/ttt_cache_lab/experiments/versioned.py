@@ -824,6 +824,7 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
             "model_hidden_size",
             "context_length",
             "synthetic_difficulty",
+            "prompt_format",
             "task_name",
             "update_target",
             "cache_strategy",
