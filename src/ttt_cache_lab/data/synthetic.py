@@ -288,14 +288,12 @@ class SyntheticTaskFactory:
         difficulty: SyntheticDifficulty = "hard",
     ) -> TaskSample:
         del answer_length
-        target = f"group_{self.rng.randrange(1000)}"
         lower, upper = {
             "easy": (2, 5),
             "medium": (3, 7),
             "hard": (3, 12),
         }[difficulty]
         target_count = self.rng.randrange(lower, upper)
-        lines = [f"Event belongs to {target}." for _ in range(target_count)]
         hard_distractor_count = max(target_count, context_length // 10)
         distractor_count = min(
             hard_distractor_count,
@@ -306,28 +304,32 @@ class SyntheticTaskFactory:
                 hard=hard_distractor_count,
             ),
         )
-        for _ in range(distractor_count):
-            distractor = f"group_{self.rng.randrange(1000)}"
-            while distractor == target:
-                distractor = f"group_{self.rng.randrange(1000)}"
-            lines.append(f"Event belongs to {distractor}.")
-        lines.extend(
-            neutral_background_sentences(
-                hard_distractor_count - distractor_count,
-                offset=self.rng.randrange(512),
-            )
+        ledger = ["TARGET_EVENT" for _ in range(target_count)]
+        ledger.extend("OTHER_EVENT" for _ in range(distractor_count))
+        self.rng.shuffle(ledger)
+        neutral = neutral_background_sentences(
+            hard_distractor_count - distractor_count,
+            offset=self.rng.randrange(512),
         )
-        self.rng.shuffle(lines)
-        prompt = "\n".join(lines) + (
-            f"\nQuestion: How many events belong to {target}? Reply with one integer.\nAnswer:"
+        prompt = "\n".join(
+            [
+                *neutral,
+                "BEGIN LEDGER",
+                *ledger,
+                "END LEDGER",
+                "Question: Count only the lines equal to TARGET_EVENT between BEGIN LEDGER and END LEDGER. "
+                "Do not count this question. Reply with one integer.",
+                "Answer:",
+            ]
         )
         return TaskSample(
             prompt=prompt,
             answer=str(target_count),
             metadata={
                 "task": "aggregation",
-                "target": target,
+                "target": "TARGET_EVENT",
                 "count": target_count,
+                "distractor_count": distractor_count,
                 "synthetic_difficulty": difficulty,
             },
         )

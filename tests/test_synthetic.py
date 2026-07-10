@@ -83,9 +83,13 @@ def test_multi_hop_sources_have_one_outgoing_edge() -> None:
 
 def test_aggregation_reference_matches_generated_target_count() -> None:
     sample = SyntheticTaskFactory(7).aggregation(context_length=4096, answer_length=4)
-    target = str(sample.metadata["target"])
-    facts = sample.prompt.split("\nQuestion:", maxsplit=1)[0]
-    assert facts.splitlines().count(f"Event belongs to {target}.") == int(sample.answer)
+    ledger = sample.prompt.split("BEGIN LEDGER\n", maxsplit=1)[1].split(
+        "\nEND LEDGER", maxsplit=1
+    )[0]
+    assert ledger.splitlines().count("TARGET_EVENT") == int(sample.answer)
+    assert ledger.splitlines().count("OTHER_EVENT") == int(
+        sample.metadata["distractor_count"]
+    )
 
 
 def test_variable_tracking_distractors_never_reassign_target() -> None:
@@ -154,8 +158,12 @@ def test_synthetic_difficulty_controls_structural_complexity() -> None:
         answer_length=4,
         difficulty="hard",
     )
-    easy_semantic_events = easy_aggregation.prompt.count("Event belongs to group_")
-    hard_semantic_events = hard_aggregation.prompt.count("Event belongs to group_")
+    easy_semantic_events = int(easy_aggregation.answer) + int(
+        easy_aggregation.metadata["distractor_count"]
+    )
+    hard_semantic_events = int(hard_aggregation.answer) + int(
+        hard_aggregation.metadata["distractor_count"]
+    )
     assert easy_semantic_events < hard_semantic_events
 
     easy_edges = easy_hop.prompt.count(" points to ")
