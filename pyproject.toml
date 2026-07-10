@@ -7,7 +7,7 @@ name = "ttt-cache-lab"
 version = "0.1.0"
 description = "Experiments for KV cache consistency under inference-time parameter evolution"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [{name = "Yuhang Cao"}]
 dependencies = [
@@ -49,7 +49,7 @@ markers = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -57,7 +57,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = []
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

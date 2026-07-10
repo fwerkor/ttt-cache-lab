@@ -6,16 +6,14 @@ import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import BaseModel
 
 from ttt_cache_lab.experiments.run_metadata import collect_run_metadata
 
-T = TypeVar("T")
 
-
-def capture_run_failure(
+def capture_run_failure[T](
     output_dir: Path,
     config: BaseModel,
     operation: Callable[[], T],
