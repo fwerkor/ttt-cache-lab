@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -156,6 +157,7 @@ class HuggingFaceBackend:
         self._prepared_input_ids: dict[str, Any] = {}
         self._sample_answer_token_counts: dict[str, int] = {}
         self._sample_activation_boundaries: dict[str, int] = {}
+        self._neutral_padding_pool: tuple[int, ...] | None = None
         self._alora_base_cache: dict[str, tuple[Any, np.ndarray]] = {}
         self._capture_attention_metrics = False
         self._last_attention_summary: np.ndarray | None = None
@@ -261,16 +263,20 @@ class HuggingFaceBackend:
                             raise ValueError("Middle truncation removed the adapter activation marker")
             current = int(input_ids.shape[1])
 
+        neutral_padding_tokens = 0
         if current < context_length:
-            filler = self.tokenizer(" filler", add_special_tokens=False).get("input_ids", [])
-            filler_id = int(filler[0]) if filler else int(self.tokenizer.eos_token_id or 0)
             pad_count = context_length - current
-            padding = self.torch.full((1, pad_count), filler_id, dtype=input_ids.dtype)
+            padding = self._neutral_padding_ids(
+                pad_count,
+                dtype=input_ids.dtype,
+                prompt=sample.prompt,
+            )
             insertion = content_start if self.use_chat_template else 0
             input_ids = self.torch.cat(
                 [input_ids[:, :insertion], padding, input_ids[:, insertion:]],
                 dim=1,
             )
+            neutral_padding_tokens = pad_count
             if activation_boundary is not None and activation_boundary >= insertion:
                 activation_boundary += pad_count
 
@@ -285,6 +291,7 @@ class HuggingFaceBackend:
         self._sample_answer_token_counts[sample.prompt] = configured_limit
         metadata = dict(sample.metadata)
         metadata["token_length"] = context_length
+        metadata["neutral_padding_tokens"] = neutral_padding_tokens
         metadata["prompt_format"] = "chat_template" if self.use_chat_template else "plain"
         return TaskSample(prompt=sample.prompt, answer=sample.answer, metadata=metadata)
 
@@ -335,6 +342,40 @@ class HuggingFaceBackend:
             if tokens[index : index + len(subsequence)] == subsequence:
                 return index
         return None
+
+    def _neutral_padding_ids(self, count: int, *, dtype: Any, prompt: str) -> Any:
+        if count < 1:
+            return self.torch.empty((1, 0), dtype=dtype)
+        if self._neutral_padding_pool is None:
+            labels = " ".join(
+                f"note{self._alphabetic_suffix(index)}"
+                for index in range(8192)
+            )
+            raw_ids = self.tokenizer(labels, add_special_tokens=False).get("input_ids", [])
+            special_ids = {int(value) for value in getattr(self.tokenizer, "all_special_ids", [])}
+            pool = tuple(int(value) for value in raw_ids if int(value) not in special_ids)
+            if not pool:
+                fallback = int(self.tokenizer.unk_token_id or self.tokenizer.eos_token_id or 0)
+                pool = (fallback,)
+            self._neutral_padding_pool = pool
+        pool = self._neutral_padding_pool
+        digest = hashlib.sha256(prompt.encode("utf-8")).digest()
+        offset = int.from_bytes(digest[:8], byteorder="big") % len(pool)
+        rotated = pool[offset:] + pool[:offset]
+        repeats = (count + len(rotated) - 1) // len(rotated)
+        values = (rotated * repeats)[:count]
+        return self.torch.tensor([values], dtype=dtype)
+
+    @staticmethod
+    def _alphabetic_suffix(index: int) -> str:
+        if index < 0:
+            raise ValueError("index must be non-negative")
+        chars = ["a"] * 4
+        value = index
+        for position in range(len(chars) - 1, -1, -1):
+            value, remainder = divmod(value, 26)
+            chars[position] = chr(ord("a") + remainder)
+        return "".join(chars)
 
     def _resolve_device(self, device: str) -> str:
         return resolve_device(self.torch, device)

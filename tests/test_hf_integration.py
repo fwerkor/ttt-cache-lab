@@ -40,6 +40,10 @@ def tiny_llama_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "alpha": 6,
         "Answer": 7,
         ":": 8,
+        "noteaaaa": 9,
+        "noteaaab": 10,
+        "noteaaac": 11,
+        "noteaaad": 12,
     }
     tokenizer_object = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
     tokenizer_object.pre_tokenizer = Whitespace()
@@ -97,10 +101,24 @@ def test_chat_template_prompt_preparation_preserves_context_and_format(tiny_llam
     prepared = backend._prepared_input_ids[sample.prompt]
     assert prepared.shape[1] == 24
     assert sample.metadata["prompt_format"] == "chat_template"
+    assert sample.metadata["neutral_padding_tokens"] > 0
     assert backend.use_chat_template is True
     output = backend.prefill(sample.prompt)
     assert output.extras is not None
     assert output.extras["token_length"] == 24
+
+
+def test_neutral_padding_is_deterministic_diverse_and_special_free(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    first = backend._neutral_padding_ids(24, dtype=torch.long, prompt="prompt-a")
+    repeated = backend._neutral_padding_ids(24, dtype=torch.long, prompt="prompt-a")
+    second = backend._neutral_padding_ids(24, dtype=torch.long, prompt="prompt-b")
+
+    assert torch.equal(first, repeated)
+    assert first.shape == (1, 24)
+    assert len(set(first[0].tolist())) > 1
+    assert not set(first[0].tolist()) & set(backend.tokenizer.all_special_ids)
+    assert not torch.equal(first, second)
 
 
 def test_manual_decode_stops_at_eos_and_reports_actual_token_count(tiny_llama_dir: Path) -> None:
