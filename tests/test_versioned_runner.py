@@ -95,3 +95,43 @@ def test_versioned_runner_marks_zero_gap_reuse_exact(tmp_path: Path) -> None:
     assert {record.action for record in artifacts.records} == {"reuse_exact"}
     assert {record.cache_state for record in artifacts.records} == {"valid_exact"}
     assert {record.version_gap for record in artifacts.records} == {0}
+
+
+def test_no_adaptation_keeps_original_cache_version(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-no-adaptation",
+            "experiment_id": "unit_no_adapt",
+            "seed": 3,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"], "update_norm": 0.05},
+            "cache": {"strategies": ["no_adaptation"]},
+            "adapter": {"update_mode": "random"},
+            "version_steps": [1, 2],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    assert {record.action for record in records} == {"reuse_exact"}
+    assert {record.cached_version for record in records} == {0}
+    assert [record.version_gap for record in records] == [1, 2]
+
+
+def test_adapter_specific_cache_builds_each_unseen_version(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-adapter-cache",
+            "experiment_id": "unit_adapter_cache",
+            "seed": 3,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"], "update_norm": 0.05},
+            "cache": {"strategies": ["adapter_specific_cache"]},
+            "adapter": {"update_mode": "random"},
+            "version_steps": [0, 1, 2],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    assert [record.action for record in records] == ["reuse_exact", "full_recompute", "full_recompute"]

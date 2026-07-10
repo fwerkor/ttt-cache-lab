@@ -221,8 +221,10 @@ class HuggingFaceBackend:
         updated: BackendOutput,
         decision: StrategyDecision,
     ) -> BackendOutput:
-        if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REUSE_EXACT}:
+        if decision.action is CacheAction.FULL_RECOMPUTE:
             return full
+        if decision.action is CacheAction.REUSE_EXACT:
+            return baseline
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             return self._partial_recompute_prefix_cache(baseline=baseline, full=full, decision=decision)
         if decision.action is CacheAction.DELTA_CORRECT:

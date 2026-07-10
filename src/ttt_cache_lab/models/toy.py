@@ -75,7 +75,7 @@ class ToyBackend:
         if decision.action is CacheAction.FULL_RECOMPUTE:
             return full
         if decision.action is CacheAction.REUSE_EXACT:
-            return full
+            return baseline
         if decision.action is CacheAction.REUSE_FROZEN:
             return BackendOutput(
                 logits=updated.logits,

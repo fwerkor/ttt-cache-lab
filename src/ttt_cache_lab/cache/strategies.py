@@ -227,11 +227,11 @@ class AdapterSpecificCacheStrategy(CacheStrategy):
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
         return StrategyDecision(
             self.name,
-            CacheAction.FULL_RECOMPUTE if step == 0 else CacheAction.REUSE_EXACT,
-            CacheBlockState.VALID_EXACT if step > 0 else CacheBlockState.INVALID,
+            CacheAction.REUSE_EXACT if step == 0 else CacheAction.FULL_RECOMPUTE,
+            CacheBlockState.VALID_EXACT if step == 0 else CacheBlockState.INVALID,
             None,
-            "Static baseline: cache is keyed by adapter identity/version.",
-            recompute_fraction=1.0 if step == 0 else 0.0,
+            "Static baseline: reuse only when this adapter version already has a cache entry.",
+            recompute_fraction=0.0 if step == 0 else 1.0,
         )
 
 

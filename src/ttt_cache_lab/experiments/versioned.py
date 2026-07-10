@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import csv
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
-from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, build_strategy
+from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.synthetic import SyntheticTaskFactory, TaskSample
 from ttt_cache_lab.experiments.metrics import (
@@ -30,6 +30,7 @@ class _StrategyCache:
     output: BackendOutput
     cached_version: int
     refresh_count: int = 0
+    version_outputs: dict[int, BackendOutput] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,12 @@ class VersionedExperimentRunner:
                 self._prepare_backend_for_target(backend, target)
                 cached_v0 = backend.prefill(sample.prompt)
                 strategy_caches = {
-                    str(strategy.name): _StrategyCache(output=cached_v0, cached_version=0) for strategy in strategies
+                    str(strategy.name): _StrategyCache(
+                        output=cached_v0,
+                        cached_version=0,
+                        version_outputs={0: cached_v0},
+                    )
+                    for strategy in strategies
                 }
                 accumulated_update_norm = 0.0
                 current = cached_v0
@@ -195,7 +201,37 @@ class VersionedExperimentRunner:
                 step=version_gap,
                 update_norm=accumulated_update_norm,
             )
-            if adapter_version == cached.cached_version and decision.action is not CacheAction.FULL_RECOMPUTE:
+            baseline_output = cached.output
+            if strategy.name is StrategyName.NO_ADAPTATION:
+                decision = StrategyDecision(
+                    decision.strategy,
+                    CacheAction.REUSE_EXACT,
+                    CacheBlockState.VALID_EXACT,
+                    None,
+                    "No-adaptation baseline keeps the original model and v0 output fixed.",
+                )
+                baseline_output = cached.version_outputs[0]
+            elif strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
+                existing = cached.version_outputs.get(adapter_version)
+                if existing is not None:
+                    decision = StrategyDecision(
+                        decision.strategy,
+                        CacheAction.REUSE_EXACT,
+                        CacheBlockState.VALID_EXACT,
+                        None,
+                        "Adapter-version cache hit.",
+                    )
+                    baseline_output = existing
+                else:
+                    decision = StrategyDecision(
+                        decision.strategy,
+                        CacheAction.FULL_RECOMPUTE,
+                        CacheBlockState.INVALID,
+                        None,
+                        "Adapter-version cache miss; build a dedicated cache entry.",
+                        recompute_fraction=1.0,
+                    )
+            elif adapter_version == cached.cached_version and decision.action is not CacheAction.FULL_RECOMPUTE:
                 decision = StrategyDecision(
                     decision.strategy,
                     CacheAction.REUSE_EXACT,
@@ -204,23 +240,27 @@ class VersionedExperimentRunner:
                     "Cache version matches adapter version; reuse is exact.",
                 )
             approx = backend.apply_cache_strategy(
-                baseline=cached.output,
+                baseline=baseline_output,
                 full=full,
                 updated=current,
                 decision=decision,
             )
             new_refresh_count = cached.refresh_count + (1 if is_refresh_action(decision) else 0)
-            if decision.action in {
+            if strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
+                cached.version_outputs[adapter_version] = approx
+                cached.output = approx
+                cached.cached_version = adapter_version
+                cached.refresh_count = new_refresh_count
+            elif strategy.name is not StrategyName.NO_ADAPTATION and decision.action in {
                 CacheAction.FULL_RECOMPUTE,
                 CacheAction.REUSE_EXACT,
                 CacheAction.PARTIAL_RECOMPUTE,
                 CacheAction.DELTA_CORRECT,
             }:
-                strategy_caches[cache_key] = _StrategyCache(
-                    output=approx,
-                    cached_version=adapter_version,
-                    refresh_count=new_refresh_count,
-                )
+                cached.output = approx
+                cached.cached_version = adapter_version
+                cached.refresh_count = new_refresh_count
+                cached.version_outputs[adapter_version] = approx
             top1 = top1_agreement(full.logits, approx.logits)
             records.append(
                 ExperimentRecord(
