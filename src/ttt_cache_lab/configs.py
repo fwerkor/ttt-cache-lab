@@ -52,6 +52,10 @@ class CacheConfig(BaseModel):
     strategies: list[str] = Field(default_factory=lambda: ["full_recompute", "stale_reuse"])
     refresh_period: int = 4
     update_norm_threshold: float = 0.05
+    version_gap_threshold: int = Field(default=8, ge=0)
+    error_proxy_threshold: float = Field(default=0.25, ge=0.0)
+    latency_budget_fraction: float = Field(default=1.0, gt=0.0)
+    failure_map_path: Path | None = None
     oracle_kl_threshold: float = 0.05
     oracle_top1_threshold: float = 0.99
     oracle_task_drop_threshold: float = 0.01

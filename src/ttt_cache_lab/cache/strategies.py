@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
-from ttt_cache_lab.cache.planner import CachePlanner, PlannerDecision, PlannerPolicy
+from ttt_cache_lab.cache.planner import (
+    CachePlanner,
+    PlannerDecision,
+    PlannerPolicy,
+    PlannerRuntime,
+)
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.updates.targets import ModuleKind, UpdateTarget
 
@@ -49,6 +55,17 @@ class CacheStrategy:
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
         raise NotImplementedError
+
+    def decide_with_runtime(
+        self,
+        target: UpdateTarget,
+        *,
+        step: int,
+        update_norm: float,
+        runtime: PlannerRuntime,
+    ) -> StrategyDecision:
+        del runtime
+        return self.decide(target, step=step, update_norm=update_norm)
 
 
 class FullRecomputeStrategy(CacheStrategy):
@@ -192,7 +209,27 @@ class AdaptiveStrategy(CacheStrategy):
         self.name = name
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
-        decision: PlannerDecision = self.planner.plan(target, update_norm=update_norm, version_gap=step)
+        return self.decide_with_runtime(
+            target,
+            step=step,
+            update_norm=update_norm,
+            runtime=PlannerRuntime(),
+        )
+
+    def decide_with_runtime(
+        self,
+        target: UpdateTarget,
+        *,
+        step: int,
+        update_norm: float,
+        runtime: PlannerRuntime,
+    ) -> StrategyDecision:
+        decision: PlannerDecision = self.planner.plan(
+            target,
+            update_norm=update_norm,
+            version_gap=step,
+            runtime=runtime,
+        )
         return StrategyDecision(
             self.name,
             decision.action,
@@ -383,7 +420,20 @@ class OraclePlannerStrategy(CacheStrategy):
         )
 
 
-def build_strategy(name: str, *, refresh_period: int = 4, update_norm_threshold: float = 0.05) -> CacheStrategy:
+def build_strategy(
+    name: str,
+    *,
+    refresh_period: int = 4,
+    update_norm_threshold: float = 0.05,
+    version_gap_threshold: int = 8,
+    error_proxy_threshold: float = 0.25,
+    latency_budget_fraction: float = 1.0,
+    memory_budget_bytes: int | None = None,
+    failure_map_path: Path | None = None,
+    safe_kl_threshold: float = 0.05,
+    safe_top1_threshold: float = 0.99,
+    safe_task_drop_threshold: float = 0.01,
+) -> CacheStrategy:
     parsed = StrategyName(name)
     if parsed is StrategyName.FULL_RECOMPUTE:
         return FullRecomputeStrategy()
@@ -410,6 +460,14 @@ def build_strategy(name: str, *, refresh_period: int = 4, update_norm_threshold:
     }:
         policy = PlannerPolicy(
             update_norm_threshold=update_norm_threshold,
+            version_gap_threshold=version_gap_threshold,
+            error_proxy_threshold=error_proxy_threshold,
+            latency_budget_fraction=latency_budget_fraction,
+            memory_budget_bytes=memory_budget_bytes,
+            failure_map_path=failure_map_path,
+            safe_kl_threshold=safe_kl_threshold,
+            safe_top1_threshold=safe_top1_threshold,
+            safe_task_drop_threshold=safe_task_drop_threshold,
             allow_delta_correction=parsed is not StrategyName.ADAPTIVE_NO_DELTA,
             allow_layerwise_recompute=parsed is not StrategyName.ADAPTIVE_NO_PARTIAL,
             use_version_id=parsed is not StrategyName.ADAPTIVE_NO_VERSION,

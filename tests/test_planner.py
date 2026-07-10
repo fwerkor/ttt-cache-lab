@@ -1,4 +1,6 @@
-from ttt_cache_lab.cache.planner import CachePlanner
+from pathlib import Path
+
+from ttt_cache_lab.cache.planner import CachePlanner, PlannerPolicy, PlannerRuntime
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.updates.targets import parse_update_target
 
@@ -144,3 +146,79 @@ def test_related_work_baselines_have_distinct_actions() -> None:
     assert str(alora.strategy) == "alora_prefix_reuse"
     assert str(lragent.strategy) == "lragent_adapter_cache"
     assert str(forkkv.strategy) == "forkkv_base_delta"
+
+
+
+def _failure_map(path: Path, rows: list[str]) -> Path:
+    path.write_text(
+        "update_target,version_gap,cache_strategy,task_drop_vs_full,logits_kl_mean,"
+        "top1_agreement_mean,false_safe_rate\n" + "".join(rows),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_planner_reads_safe_action_from_failure_map(tmp_path: Path) -> None:
+    failure_map = _failure_map(
+        tmp_path / "failure_map.csv",
+        [
+            "lora.k:2,4,stale_reuse,0.0,0.001,1.0,0.0\n",
+            "lora.k:2,4,delta_correction,0.0,0.01,1.0,0.0\n",
+            "lora.k:2,4,full_recompute,0.0,0.0,1.0,0.0\n",
+        ],
+    )
+    planner = CachePlanner(PlannerPolicy(failure_map_path=failure_map))
+    decision = planner.plan(parse_update_target("lora.k:2"), update_norm=0.1, version_gap=5)
+    assert decision.action is CacheAction.REUSE_STALE
+    assert "E3 failure map" in decision.reason
+
+
+def test_planner_failure_map_skips_unsafe_reuse(tmp_path: Path) -> None:
+    failure_map = _failure_map(
+        tmp_path / "failure_map.csv",
+        [
+            "lora.k:2,2,stale_reuse,0.1,0.2,0.0,1.0\n",
+            "lora.k:2,2,delta_correction,0.0,0.01,1.0,0.0\n",
+        ],
+    )
+    planner = CachePlanner(PlannerPolicy(failure_map_path=failure_map))
+    decision = planner.plan(parse_update_target("lora.k:2"), update_norm=0.01, version_gap=2)
+    assert decision.action is CacheAction.DELTA_CORRECT
+
+
+def test_planner_version_gap_threshold_is_configurable() -> None:
+    target = parse_update_target("lora.k:2")
+    strict = CachePlanner(PlannerPolicy(version_gap_threshold=1)).plan(
+        target, update_norm=0.01, version_gap=2
+    )
+    relaxed = CachePlanner(PlannerPolicy(version_gap_threshold=4)).plan(
+        target, update_norm=0.01, version_gap=2
+    )
+    assert strict.action is CacheAction.PARTIAL_RECOMPUTE
+    assert relaxed.action is CacheAction.DELTA_CORRECT
+
+
+def test_planner_error_proxy_forces_refresh() -> None:
+    decision = CachePlanner(PlannerPolicy(error_proxy_threshold=0.001)).plan(
+        parse_update_target("lora.k:2"), update_norm=0.01, version_gap=1
+    )
+    assert decision.action is CacheAction.PARTIAL_RECOMPUTE
+    assert "Error proxy" in decision.reason
+
+
+def test_planner_memory_pressure_disables_delta() -> None:
+    decision = CachePlanner(PlannerPolicy(memory_budget_bytes=100)).plan(
+        parse_update_target("lora.k:2"),
+        update_norm=0.01,
+        version_gap=1,
+        runtime=PlannerRuntime(total_cache_bytes=90, candidate_cache_bytes=20),
+    )
+    assert decision.action is CacheAction.PARTIAL_RECOMPUTE
+    assert "budget" in decision.reason
+
+
+def test_planner_latency_budget_disables_delta() -> None:
+    decision = CachePlanner(PlannerPolicy(latency_budget_fraction=0.1)).plan(
+        parse_update_target("lora.k:2"), update_norm=0.01, version_gap=1
+    )
+    assert decision.action is CacheAction.FULL_RECOMPUTE

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ttt_cache_lab.cache.blocks import VersionedCacheEntry, VersionedCacheManager
+from ttt_cache_lab.cache.planner import PlannerRuntime
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
@@ -58,6 +59,14 @@ class StaticAdapterExperimentRunner:
                 name,
                 refresh_period=self.config.cache.refresh_period,
                 update_norm_threshold=self.config.cache.update_norm_threshold,
+                version_gap_threshold=self.config.cache.version_gap_threshold,
+                error_proxy_threshold=self.config.cache.error_proxy_threshold,
+                latency_budget_fraction=self.config.cache.latency_budget_fraction,
+                memory_budget_bytes=self.config.cache.max_cache_bytes,
+                failure_map_path=self.config.cache.failure_map_path,
+                safe_kl_threshold=self.config.cache.oracle_kl_threshold,
+                safe_top1_threshold=self.config.cache.oracle_top1_threshold,
+                safe_task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
             )
             for name in self.config.cache.strategies
         ]
@@ -99,10 +108,15 @@ class StaticAdapterExperimentRunner:
                         manager = strategy_managers[key]
                         cached_adapter, cached_output = latest_cache[key]
                         version_gap = 0 if cached_adapter == adapter_number else 1
-                        decision = strategy.decide(
+                        decision = strategy.decide_with_runtime(
                             target,
                             step=version_gap,
                             update_norm=adapter.update_norm,
+                            runtime=PlannerRuntime(
+                                total_cache_bytes=manager.total_cache_bytes(),
+                                candidate_cache_bytes=output_cache_bytes(cached_output),
+                                full_recompute_latency=1.0,
+                            ),
                         )
                         baseline_output = baseline
                         if strategy.name is StrategyName.NO_ADAPTATION:

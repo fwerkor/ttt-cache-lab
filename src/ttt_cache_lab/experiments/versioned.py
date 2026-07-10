@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ttt_cache_lab.cache.blocks import CacheBlockMetadata, VersionedCacheEntry, VersionedCacheManager
+from ttt_cache_lab.cache.planner import PlannerRuntime
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState, CacheSemantics
 from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
@@ -62,6 +63,14 @@ class VersionedExperimentRunner:
                 name,
                 refresh_period=self.config.cache.refresh_period,
                 update_norm_threshold=self.config.cache.update_norm_threshold,
+                version_gap_threshold=self.config.cache.version_gap_threshold,
+                error_proxy_threshold=self.config.cache.error_proxy_threshold,
+                latency_budget_fraction=self.config.cache.latency_budget_fraction,
+                memory_budget_bytes=self.config.cache.max_cache_bytes,
+                failure_map_path=self.config.cache.failure_map_path,
+                safe_kl_threshold=self.config.cache.oracle_kl_threshold,
+                safe_top1_threshold=self.config.cache.oracle_top1_threshold,
+                safe_task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
             )
             for name in self.config.cache.strategies
         ]
@@ -253,10 +262,28 @@ class VersionedExperimentRunner:
             record_cached_version = cached.cached_version
             version_gap = adapter_version - record_cached_version
             update_norm_since_cache = max(0.0, accumulated_update_norm - cached.cached_update_norm)
-            decision = strategy.decide(
+            decision = strategy.decide_with_runtime(
                 target,
                 step=version_gap,
                 update_norm=update_norm_since_cache,
+                runtime=PlannerRuntime(
+                    total_cache_bytes=cached.manager.total_cache_bytes(),
+                    candidate_cache_bytes=output_cache_bytes(cached.output),
+                    full_recompute_latency=max(
+                        1e-9,
+                        backend.estimate_latency(
+                            StrategyDecision(
+                                StrategyName.FULL_RECOMPUTE,
+                                CacheAction.FULL_RECOMPUTE,
+                                CacheBlockState.INVALID,
+                                None,
+                                "Planner cost probe.",
+                                recompute_fraction=1.0,
+                            ),
+                            context_length=self.config.data.context_length,
+                        ),
+                    ),
+                ),
             )
             baseline_output = cached.output
             if strategy.name is StrategyName.NO_ADAPTATION:

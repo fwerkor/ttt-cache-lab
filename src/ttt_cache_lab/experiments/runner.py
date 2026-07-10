@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 
+from ttt_cache_lab.cache.planner import PlannerRuntime
 from ttt_cache_lab.cache.semantics import CacheAction
 from ttt_cache_lab.cache.strategies import StrategyName, build_strategy
 from ttt_cache_lab.configs import ExperimentConfig
@@ -40,6 +41,14 @@ class ExperimentRunner:
                 name,
                 refresh_period=self.config.cache.refresh_period,
                 update_norm_threshold=self.config.cache.update_norm_threshold,
+                version_gap_threshold=self.config.cache.version_gap_threshold,
+                error_proxy_threshold=self.config.cache.error_proxy_threshold,
+                latency_budget_fraction=self.config.cache.latency_budget_fraction,
+                memory_budget_bytes=self.config.cache.max_cache_bytes,
+                failure_map_path=self.config.cache.failure_map_path,
+                safe_kl_threshold=self.config.cache.oracle_kl_threshold,
+                safe_top1_threshold=self.config.cache.oracle_top1_threshold,
+                safe_task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
             )
             for name in self.config.cache.strategies
         ]
@@ -60,10 +69,25 @@ class ExperimentRunner:
                 full = backend.full_recompute(sample.prompt, updated)
 
                 for strategy in strategies:
-                    decision = strategy.decide(
+                    decision = strategy.decide_with_runtime(
                         target,
                         step=self.config.updates.step_count,
                         update_norm=self.config.updates.update_norm,
+                        runtime=PlannerRuntime(
+                            total_cache_bytes=output_cache_bytes(baseline),
+                            candidate_cache_bytes=output_cache_bytes(baseline),
+                            full_recompute_latency=max(
+                                1e-9,
+                                backend.estimate_latency(
+                                    strategy.decide(
+                                        target,
+                                        step=self.config.updates.step_count,
+                                        update_norm=self.config.updates.update_norm,
+                                    ),
+                                    context_length=self.config.data.context_length,
+                                ),
+                            ),
+                        ),
                     )
                     approx = backend.apply_cache_strategy(
                         baseline=baseline,
