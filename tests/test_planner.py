@@ -33,6 +33,23 @@ def test_large_gap_lora_k_update_uses_partial_recompute() -> None:
     assert decision.first_invalid_layer == 2
 
 
+def test_large_gap_all_layer_lora_k_uses_full_recompute() -> None:
+    decision = CachePlanner().plan(parse_update_target("lora.k"), update_norm=0.01, version_gap=16)
+    assert decision.action is CacheAction.FULL_RECOMPUTE
+    assert decision.first_invalid_layer is None
+    assert decision.recompute_fraction == 1.0
+
+
+def test_layerwise_strategy_requires_layer_boundary() -> None:
+    from ttt_cache_lab.cache.strategies import build_strategy
+
+    decision = build_strategy("layerwise_recompute").decide(
+        parse_update_target("lora.k"), step=1, update_norm=0.01
+    )
+    assert decision.action is CacheAction.FULL_RECOMPUTE
+    assert decision.recompute_fraction == 1.0
+
+
 def test_norm_update_full_recompute() -> None:
     decision = CachePlanner().plan(parse_update_target("norm:1"), update_norm=0.01)
     assert decision.action is CacheAction.REJECT_UPDATE
@@ -53,7 +70,7 @@ def test_strategy_update_norm_threshold_is_configurable() -> None:
     target = parse_update_target("lora.k")
     low_threshold = build_strategy("adaptive", update_norm_threshold=0.0).decide(target, step=1, update_norm=0.01)
     default_threshold = build_strategy("adaptive", update_norm_threshold=0.05).decide(target, step=1, update_norm=0.01)
-    assert low_threshold.action is CacheAction.PARTIAL_RECOMPUTE
+    assert low_threshold.action is CacheAction.FULL_RECOMPUTE
     assert default_threshold.action is CacheAction.DELTA_CORRECT
 
 

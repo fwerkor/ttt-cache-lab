@@ -52,6 +52,27 @@ def test_versioned_runner_preserves_random_update_drift(tmp_path: Path) -> None:
     assert len(set(round(value, 12) for value in means.values())) > 1
 
 
+def test_global_layerwise_target_records_full_recompute(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-global-layerwise",
+            "experiment_id": "unit_global_layerwise",
+            "seed": 7,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 4, "hidden_size": 16, "vocab_size": 32},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"], "step_count": 1, "update_norm": 0.1},
+            "cache": {"strategies": ["layerwise_recompute"]},
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [1],
+        }
+    )
+    record = VersionedExperimentRunner(config).run().records[0]
+    assert record.action == "full_recompute"
+    assert record.first_invalid_layer is None
+    assert record.recompute_fraction == 1.0
+
+
 def test_versioned_runner_keeps_delta_correction_separate(tmp_path: Path) -> None:
     config = VersionedExperimentConfig.model_validate(
         {

@@ -779,12 +779,14 @@ class HuggingFaceBackend:
     ) -> BackendOutput | None:
         if not baseline.extras:
             return None
+        if decision.first_invalid_layer is None:
+            raise ValueError("Partial recompute requires an explicit first-invalid layer")
         state = baseline.extras.get("prompt_state")
         hidden_states = baseline.extras.get("hidden_states")
         old_past = baseline.extras.get("past_key_values")
         if not isinstance(state, _PromptState) or not isinstance(hidden_states, tuple) or old_past is None:
             return None
-        split_layer = decision.first_invalid_layer or 0
+        split_layer = decision.first_invalid_layer
         layer_container, family = self._decoder_layers()
         if layer_container is None or split_layer < 0 or split_layer > len(layer_container):
             return None

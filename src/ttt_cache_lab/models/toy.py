@@ -107,7 +107,9 @@ class ToyBackend:
                 extras={"cache_mode": "alora_base_prefix_suffix_recompute"},
             )
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
-            layer = decision.first_invalid_layer or 0
+            if decision.first_invalid_layer is None:
+                raise ValueError("Partial recompute requires an explicit first-invalid layer")
+            layer = decision.first_invalid_layer
             cache = baseline.cache_tensor.copy()
             hidden = baseline.hidden_tensor.copy()
             cache[layer:] = full.cache_tensor[layer:]
@@ -131,7 +133,9 @@ class ToyBackend:
         if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
             return 10.0 * base
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
-            first = decision.first_invalid_layer or 0
+            if decision.first_invalid_layer is None:
+                raise ValueError("Partial recompute requires an explicit first-invalid layer")
+            first = decision.first_invalid_layer
             fraction = max(0.1, (self.num_layers - first) / self.num_layers)
             return 10.0 * base * fraction
         if decision.action is CacheAction.DELTA_CORRECT:

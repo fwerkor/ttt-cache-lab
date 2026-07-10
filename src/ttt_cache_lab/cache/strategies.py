@@ -160,13 +160,22 @@ class LayerwiseRecomputeStrategy(CacheStrategy):
     name = StrategyName.LAYERWISE_RECOMPUTE
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
+        del step, update_norm
+        if target.layer is None:
+            return StrategyDecision(
+                self.name,
+                CacheAction.FULL_RECOMPUTE,
+                CacheBlockState.INVALID,
+                None,
+                "No affected-layer boundary is available; layerwise recompute becomes full recompute.",
+                recompute_fraction=1.0,
+            )
         return StrategyDecision(
             self.name,
             CacheAction.PARTIAL_RECOMPUTE,
             CacheBlockState.INVALID,
             target.layer,
             "Recompute from the first affected layer onward.",
-            recompute_fraction=0.5 if target.layer is None else 0.0,
         )
 
 

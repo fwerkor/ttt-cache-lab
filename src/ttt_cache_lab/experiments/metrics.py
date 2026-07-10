@@ -60,7 +60,7 @@ def estimate_recompute_fraction(decision: StrategyDecision, *, num_layers: int) 
         return 1.0
     if decision.action is CacheAction.PARTIAL_RECOMPUTE:
         if decision.first_invalid_layer is None:
-            return decision.recompute_fraction or 0.5
+            return 1.0
         remaining = max(0, num_layers - decision.first_invalid_layer)
         return max(0.0, min(1.0, remaining / max(1, num_layers)))
     if decision.action is CacheAction.DELTA_CORRECT:

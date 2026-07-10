@@ -121,13 +121,19 @@ class CachePlanner:
                     first_invalid_layer=target.layer,
                     recompute_fraction=0.15,
                 )
-            if self.policy.allow_layerwise_recompute:
+            if self.policy.allow_layerwise_recompute and target.layer is not None:
                 return PlannerDecision(
                     CacheBlockState.INVALID,
                     CacheAction.PARTIAL_RECOMPUTE,
                     "K/V-affecting updates left the delta region; refresh from the affected layer onward.",
                     first_invalid_layer=target.layer,
-                    recompute_fraction=0.5 if target.layer is None else 0.0,
+                )
+            if self.policy.allow_layerwise_recompute:
+                return PlannerDecision(
+                    CacheBlockState.INVALID,
+                    CacheAction.FULL_RECOMPUTE,
+                    "K/V-affecting all-layer update has no restart boundary; perform full recompute.",
+                    recompute_fraction=1.0,
                 )
             return PlannerDecision(
                 CacheBlockState.INVALID,
