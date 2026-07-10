@@ -1,0 +1,57 @@
+name: e7-boundary-toy-sweep
+output_dir: runs/e7_boundary_toy_sweep
+base:
+  name: e7-boundary-toy-base
+  output_dir: runs/unused
+  experiment_id: e7_failure_boundary
+  seed: 7
+  model:
+    backend: toy
+    num_layers: 6
+    hidden_size: 32
+    vocab_size: 256
+  data:
+    task: variable_tracking
+    num_samples: 8
+    context_length: 1024
+    answer_length: 4
+  updates:
+    targets:
+      - lora.q
+      - lora.k
+      - lora.v
+      - lora.qv
+      - lora.attn
+      - lora.mlp_early
+      - lora.mlp_late
+      - norm
+    step_count: 1
+    update_norm: 0.01
+  cache:
+    strategies:
+      - full_recompute
+      - stale_reuse
+      - adaptive
+      - adaptive_no_version
+      - adaptive_no_target
+      - adaptive_no_norm
+      - adaptive_no_delta
+      - adaptive_no_partial
+      - adaptive_no_periodic
+    refresh_period: 4
+    update_norm_threshold: 0.03
+  metrics:
+    compute_attention_metrics: true
+    compute_flops_metrics: true
+  adapter:
+    update_mode: random
+    lora_rank: 8
+    lora_alpha: 16.0
+    learning_rate: 0.01
+    train_steps_per_version: 1
+  version_steps: [0, 1, 2, 4, 8, 16, 32]
+axes:
+  - path: updates.update_norm
+    values: [0.001, 0.005, 0.01, 0.03, 0.05, 0.1]
+  - path: adapter.lora_rank
+    values: [4, 8, 16]

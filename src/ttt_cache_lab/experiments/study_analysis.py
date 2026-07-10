@@ -29,6 +29,10 @@ def generate_study_analysis(
         artifacts.extend(_analyze_e1(rows, output_dir))
     if any("e2" in experiment for experiment in experiment_ids):
         artifacts.extend(_analyze_e2(rows, output_dir, thresholds=thresholds))
+    if any("e3" in experiment for experiment in experiment_ids):
+        artifacts.extend(_analyze_e3(rows, output_dir, thresholds=thresholds))
+    if any("e4" in experiment for experiment in experiment_ids):
+        artifacts.extend(_analyze_e4(rows, output_dir, thresholds=thresholds))
     if any("e5" in experiment for experiment in experiment_ids):
         artifacts.extend(_analyze_e5(rows, output_dir, thresholds=thresholds))
     if any("e6" in experiment for experiment in experiment_ids):
@@ -163,6 +167,133 @@ def _analyze_e2(
         encoding="utf-8",
     )
     return [csv_path, boundary_csv, boundary_md, svg_path]
+
+
+def _analyze_e3(
+    rows: list[dict[str, str]],
+    output_dir: Path,
+    *,
+    thresholds: StudyThresholds,
+) -> list[Path]:
+    from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
+
+    e3_rows = [row for row in rows if "e3" in row.get("experiment_id", "").lower()]
+    source = output_dir / "e3_records.csv"
+    _write_raw_rows(source, e3_rows)
+    failure_dir = output_dir / "e3_failure_map"
+    generate_failure_map(
+        source,
+        failure_dir,
+        thresholds=FailureThresholds(
+            safe_kl=thresholds.safe_kl,
+            safe_top1=thresholds.safe_top1,
+            safe_task_drop=thresholds.safe_task_drop,
+        ),
+    )
+    return [source, *sorted(failure_dir.iterdir())]
+
+
+def _analyze_e4(
+    rows: list[dict[str, str]],
+    output_dir: Path,
+    *,
+    thresholds: StudyThresholds,
+) -> list[Path]:
+    from ttt_cache_lab.experiments.pareto import generate_pareto
+
+    e4_rows = _with_full_task_drop(
+        [row for row in rows if "e4" in row.get("experiment_id", "").lower()]
+    )
+    groups = _group(e4_rows, ("update_target", "cache_strategy"))
+    summary: list[dict[str, object]] = []
+    for (target, strategy), records in sorted(groups.items()):
+        full_latency = _reference_mean(records, e4_rows, "end_to_end_latency")
+        latency = _mean(records, "end_to_end_latency")
+        summary.append(
+            {
+                "update_target": target,
+                "cache_strategy": strategy,
+                "count": len(records),
+                "task_score_mean": _mean(records, "task_score"),
+                "task_drop_vs_full_mean": _mean(records, "task_drop_vs_full"),
+                "logits_kl_mean": _mean(records, "logits_kl"),
+                "top1_agreement_mean": _mean(records, "top1_agreement"),
+                "attention_shift_mean": _mean(records, "attention_shift"),
+                "end_to_end_latency_mean": latency,
+                "speedup_vs_full": full_latency / latency if latency > 0.0 else 0.0,
+                "total_cache_bytes_mean": _mean(records, "total_cache_bytes"),
+                "flops_fraction_mean": _mean(records, "flops_fraction"),
+                "safe_rate": sum(
+                    1.0 for row in records if _safe(row, thresholds=thresholds)
+                )
+                / len(records),
+                "false_safe_rate": sum(_bool(row, "false_safe") for row in records)
+                / len(records),
+            }
+        )
+    csv_path = output_dir / "e4_planner_comparison.csv"
+    _write_dicts(csv_path, summary)
+    md_path = output_dir / "e4_planner_comparison.md"
+    md_path.write_text(
+        _markdown_table(
+            "E4 planner quality-cost comparison",
+            summary,
+            columns=(
+                "update_target",
+                "cache_strategy",
+                "task_score_mean",
+                "task_drop_vs_full_mean",
+                "logits_kl_mean",
+                "top1_agreement_mean",
+                "attention_shift_mean",
+                "end_to_end_latency_mean",
+                "speedup_vs_full",
+                "total_cache_bytes_mean",
+                "flops_fraction_mean",
+                "safe_rate",
+                "false_safe_rate",
+            ),
+        ),
+        encoding="utf-8",
+    )
+    svg_path = output_dir / "e4_quality_cost.svg"
+    svg_path.write_text(
+        _scatter_svg(
+            summary,
+            x_field="end_to_end_latency_mean",
+            y_field="task_score_mean",
+            label_fields=("cache_strategy", "update_target"),
+            title="E4 planner quality versus end-to-end latency",
+            x_label="end-to-end latency",
+            y_label="task score",
+        ),
+        encoding="utf-8",
+    )
+    pareto_source = output_dir / "e4_records.csv"
+    _write_raw_rows(pareto_source, e4_rows)
+    generate_pareto(pareto_source, output_dir / "e4_pareto")
+    return [
+        csv_path,
+        md_path,
+        svg_path,
+        pareto_source,
+        *sorted((output_dir / "e4_pareto").iterdir()),
+    ]
+
+
+def _reference_mean(
+    records: list[dict[str, str]],
+    all_rows: list[dict[str, str]],
+    field: str,
+) -> float:
+    targets = {row.get("update_target", "") for row in records}
+    references = [
+        row
+        for row in all_rows
+        if row.get("update_target", "") in targets
+        and row.get("cache_strategy", "") == "full_recompute"
+    ]
+    return _mean(references, field)
 
 
 def _analyze_e5(
@@ -445,6 +576,14 @@ def _group(
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _write_raw_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = list(rows[0]) if rows else []
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _write_dicts(path: Path, rows: Sequence[Mapping[str, object]]) -> None:

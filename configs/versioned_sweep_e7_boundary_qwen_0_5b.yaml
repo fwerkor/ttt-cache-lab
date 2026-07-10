@@ -1,0 +1,61 @@
+name: e7-boundary-qwen-0-5b-sweep
+output_dir: runs/e7_boundary_qwen_0_5b_sweep
+base:
+  name: e7-boundary-qwen-0-5b-base
+  output_dir: runs/unused
+  experiment_id: e7_failure_boundary
+  seed: 7
+  model:
+    backend: hf
+    model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+    modelscope_model_id: Qwen/Qwen2.5-0.5B-Instruct
+    device: auto
+    torch_dtype: auto
+    max_length: 2048
+    trust_remote_code: true
+  data:
+    task: variable_tracking
+    num_samples: 4
+    context_length: 2048
+    answer_length: 4
+  updates:
+    targets:
+      - lora.q
+      - lora.k
+      - lora.v
+      - lora.qv
+      - lora.attn
+      - lora.mlp_early
+      - lora.mlp_late
+      - norm
+    step_count: 1
+    update_norm: 0.00001
+  cache:
+    strategies:
+      - full_recompute
+      - stale_reuse
+      - adaptive
+      - adaptive_no_version
+      - adaptive_no_target
+      - adaptive_no_norm
+      - adaptive_no_delta
+      - adaptive_no_partial
+      - adaptive_no_periodic
+    refresh_period: 4
+    update_norm_threshold: 0.0001
+  metrics:
+    compute_attention_metrics: true
+    compute_flops_metrics: true
+  adapter:
+    update_mode: lora_train
+    lora_rank: 8
+    lora_alpha: 16.0
+    learning_rate: 0.0002
+    train_steps_per_version: 1
+    freeze_base_model: true
+  version_steps: [0, 1, 2, 4, 8]
+axes:
+  - path: updates.update_norm
+    values: [0.000001, 0.00001, 0.0001, 0.001]
+  - path: adapter.lora_rank
+    values: [4, 8, 16]

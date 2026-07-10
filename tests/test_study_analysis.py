@@ -58,7 +58,15 @@ def _record(
 
 def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
     records = []
-    for experiment in ("e1_static", "e2_drift", "e5_delta", "e6_scaling", "e7_ablation"):
+    for experiment in (
+        "e1_static",
+        "e2_drift",
+        "e3_failure_map",
+        "e4_planner",
+        "e5_delta",
+        "e6_scaling",
+        "e7_ablation",
+    ):
         records.extend(
             [
                 _record(
@@ -117,6 +125,10 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
         "e2_version_drift.csv",
         "e2_first_boundary.csv",
         "e2_task_drop_by_gap.svg",
+        "e3_records.csv",
+        "e4_planner_comparison.csv",
+        "e4_quality_cost.svg",
+        "e4_records.csv",
         "e5_safe_region.csv",
         "e5_safe_region_heatmap.svg",
         "e6_context_model_scaling.csv",
@@ -126,3 +138,7 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
     }
     assert expected <= {path.name for path in artifacts}
     assert all((output / name).exists() for name in expected)
+    assert (output / "e3_failure_map" / "failure_map.csv").exists()
+    assert (output / "e3_failure_map" / "attention_shift_heatmap.svg").exists()
+    assert (output / "e4_pareto" / "pareto.csv").exists()
+    assert (output / "e4_pareto" / "pareto.svg").exists()
