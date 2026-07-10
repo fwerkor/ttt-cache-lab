@@ -24,6 +24,7 @@ class TaskProbeRecord:
     task_family: str
     model_name: str
     context_length: int
+    neutral_padding_tokens: int
     synthetic_difficulty: str
     prompt_format: str
     answer: str
@@ -107,6 +108,7 @@ def run_task_probe(
                 task_family=str(sample.metadata.get("task_family", config.data.task_family)),
                 model_name=str(config.model.model_name_or_path or config.model.backend),
                 context_length=config.data.context_length,
+                neutral_padding_tokens=int(sample.metadata.get("neutral_padding_tokens", 0)),
                 synthetic_difficulty=str(
                     sample.metadata.get("synthetic_difficulty", config.data.synthetic_difficulty)
                 ),

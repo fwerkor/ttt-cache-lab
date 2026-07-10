@@ -69,6 +69,7 @@ class ExperimentRecord:
     total_cache_bytes: int = 0
     evicted_cache_entries: int = 0
     context_length: int = 0
+    neutral_padding_tokens: int = 0
     synthetic_difficulty: str = ""
     model_name: str = ""
     model_num_layers: int = 0
