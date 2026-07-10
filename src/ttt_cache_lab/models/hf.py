@@ -1246,6 +1246,7 @@ class HuggingFaceBackend:
             baseline.extras["past_key_values"],
             baseline.extras.get("lora_cache", {}),
             split_layer=split_layer,
+            position_ids=self._prefix_position_ids(baseline.extras.get("prompt_state")),
         )
         if corrected_past is None:
             result = self._reuse_old_prefix_cache(baseline, reset_memory_stats=False)
@@ -1371,6 +1372,7 @@ class HuggingFaceBackend:
         old_lora_cache: Any,
         *,
         split_layer: int,
+        position_ids: Any | None = None,
     ) -> tuple[Any | None, dict[str, Any]]:
         self._last_low_rank_cache_bytes = 0
         self._last_residual_cache_bytes = 0
@@ -1411,6 +1413,13 @@ class HuggingFaceBackend:
             projected = self._reshape_projection_delta(delta, corrected[layer][item_index])
             if projected is None:
                 continue
+            if projection == "k":
+                projected = self._apply_rotary_to_key_delta(
+                    projected,
+                    position_ids=position_ids,
+                )
+                if projected is None:
+                    return None, {}
             rank = int(old_state.get("rank", 0) or 0)
             if rank > 0 and hasattr(cached_input, "shape") and len(cached_input.shape) >= 2:
                 batch = int(cached_input.shape[0])
@@ -1449,6 +1458,51 @@ class HuggingFaceBackend:
         self._last_low_rank_cache_bytes = low_rank_cache_bytes
         self._last_residual_cache_bytes = residual_cache_bytes
         return self._restore_past_type(past_key_values, corrected_layers), new_lora_cache
+
+    def _prefix_position_ids(self, state: Any) -> Any | None:
+        if not isinstance(state, _PromptState):
+            return None
+        batch = int(state.prefix_ids.shape[0])
+        sequence = int(state.prefix_ids.shape[1])
+        positions = self.torch.arange(sequence, device=state.prefix_ids.device)
+        return positions.unsqueeze(0).expand(batch, -1)
+
+    def _apply_rotary_to_key_delta(
+        self,
+        key_delta: Any,
+        *,
+        position_ids: Any | None,
+    ) -> Any | None:
+        model = getattr(self, "model", None)
+        backbone = getattr(model, "model", None)
+        rotary = getattr(backbone, "rotary_emb", None)
+        if not callable(rotary):
+            return key_delta
+        if position_ids is None or key_delta.ndim != 4:
+            return None
+
+        sequence = int(position_ids.shape[-1])
+        if int(key_delta.shape[2]) == sequence:
+            unsqueeze_dim = 1
+        elif int(key_delta.shape[1]) == sequence:
+            unsqueeze_dim = 2
+        else:
+            return None
+        if int(key_delta.shape[-1]) % 2 != 0:
+            return None
+
+        positions = position_ids.to(device=key_delta.device)
+        cos, sin = rotary(key_delta, positions)
+        cos = cos.to(device=key_delta.device, dtype=key_delta.dtype).unsqueeze(unsqueeze_dim)
+        sin = sin.to(device=key_delta.device, dtype=key_delta.dtype).unsqueeze(unsqueeze_dim)
+        if int(cos.shape[-1]) != int(key_delta.shape[-1]):
+            return None
+        half = int(key_delta.shape[-1]) // 2
+        rotated_half = self.torch.cat(
+            (-key_delta[..., half:], key_delta[..., :half]),
+            dim=-1,
+        )
+        return key_delta * cos + rotated_half * sin
 
     def _reshape_projection_delta(self, delta: Any, target_past: Any) -> Any | None:
         if not hasattr(delta, "reshape") or not hasattr(target_past, "shape"):

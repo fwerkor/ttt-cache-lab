@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -59,3 +60,52 @@ def test_hf_weight_delta_patch_updates_kv_without_full_reference() -> None:
     assert new_cache
     assert torch.allclose(corrected[0][0], torch.ones(1, 2, 2, 2))
     assert torch.allclose(corrected[0][1], torch.zeros(1, 2, 2, 2))
+
+
+def test_hf_key_delta_is_rotated_before_cache_update() -> None:
+    torch = pytest.importorskip("torch")
+
+    class FakeRotary:
+        def __call__(self, x: Any, position_ids: Any) -> tuple[Any, Any]:
+            del x
+            cos = torch.ones(position_ids.shape[0], position_ids.shape[1], 2)
+            sin = torch.zeros_like(cos)
+            cos[:, 1, :] = 0.0
+            sin[:, 1, :] = 1.0
+            return cos, sin
+
+    backend = cast(Any, object.__new__(HuggingFaceBackend))
+    backend.torch = torch
+    backend.model = SimpleNamespace(model=SimpleNamespace(rotary_emb=FakeRotary()))
+    key_delta = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])
+    position_ids = torch.tensor([[0, 1]])
+
+    rotated = HuggingFaceBackend._apply_rotary_to_key_delta(
+        backend,
+        key_delta,
+        position_ids=position_ids,
+    )
+
+    assert rotated is not None
+    expected = torch.tensor([[[[1.0, 2.0], [-4.0, 3.0]]]])
+    assert torch.allclose(rotated, expected)
+
+
+def test_hf_key_delta_refuses_unpositioned_rotary_cache_update() -> None:
+    torch = pytest.importorskip("torch")
+
+    class FakeRotary:
+        def __call__(self, x: Any, position_ids: Any) -> tuple[Any, Any]:
+            return torch.ones_like(x), torch.zeros_like(x)
+
+    backend = cast(Any, object.__new__(HuggingFaceBackend))
+    backend.torch = torch
+    backend.model = SimpleNamespace(model=SimpleNamespace(rotary_emb=FakeRotary()))
+
+    rotated = HuggingFaceBackend._apply_rotary_to_key_delta(
+        backend,
+        torch.ones(1, 1, 2, 2),
+        position_ids=None,
+    )
+
+    assert rotated is None
