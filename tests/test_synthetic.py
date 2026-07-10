@@ -162,6 +162,6 @@ def test_synthetic_difficulty_controls_structural_complexity() -> None:
     hard_edges = hard_hop.prompt.count(" points to ")
     assert easy_edges < hard_edges
 
-    easy_items = easy_set.prompt.count("item_")
-    hard_items = hard_set.prompt.count("item_")
-    assert easy_items < hard_items
+    assert int(easy_set.metadata["unique_per_list"]) < int(
+        hard_set.metadata["unique_per_list"]
+    )

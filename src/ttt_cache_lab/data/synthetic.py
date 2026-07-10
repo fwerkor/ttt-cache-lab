@@ -237,8 +237,8 @@ class SyntheticTaskFactory:
         del answer_length
         target = f"group_{self.rng.randrange(1000)}"
         lower, upper = {
-            "easy": (4, 9),
-            "medium": (6, 13),
+            "easy": (2, 5),
+            "medium": (3, 7),
             "hard": (3, 12),
         }[difficulty]
         target_count = self.rng.randrange(lower, upper)
@@ -248,8 +248,8 @@ class SyntheticTaskFactory:
             hard_distractor_count,
             _difficulty_value(
                 difficulty,
-                easy=24,
-                medium=96,
+                easy=4,
+                medium=16,
                 hard=hard_distractor_count,
             ),
         )
@@ -284,8 +284,21 @@ class SyntheticTaskFactory:
         answer_length: int,
         difficulty: SyntheticDifficulty = "hard",
     ) -> TaskSample:
-        common_count = max(2, min(6, answer_length))
-        common = [f"commonword_{self.rng.randrange(100_000)}" for _ in range(common_count)]
+        maximum_common = max(2, min(6, answer_length))
+        common_count = min(
+            maximum_common,
+            _difficulty_value(difficulty, easy=2, medium=3, hard=maximum_common),
+        )
+        used_tokens: set[str] = set()
+
+        def next_token() -> str:
+            token = f"token_{self.rng.randrange(1_000_000)}"
+            while token in used_tokens:
+                token = f"token_{self.rng.randrange(1_000_000)}"
+            used_tokens.add(token)
+            return token
+
+        common = [next_token() for _ in range(common_count)]
         maximum = max(3, min(8, context_length // 512))
         list_count = min(
             maximum,
@@ -293,21 +306,21 @@ class SyntheticTaskFactory:
         )
         unique_per_list = _difficulty_value(
             difficulty,
-            easy=16,
-            medium=32,
+            easy=4,
+            medium=8,
             hard=max(3, context_length // 128),
         )
         lists: list[list[str]] = []
         for _ in range(list_count):
-            unique = [f"item_{self.rng.randrange(1_000_000)}" for _ in range(unique_per_list)]
+            unique = [next_token() for _ in range(unique_per_list)]
             items = unique + common
             self.rng.shuffle(items)
             lists.append(items)
         prompt = "\n".join(
             f"List {index + 1}: {', '.join(items)}" for index, items in enumerate(lists)
         ) + (
-            "\nQuestion: Which exact tokens occur in every list? Copy the complete tokens, including the "
-            "commonword_ prefix, as a comma-separated set with no explanation.\nAnswer:"
+            "\nQuestion: Which exact token_* entries occur in every list? Return all and only those "
+            "entries as a comma-separated set with no explanation.\nAnswer:"
         )
         return TaskSample(
             prompt=prompt,
@@ -316,6 +329,7 @@ class SyntheticTaskFactory:
                 "task": "common_words",
                 "list_count": list_count,
                 "common_count": common_count,
+                "unique_per_list": unique_per_list,
                 "synthetic_difficulty": difficulty,
             },
         )
