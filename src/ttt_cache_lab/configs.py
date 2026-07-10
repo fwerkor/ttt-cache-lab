@@ -55,6 +55,9 @@ class CacheConfig(BaseModel):
     oracle_kl_threshold: float = 0.05
     oracle_top1_threshold: float = 0.99
     oracle_task_drop_threshold: float = 0.01
+    max_cache_bytes: int | None = Field(default=None, gt=0)
+    max_cache_entries: int | None = Field(default=None, gt=0)
+    eviction_policy: Literal["lru", "fifo"] = "lru"
 
 
 class MetricsConfig(BaseModel):

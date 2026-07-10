@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ttt_cache_lab.cache.blocks import VersionedCacheEntry, VersionedCacheManager
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
@@ -60,6 +61,14 @@ class StaticAdapterExperimentRunner:
             )
             for name in self.config.cache.strategies
         ]
+        strategy_managers = {
+            str(strategy.name): VersionedCacheManager(
+                max_cache_bytes=self.config.cache.max_cache_bytes,
+                max_cache_entries=self.config.cache.max_cache_entries,
+                eviction_policy=self.config.cache.eviction_policy,
+            )
+            for strategy in strategies
+        }
         records: list[ExperimentRecord] = []
         for sample_id, sample in enumerate(data):
             sample = backend.prepare_sample(sample, context_length=self.config.data.context_length)
@@ -69,9 +78,13 @@ class StaticAdapterExperimentRunner:
                 self._prepare_backend(backend, target)
                 baseline = backend.prefill(sample.prompt)
                 adapters = self._build_static_adapters(backend, sample, target, baseline)
-                per_adapter_cache: dict[str, dict[int, BackendOutput]] = {
-                    str(strategy.name): {0: baseline} for strategy in strategies
-                }
+                cache_namespace = f"sample-{sample_id}:{target_name}"
+                for strategy in strategies:
+                    strategy_managers[str(strategy.name)].put(
+                        cache_namespace,
+                        0,
+                        VersionedCacheEntry(baseline, ()),
+                    )
                 latest_cache: dict[str, tuple[int, BackendOutput]] = {
                     str(strategy.name): (0, baseline) for strategy in strategies
                 }
@@ -83,6 +96,7 @@ class StaticAdapterExperimentRunner:
                     full = backend.full_recompute(sample.prompt, adapter.current)
                     for strategy in strategies:
                         key = str(strategy.name)
+                        manager = strategy_managers[key]
                         cached_adapter, cached_output = latest_cache[key]
                         version_gap = 0 if cached_adapter == adapter_number else 1
                         decision = strategy.decide(
@@ -104,7 +118,8 @@ class StaticAdapterExperimentRunner:
                             StrategyName.ADAPTER_SPECIFIC_CACHE,
                             StrategyName.LRAGENT_ADAPTER_CACHE,
                         }:
-                            existing = per_adapter_cache[key].get(adapter_number)
+                            existing_entry = manager.get(cache_namespace, adapter_number)
+                            existing = existing_entry.output if existing_entry is not None else None
                             if existing is None:
                                 decision = StrategyDecision(
                                     strategy.name,
@@ -131,7 +146,8 @@ class StaticAdapterExperimentRunner:
                                 None,
                                 "The fixed adapter already matches the cached adapter entry.",
                             )
-                            baseline_output = per_adapter_cache[key].get(adapter_number, cached_output)
+                            matching_entry = manager.get(cache_namespace, adapter_number)
+                            baseline_output = matching_entry.output if matching_entry is not None else cached_output
                         elif strategy.name not in {
                             StrategyName.BASE_CACHE_REUSE,
                             StrategyName.STATIC_BASE_DELTA,
@@ -148,11 +164,29 @@ class StaticAdapterExperimentRunner:
                             updated=adapter.current,
                             decision=decision,
                         )
-                        if strategy.name in {
+                        stores_version = strategy.name in {
                             StrategyName.ADAPTER_SPECIFIC_CACHE,
                             StrategyName.LRAGENT_ADAPTER_CACHE,
-                        }:
-                            per_adapter_cache[key][adapter_number] = approx
+                        } or (
+                            strategy.name not in {
+                                StrategyName.NO_ADAPTATION,
+                                StrategyName.ALORA_PREFIX_REUSE,
+                            }
+                            and decision.action
+                            in {
+                                CacheAction.FULL_RECOMPUTE,
+                                CacheAction.REUSE_EXACT,
+                                CacheAction.PARTIAL_RECOMPUTE,
+                                CacheAction.DELTA_CORRECT,
+                                CacheAction.REJECT_UPDATE,
+                            }
+                        )
+                        if stores_version:
+                            manager.put(
+                                cache_namespace,
+                                adapter_number,
+                                VersionedCacheEntry(approx, ()),
+                            )
                         if strategy.name not in {
                             StrategyName.NO_ADAPTATION,
                             StrategyName.ALORA_PREFIX_REUSE,
@@ -251,8 +285,10 @@ class StaticAdapterExperimentRunner:
                                     task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
                                 ),
                                 strategy_mode=output_strategy_mode(approx),
-                                cache_block_count=backend.num_layers,
-                                cache_entry_count=len(per_adapter_cache[key]),
+                                cache_block_count=manager.total_block_count(),
+                                cache_entry_count=manager.entry_count(),
+                                total_cache_bytes=manager.total_cache_bytes(),
+                                evicted_cache_entries=manager.eviction_count(),
                             )
                         )
                 backend.restore_after_update()

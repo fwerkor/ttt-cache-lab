@@ -227,3 +227,25 @@ def test_cached_version_rejects_backward_version_steps(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="older than cached_version"):
         VersionedExperimentRunner(config).run()
+
+
+
+def test_versioned_cache_capacity_is_global_across_samples_and_versions(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-capacity",
+            "experiment_id": "unit_capacity",
+            "seed": 3,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
+            "data": {"task": "passkey", "num_samples": 2, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"], "update_norm": 0.05},
+            "cache": {"strategies": ["adapter_specific_cache"], "max_cache_entries": 2},
+            "adapter": {"update_mode": "random"},
+            "version_steps": [0, 1, 2],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    assert max(record.cache_entry_count for record in records) <= 2
+    assert records[-1].evicted_cache_entries > 0
+    assert all(record.total_cache_bytes >= record.cache_bytes for record in records)

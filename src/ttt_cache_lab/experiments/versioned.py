@@ -35,11 +35,12 @@ from ttt_cache_lab.updates.updater import TTTUpdater, UpdateResult, build_update
 @dataclass
 class _StrategyCache:
     output: BackendOutput
+    original_output: BackendOutput
     cached_version: int
+    manager: VersionedCacheManager
     refresh_count: int = 0
     cached_update_norm: float = 0.0
     blocks: tuple[CacheBlockMetadata, ...] = field(default_factory=tuple)
-    manager: VersionedCacheManager = field(default_factory=VersionedCacheManager)
 
 
 class VersionedExperimentRunner:
@@ -64,6 +65,14 @@ class VersionedExperimentRunner:
             )
             for name in self.config.cache.strategies
         ]
+        strategy_managers = {
+            str(strategy.name): VersionedCacheManager(
+                max_cache_bytes=self.config.cache.max_cache_bytes,
+                max_cache_entries=self.config.cache.max_cache_entries,
+                eviction_policy=self.config.cache.eviction_policy,
+            )
+            for strategy in strategies
+        }
         cached_version = self.config.cached_version
         if cached_version < 0:
             raise ValueError("cached_version must be non-negative")
@@ -126,7 +135,7 @@ class VersionedExperimentRunner:
                 )
                 strategy_caches = {}
                 for strategy in strategies:
-                    manager = VersionedCacheManager()
+                    manager = strategy_managers[str(strategy.name)]
                     manager.put(adapter_id, 0, VersionedCacheEntry(base_v0, base_blocks))
                     if cached_version != 0:
                         manager.put(
@@ -136,6 +145,7 @@ class VersionedExperimentRunner:
                         )
                     strategy_caches[str(strategy.name)] = _StrategyCache(
                         output=cached_output,
+                        original_output=base_v0,
                         cached_version=cached_version,
                         cached_update_norm=accumulated_update_norm,
                         blocks=cached_blocks,
@@ -257,10 +267,7 @@ class VersionedExperimentRunner:
                     None,
                     "No-adaptation baseline keeps the original model and v0 output fixed.",
                 )
-                base_entry = cached.manager.get(adapter_id, 0)
-                if base_entry is None:
-                    raise RuntimeError("No-adaptation baseline lost its v0 cache entry")
-                baseline_output = base_entry.output
+                baseline_output = cached.original_output
             elif strategy.name in {
                 StrategyName.ADAPTER_SPECIFIC_CACHE,
                 StrategyName.LRAGENT_ADAPTER_CACHE,
@@ -447,8 +454,10 @@ class VersionedExperimentRunner:
                         task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
                     ),
                     strategy_mode=output_strategy_mode(approx),
-                    cache_block_count=len(new_blocks),
-                    cache_entry_count=len(cached.manager.versions(adapter_id)),
+                    cache_block_count=cached.manager.total_block_count(),
+                    cache_entry_count=cached.manager.entry_count(),
+                    total_cache_bytes=cached.manager.total_cache_bytes(),
+                    evicted_cache_entries=cached.manager.eviction_count(),
                 )
             )
 
@@ -653,6 +662,8 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "throughput_tokens_per_s_mean",
         "peak_memory_allocated_mean",
         "cache_entry_count_mean",
+        "total_cache_bytes_mean",
+        "evicted_cache_entries_mean",
     ]
     with output_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=[*dimension_fields, *metric_fields])
@@ -683,6 +694,8 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "throughput_tokens_per_s_mean": _mean(records, "throughput_tokens_per_s"),
                     "peak_memory_allocated_mean": _mean(records, "peak_memory_allocated"),
                     "cache_entry_count_mean": _mean(records, "cache_entry_count"),
+                    "total_cache_bytes_mean": _mean(records, "total_cache_bytes"),
+                    "evicted_cache_entries_mean": _mean(records, "evicted_cache_entries"),
                 }
             )
 

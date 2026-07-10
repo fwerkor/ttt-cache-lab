@@ -48,6 +48,8 @@ class ExperimentRecord:
     strategy_mode: str = ""
     cache_block_count: int = 0
     cache_entry_count: int = 0
+    total_cache_bytes: int = 0
+    evicted_cache_entries: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
