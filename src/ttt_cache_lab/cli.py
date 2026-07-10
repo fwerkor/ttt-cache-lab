@@ -15,6 +15,7 @@ from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.static_adapters import StaticAdapterExperimentRunner
 from ttt_cache_lab.experiments.statistics import generate_statistical_report
 from ttt_cache_lab.experiments.study import run_study_job, select_study_jobs, write_study_plan
+from ttt_cache_lab.experiments.study_analysis import StudyThresholds, generate_study_analysis
 from ttt_cache_lab.experiments.summarize import (
     first_table_markdown,
     summarize_csv,
@@ -111,6 +112,16 @@ def build_parser() -> argparse.ArgumentParser:
     study_run.add_argument("--shard-index", type=int, default=None)
     study_run.add_argument("--num-shards", type=int, default=None)
     study_run.add_argument("--dry-run", action="store_true")
+
+    study_analysis = subparsers.add_parser(
+        "study-analysis",
+        help="Generate experiment-specific E1-E8 tables and figures from merged records",
+    )
+    study_analysis.add_argument("--input", required=True, type=Path)
+    study_analysis.add_argument("--output-dir", required=True, type=Path)
+    study_analysis.add_argument("--safe-kl", type=float, default=0.05)
+    study_analysis.add_argument("--safe-top1", type=float, default=0.99)
+    study_analysis.add_argument("--safe-task-drop", type=float, default=0.01)
 
     subparsers.add_parser("list-targets", help="List supported update target names")
     return parser
@@ -247,6 +258,19 @@ def main(argv: list[str] | None = None) -> None:
             if not args.dry_run:
                 study_artifacts = run_study_job(job)
                 console.print(f"Wrote {study_artifacts.csv_path}")
+        return
+    if args.command == "study-analysis":
+        outputs = generate_study_analysis(
+            args.input,
+            args.output_dir,
+            thresholds=StudyThresholds(
+                safe_kl=args.safe_kl,
+                safe_top1=args.safe_top1,
+                safe_task_drop=args.safe_task_drop,
+            ),
+        )
+        for output in outputs:
+            console.print(f"Wrote {output}")
         return
     if args.command == "list-targets":
         for item in ModuleKind:

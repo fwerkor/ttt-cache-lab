@@ -45,6 +45,8 @@ def generate_study_analysis(
         artifacts.extend(_analyze_e6(rows, output_dir))
     if any("e7" in experiment for experiment in experiment_ids):
         artifacts.extend(_analyze_e7(rows, output_dir, thresholds=thresholds))
+    if any("e8" in experiment for experiment in experiment_ids):
+        artifacts.extend(_analyze_e8(rows, output_dir))
     if any(any(tag in experiment for tag in ("e2", "e3", "e4", "e5", "e6", "e7")) for experiment in experiment_ids):
         artifacts.extend(_analyze_adaptation_effect(rows, output_dir))
     return artifacts
@@ -649,6 +651,75 @@ def _write_e7_ablation_effect(
     return csv_path, md_path
 
 
+def _analyze_e8(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
+    e8_rows = [row for row in rows if "e8" in row.get("experiment_id", "").lower()]
+    group_fields = condition_fields(e8_rows, "update_target", "cache_strategy")
+    groups = _group(e8_rows, group_fields)
+    summary: list[dict[str, object]] = []
+    for key, records in sorted(groups.items()):
+        dimensions = dict(zip(group_fields, key, strict=True))
+        latencies = sorted(
+            _number(row, "latency_p50", default=_number(row, "end_to_end_latency"))
+            for row in records
+        )
+        summary.append(
+            {
+                **dimensions,
+                "count": len(records),
+                "task_score_mean": _mean(records, "task_score"),
+                "latency_p50": _quantile(latencies, 0.50),
+                "latency_p95": _quantile(latencies, 0.95),
+                "throughput_mean": _mean(records, "throughput_tokens_per_s"),
+                "cache_hit_rate": _mean(records, "cache_hit"),
+                "false_safe_rate": _mean(records, "false_safe"),
+                "peak_cache_entries": max((_number(row, "cache_entry_count") for row in records), default=0.0),
+                "peak_cache_bytes": max((_number(row, "total_cache_bytes") for row in records), default=0.0),
+                "evicted_cache_entries": max(
+                    (_number(row, "evicted_cache_entries") for row in records), default=0.0
+                ),
+                "refresh_count_mean": _mean(records, "refresh_count"),
+            }
+        )
+    csv_path = output_dir / "e8_cache_pressure.csv"
+    _write_dicts(csv_path, summary)
+    md_path = output_dir / "e8_cache_pressure.md"
+    md_path.write_text(
+        _markdown_table(
+            "E8 sustained cache-pressure workload",
+            summary,
+            columns=(
+                *group_fields,
+                "count",
+                "task_score_mean",
+                "latency_p50",
+                "latency_p95",
+                "throughput_mean",
+                "cache_hit_rate",
+                "false_safe_rate",
+                "peak_cache_entries",
+                "peak_cache_bytes",
+                "evicted_cache_entries",
+                "refresh_count_mean",
+            ),
+        ),
+        encoding="utf-8",
+    )
+    svg_path = output_dir / "e8_latency_cache_pressure.svg"
+    svg_path.write_text(
+        _scatter_svg(
+            summary,
+            x_field="peak_cache_bytes",
+            y_field="latency_p95",
+            label_fields=("model_name", "cache_strategy", "update_target"),
+            title="E8 p95 latency under cache pressure",
+            x_label="peak cache bytes",
+            y_label="p95 latency",
+        ),
+        encoding="utf-8",
+    )
+    return [csv_path, md_path, svg_path]
+
+
 def _analyze_adaptation_effect(
     rows: list[dict[str, str]], output_dir: Path
 ) -> list[Path]:
@@ -765,6 +836,19 @@ def _markdown_table(
     for row in rows:
         lines.append("| " + " | ".join(_format(row.get(column, "")) for column in columns) + " |")
     return "\n".join(lines) + "\n"
+
+
+def _quantile(values: Sequence[float], probability: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = max(0.0, min(1.0, probability)) * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
 def _mean(rows: list[dict[str, str]], field: str) -> float:
