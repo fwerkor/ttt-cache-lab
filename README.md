@@ -27,43 +27,35 @@ The project is not just about Q-only qTTT. Existing work already covers parts of
 
 Implemented:
 
-- synthetic long-context tasks: passkey, key-value retrieval, multi-needle retrieval, and variable tracking;
-- update-target taxonomy: Q/K/V/O/QV/attention/MLP/Norm/output head and LoRA variants with early/middle/late layer positions;
-- cache validity semantics and strategy abstractions;
-- adaptive planner with update-target, version-gap, and accumulated-update-norm inputs;
-- single-step feasibility runner;
-- multi-step versioned runner for adapter-version drift experiments;
-- toy backend for CI and dry runs;
-- HuggingFace backend for real `past_key_values` experiments;
-- Ascend HuggingFace backend using torch-npu (`model.backend: ascend_hf`);
-- ModelScope download preparation for Ascend runs;
-- simple LoRA wrapper and online LoRA update path for `torch.nn.Linear` projections;
-- HF/Ascend cache-surgery paths for layer-wise cache splice and LoRA-weight-delta K/V correction;
-- result summaries, first feasibility tables, Markdown reports, SVG trend plots, failure-map tables, and Pareto tables;
-- E1-E7 experiment templates from the project plan, including static baselines, threshold refresh, oracle planner, E5 real-model smoke configs, and E6 scaling configs;
-- CI with linting, type checking, and tests.
+- synthetic diagnostics plus local JSONL and Hugging Face dataset loaders, including LongBench-style field mapping;
+- exact tokenizer-level context sizing with explicit `error`, `left`, and `middle` truncation policies;
+- Q/K/V/O/QV/attention/MLP/Norm/output-head update targets and layer-positioned LoRA variants;
+- answer-supervised online LoRA updates, global-L2 update-norm control, and multi-token exact-match generation scoring;
+- versioned per-layer cache metadata, adapter/version indexing, relative update norm since the last refresh, and executable rejection semantics;
+- full recomputation, stale/frozen reuse, LoRA K/V delta correction, native Llama/GPT-2 layer restart, periodic/threshold policies, measured oracle selection, and adaptive planning;
+- fixed-adapter E1 baselines, including executable aLoRA-style invocation-prefix reuse, LRAgent-style per-adapter caches, and ForkKV-style base/delta decomposition;
+- real KV tensor byte counts, peak allocated memory, adaptation/cache/decode/end-to-end latency, throughput, cache-entry counts, and configurable tensor/task metrics;
+- E1-E7 toy, Hugging Face, and Ascend templates; E5 rank/update-norm sweeps; E6 exact 4K/8K/16K/32K context sweeps;
+- single-model layer sharding across multiple CUDA GPUs or Ascend NPUs, including 6×GPU and 8×NPU Qwen2.5-32B templates;
+- strategy-aware failure maps, configurable safety thresholds, Markdown reports, SVG trends, and quality-cost Pareto figures;
+- CI for linting, strict type checking, unit tests, and offline tiny-Llama integration tests that execute real LoRA, KV delta correction, and native layer restart paths.
 
-Still limited:
-
-- HF/Ascend delta correction now uses cached LoRA projection inputs plus A/B weight snapshots to patch K/V without reading the full-reference cache;
-- HF/Ascend partial recompute records `strategy_mode`; generic Transformers use `fallback_past_key_values_layer_splice`, while model-specific native mid-layer restart can be plugged into `_native_partial_recompute_prefix_cache`;
-- optional distributed backend for larger models, if single-card torch-npu is insufficient;
-- full reproduction of aLoRA/LRAgent/ForkKV-style baselines;
-- final paper-quality plots and real 910B experiment results.
+Remaining validation work is experimental rather than placeholder implementation: the large-model paths still need to be run on the target 6×A6000 and 8×Ascend 910B machines, and the adapted related-work baselines should be compared against official upstream implementations where licensing and environments permit.
 
 ## Repository layout
 
 ```text
 src/ttt_cache_lab/
   cache/         cache validity semantics, strategies, and planner
-  data/          synthetic long-context tasks
+  data/          synthetic, JSONL, and Hugging Face task loaders
   experiments/  single-step runner, versioned runner, sweep, summaries, reports
   metrics/      cache/logit/task metrics
   models/       toy, HuggingFace, Ascend torch-npu backends
-  updates/      parameter-update target taxonomy
+  updates/      update targets and executable random/LoRA updaters
 configs/
   feasibility_*.yaml          early single-step configs
-  sweep_*.yaml                sweep configs
+  sweep_*.yaml                single-step sweep configs
+  versioned_sweep_*.yaml      E5/E6 versioned sweep configs
   experiments/                E1-E7 and Ascend experiment configs
 docs/
   project_plan.md             full research and experiment roadmap
@@ -71,7 +63,8 @@ docs/
   runbook.md                  general run instructions
 scripts/
   run_toy_study.sh            run all E1-E7 toy templates
-  run_ascend_*.sh             Ascend smoke/single/parallel launchers; use ModelScope by default
+  run_ascend_*.sh             Ascend smoke/single/parallel-worker launchers
+  run_model_sharded.sh        one-model multi-GPU/NPU layer-sharding launcher
   prepare_modelscope_config.py  resolve ModelScope weights and emit local-path configs
 tests/
   unit tests for configs, runners, metrics, planner, reports, and backends
@@ -103,7 +96,7 @@ mypy src tests
 pytest
 ```
 
-The CI runs the same checks without downloading model weights.
+The base CI runs the lightweight suite. A separate offline integration job constructs a tiny Llama locally and executes real HF cache paths without downloading model weights.
 
 ## Ascend 910B quick start
 
@@ -154,7 +147,14 @@ Use the 8-card machine as parallel experiment workers first:
 scripts/run_ascend_e2_parallel.sh
 ```
 
-This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values. By default it runs Qwen2.5-0.5B, Qwen2.5-1.5B, and Llama-3.2-1B. Qwen2.5-7B and Mistral-7B templates remain available for manual runs only until a distributed backend or shorter-context validation path is added. Each Ascend launcher resolves the configured ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before running.
+This launches independent processes with different `ASCEND_RT_VISIBLE_DEVICES` values for experiment-level parallelism. For one model distributed across several devices, use `scripts/run_model_sharded.sh`; each Ascend launcher resolves the configured ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before running.
+
+Run Qwen2.5-32B across all eight NPUs:
+
+```bash
+scripts/run_model_sharded.sh \
+  configs/experiments/ascend_e2_version_drift_qwen_32b_8npu.yaml
+```
 
 ## Toy experiments
 
@@ -204,11 +204,14 @@ python -m ttt_cache_lab.cli summarize --input runs/feasibility-toy/summary.csv
 python -m ttt_cache_lab.cli first-table --input runs/feasibility-toy/summary.csv
 ```
 
-Sweep example:
+Sweep examples:
 
 ```bash
 python -m ttt_cache_lab.cli sweep --config configs/sweep_toy_update_norm.yaml
-python -m ttt_cache_lab.cli first-table --input runs/sweep-toy-update-norm/merged_records.csv
+python -m ttt_cache_lab.cli versioned-sweep \
+  --config configs/versioned_sweep_e5_delta_qwen_0_5b.yaml
+python -m ttt_cache_lab.cli versioned-sweep \
+  --config configs/versioned_sweep_e6_context_qwen_1_5b.yaml
 ```
 
 ## Main experiment groups
@@ -217,14 +220,14 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 
 | Group | Purpose | Example config |
 |---|---|---|
-| E1 | Static-adapter baseline alignment | `configs/experiments/e1_static_adapter_baseline_toy.yaml` |
+| E1 | Static adapters and aLoRA/LRAgent/ForkKV-style baselines | `configs/experiments/e1_static_adapter_baseline_qwen_0_5b.yaml` |
 | E2 | Adapter-version drift characterization | `configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml` |
 | E2 cross-family | Qwen/LLaMA family generality and manual Mistral check | `configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml`; Mistral 7B remains a manual large-model template |
-| E3 | Update-target × version-gap failure map | `configs/experiments/e3_failure_map_toy.yaml` |
-| E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_toy.yaml` |
-| E5 | Delta correction / base+delta cache experiment | `configs/experiments/e5_delta_correction_toy.yaml` |
-| E6 | Context-length and model-scale scaling | `configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml` |
-| E7 | Ablations and failure boundaries | `configs/experiments/e7_ablation_failure_toy.yaml` |
+| E3 | Update-target × version-gap failure map | `configs/experiments/e3_failure_map_qwen_0_5b.yaml` |
+| E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_qwen_0_5b.yaml` |
+| E5 | Delta correction and rank/update-norm sweep | `configs/versioned_sweep_e5_delta_qwen_0_5b.yaml` |
+| E6 | Exact 4K-32K context and model-scale scaling | `configs/versioned_sweep_e6_context_qwen_1_5b.yaml` |
+| E7 | Planner-component ablations and failure boundaries | `configs/experiments/e7_ablation_failure_qwen_0_5b.yaml` |
 
 Ascend-specific configs:
 
@@ -235,10 +238,13 @@ configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_7b.yaml         # manual large-model template
 configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml  # manual large-model template
+configs/experiments/ascend_e2_version_drift_qwen_32b_8npu.yaml     # 8-NPU model sharding
 configs/experiments/ascend_e5_delta_correction_qwen_0_5b.yaml
 configs/experiments/ascend_e6_scaling_qwen_1_5b_4k.yaml
 configs/experiments/ascend_e6_scaling_qwen_1_5b_8k.yaml
-configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml            # manual scaling template
+configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
+configs/experiments/ascend_e6_scaling_qwen_1_5b_32k.yaml
+configs/experiments/ascend_e6_scaling_qwen_7b_32k.yaml
 ```
 
 ## Output files
@@ -271,7 +277,15 @@ logits_kl
 top1_agreement
 relative_error
 hidden_relative_error
-latency_units
+update_norm_since_cache
+cache_bytes
+peak_memory_allocated
+adaptation_latency
+cache_maintenance_latency
+decode_latency
+end_to_end_latency
+throughput_tokens_per_s
+cache_entry_count
 recompute_fraction
 cache_hit
 refresh_count
@@ -284,8 +298,8 @@ strategy_mode
 | Backend | Config value | Purpose |
 |---|---|---|
 | Toy | `toy` | CI, dry runs, pipeline validation |
-| HuggingFace | `hf` | CUDA/CPU fallback and optional validation |
-| Ascend HuggingFace | `ascend_hf` | Real experiment backend on Ascend 910B through torch-npu; launcher scripts prepare local model snapshots through ModelScope |
+| HuggingFace | `hf` | CPU/CUDA experiments; `model.parallelism: model_shard` partitions decoder layers across visible GPUs |
+| Ascend HuggingFace | `ascend_hf` | torch-npu experiments; ModelScope launchers prepare local snapshots and `model_shard` partitions layers across NPUs |
 
 ## Example config fragment
 
@@ -319,7 +333,7 @@ version_steps: [0, 1, 2, 4, 8]
 
 ## Current recommended next step
 
-Run the Ascend smoke test on the 8×910B server:
+Run the Ascend smoke test on the 8×910B server, then execute the real E2/E3/E4/E7 configs and E5/E6 sweeps:
 
 ```bash
 ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_smoke.sh

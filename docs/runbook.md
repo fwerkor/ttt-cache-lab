@@ -62,8 +62,11 @@ Edit the YAML config rather than the code.
 
 - `model.model_name_or_path`: local path or HuggingFace model ID.
 - `model.max_length`: truncation length for the prompt.
-- `data.num_samples`: number of synthetic examples.
-- `data.context_length`: approximate synthetic context length.
+- `data.source`: `synthetic`, `jsonl`, or `huggingface`.
+- `data.num_samples`: number of examples to run.
+- `data.context_length`: exact tokenizer-level prompt length after the configured truncation/padding policy.
+- `data.truncation_strategy`: `error`, `left`, or `middle` for overlength external data.
+- `data.adapter_activation_marker`: optional invocation marker for the aLoRA-style prefix-reuse baseline.
 - `updates.targets`: update targets, such as `attention.q`, `attention.k`, `lora.v`, `mlp.late`.
 - `updates.update_norm`: random perturbation magnitude for the controlled update.
 - `cache.strategies`: cache policies to compare.
@@ -98,6 +101,9 @@ The main columns are:
 - `refresh_count`
 - `false_safe`
 - `strategy_mode`
+- `cache_bytes`, `peak_memory_allocated`
+- `adaptation_latency`, `cache_maintenance_latency`, `decode_latency`, `end_to_end_latency`
+- `throughput_tokens_per_s`, `cache_entry_count`
 
 ## 6. Analysis commands
 
@@ -115,7 +121,7 @@ python -m ttt_cache_lab.cli pareto \
   --output-dir runs/e4_planner_main/pareto
 ```
 
-The HF/Ascend backend implements full recomputation, stale/frozen prefix-cache reuse, layer-wise `past_key_values` splice, and LoRA-weight-delta K/V correction. Delta correction uses cached LoRA projection inputs plus cached-version A/B snapshots and does not read the full-reference cache. Partial recompute writes `strategy_mode=fallback_past_key_values_layer_splice` unless a model-specific native mid-layer restart backend is supplied.
+The HF/Ascend backend implements full recomputation, stale/frozen reuse, LoRA-weight-delta K/V correction, native Llama/GPT-2 decoder-layer restart, and aLoRA-style base-prefix reuse with suffix-only recomputation. Delta correction and layer restart do not read the full-reference cache used for evaluation metrics. Unsupported model families fail explicitly instead of substituting a full-reference splice.
 
 ## 7. Sweep run
 
@@ -137,9 +143,9 @@ path into the experiment config, for example `updates.update_norm` or
 The full project plan and experiment blueprint are in [`project_plan.md`](project_plan.md).
 
 
-## 8. Planned E1-E7 experiment templates
+## 8. E1-E7 experiment templates
 
-Toy templates exist for all planned experiment groups under `configs/experiments/`.
+Toy templates and real Qwen/Ascend templates exist under `configs/experiments/`.
 
 ```bash
 scripts/run_toy_study.sh
@@ -158,7 +164,7 @@ pip install -e '.[dev,hf]'
 CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run   --config configs/experiments/e2_version_drift_qwen_0_5b.yaml   --version-summary
 ```
 
-Current implementation note: the HF path implements real LoRA wrapping for `torch.nn.Linear` projections and real gradient steps. GPT-2 style `Conv1D` projections still fall back to perturbation-style experiments unless a Linear target is available.
+The HF path implements answer-supervised LoRA wrapping for `torch.nn.Linear` projections with global-L2 update-norm control. Non-LoRA controls use normalized direct parameter updates. Layer-specific targets fail when no matching module exists rather than silently broadening the update.
 
 ## 9. Implemented experiment coverage
 
@@ -189,7 +195,7 @@ CUDA_VISIBLE_DEVICES=0 python -m ttt_cache_lab.cli versioned-run \
   --version-summary
 ```
 
-The HF LoRA path currently supports `torch.nn.Linear` projections, which covers Qwen/LLaMA-style projection layers. GPT-2-style fused `Conv1D` modules are not wrapped by the current LoRA implementation.
+The current LoRA wrapper targets `torch.nn.Linear`, covering Qwen/LLaMA/Mistral-style projections. GPT-2-style fused `Conv1D` modules remain available for direct-update and cache-path tests but are not wrapped as trainable LoRA modules.
 
 
 ## 10. Generate experiment reports
@@ -221,3 +227,60 @@ configs/experiments/e2_version_drift_mistral_7b_v0_3.yaml # manual large-model t
 ## 11. Ascend support
 
 Ascend runs use `model.backend: ascend_hf` on the 8xAscend 910B server. The Ascend scripts resolve `model.modelscope_model_id` through ModelScope before loading the local snapshot. See [`ascend.md`](ascend.md).
+
+
+## 12. Real datasets
+
+Local JSONL example:
+
+```yaml
+data:
+  source: jsonl
+  dataset_path: data/repo_qa.jsonl
+  task: repo_qa
+  prompt_field: prompt
+  answer_field: answer
+  context_length: 8192
+  truncation_strategy: middle
+```
+
+Hugging Face / LongBench-style example:
+
+```yaml
+data:
+  source: huggingface
+  dataset_name: THUDM/LongBench
+  dataset_config: passage_retrieval_en
+  dataset_split: test
+  context_field: context
+  question_field: input
+  answer_field: answers
+  prompt_template: "{context}\n\nQuestion: {question}\nAnswer:"
+  context_length: 8192
+  truncation_strategy: middle
+```
+
+## 13. Versioned sweeps
+
+```bash
+python -m ttt_cache_lab.cli versioned-sweep \
+  --config configs/versioned_sweep_e5_delta_qwen_0_5b.yaml
+python -m ttt_cache_lab.cli versioned-sweep \
+  --config configs/versioned_sweep_e6_context_qwen_1_5b.yaml
+```
+
+The first sweep varies LoRA rank and the measured global update norm. The second runs exact 4K, 8K, 16K, and 32K token contexts.
+
+## 14. One model across multiple devices
+
+Set `model.parallelism: model_shard` and list the device IDs. Decoder layers are divided as evenly as possible while embeddings remain on the first device and the final norm/head on the last device.
+
+```bash
+scripts/run_model_sharded.sh \
+  configs/experiments/e2_version_drift_qwen_32b_6gpu.yaml
+
+scripts/run_model_sharded.sh \
+  configs/experiments/ascend_e2_version_drift_qwen_32b_8npu.yaml
+```
+
+The launcher uses Hugging Face Accelerate device maps. This is model layer sharding, distinct from `run_ascend_e2_parallel.sh`, which runs independent experiments on separate cards.

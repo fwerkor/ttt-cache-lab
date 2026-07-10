@@ -45,7 +45,7 @@ runs/ascend_smoke_qwen_0_5b/report/report.md
 ASCEND_RT_VISIBLE_DEVICES=0 scripts/run_ascend_e2_single.sh   configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 ```
 
-## 5. Use 8 cards as parallel experiment workers first
+## 5. Use 8 cards as independent experiment workers
 
 Use the eight cards as independent experiment workers for configs/seeds/targets. Example:
 
@@ -53,9 +53,30 @@ Use the eight cards as independent experiment workers for configs/seeds/targets.
 scripts/run_ascend_e2_parallel.sh
 ```
 
-This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVICES` values. The default set is Qwen2.5-0.5B, Qwen2.5-1.5B, and Llama-3.2-1B. Qwen2.5-7B and Mistral-7B are intentionally left out of this launcher and should be run manually only after checking memory headroom. Each process resolves its ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before loading Transformers.
+This starts independent Python processes with different `ASCEND_RT_VISIBLE_DEVICES` values. It is useful for parallel seeds/configs and is separate from one-model multi-NPU sharding. Each process resolves its ModelScope model into `${MODELSCOPE_CACHE_DIR:-models/modelscope}` before loading Transformers.
 
-## 6. Main configs
+## 6. Shard one model across all NPUs
+
+The HF/torch-npu backend supports explicit decoder-layer sharding through an Accelerate device map:
+
+```bash
+scripts/run_model_sharded.sh \
+  configs/experiments/ascend_e2_version_drift_qwen_32b_8npu.yaml
+```
+
+The corresponding config sets:
+
+```yaml
+model:
+  backend: ascend_hf
+  device: npu
+  parallelism: model_shard
+  device_ids: [0, 1, 2, 3, 4, 5, 6, 7]
+```
+
+Embeddings are placed on the first NPU, decoder layers are balanced across all listed NPUs, and the final norm/head are placed on the last NPU unless tied embeddings require the head on the first device.
+
+## 7. Main configs
 
 ```text
 configs/experiments/ascend_smoke_qwen_0_5b.yaml
@@ -64,17 +85,20 @@ configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_7b.yaml         # manual large-model template
 configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml  # manual large-model template
+configs/experiments/ascend_e2_version_drift_qwen_32b_8npu.yaml     # 8-NPU model sharding
 configs/experiments/ascend_e5_delta_correction_qwen_0_5b.yaml
 configs/experiments/ascend_e6_scaling_qwen_1_5b_4k.yaml
 configs/experiments/ascend_e6_scaling_qwen_1_5b_8k.yaml
-configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml            # manual scaling template
+configs/experiments/ascend_e6_scaling_qwen_7b_16k.yaml
+configs/experiments/ascend_e6_scaling_qwen_1_5b_32k.yaml
+configs/experiments/ascend_e6_scaling_qwen_7b_32k.yaml
 ```
 
-## 7. Current limitations
+## 8. Validation notes
 
-- `ascend_hf` uses torch-npu through HuggingFace Transformers.
-- Ascend scripts use `model.modelscope_model_id` for ModelScope downloads and then load the local snapshot path.
-- Multi-card model parallelism is optional future work and should only be added if single-card runs cannot cover the target model/context scale.
-- The recommended first use of 8x910B is parallel sweeps over small/default-safe configs, one process per visible NPU.
-- Delta correction uses cached LoRA projection inputs plus cached-version A/B snapshots to patch K/V without reading the full-reference cache.
-- Layer-wise recomputation records `strategy_mode`; generic Transformers use `fallback_past_key_values_layer_splice`, while model-specific native mid-layer restart support remains backend-dependent.
+- `ascend_hf` uses torch-npu through Hugging Face Transformers; torch-npu must match the server PyTorch/CANN versions.
+- Ascend scripts resolve `model.modelscope_model_id` to a local snapshot before model loading.
+- Delta correction uses cached LoRA projection inputs and cached-version A/B snapshots; it does not read the full-reference cache.
+- Native decoder-layer restart is implemented for Llama/Qwen/Mistral-like and GPT-2-like model layouts. Unsupported layouts fail explicitly.
+- aLoRA-style prefix reuse disables LoRA before the configured invocation marker, caches that base prefix, and recomputes only the post-marker suffix under the active adapter.
+- Multi-NPU sharding logic is covered by unit tests, but throughput, HCCL behavior, and memory headroom must still be validated on the target 8×910B machine.
