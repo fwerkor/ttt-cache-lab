@@ -42,7 +42,7 @@ Implemented:
 - E3-calibrated E4 planning with failure-map artifact hashes, runtime action-latency budgets, explicit cache-manager scopes, and measured-oracle provenance;
 - E5 correction/fallback diagnostics, E6 latency/speedup/task-drop scaling plots, E7 paired ablation effects, E8 tail-latency/cache-pressure reports, and adaptation-gain/update-scale reports;
 - cluster-bootstrap confidence intervals, paired comparisons, Wilson false-safe bounds, warm-up/repeated timing, and p50/p95 latency reporting;
-- a shardable 66-configuration, 198-job manifest spanning 1.5B, 7B, 14B, and 32B models, Mistral cross-family transfer, and a 7B code model;
+- a shardable 72-configuration, 216-job manifest spanning 1.5B, 7B, 14B, and 32B models, Mistral cross-family transfer, and a 7B code model;
 - atomic per-target checkpoints, record-level resume, cross-run record merging, structured failure manifests, and run metadata with config/git/package provenance;
 - CI for linting, strict type checking, unit tests, and offline tiny-Llama integration tests that execute real LoRA, KV delta correction, and native layer restart paths.
 
@@ -294,7 +294,7 @@ python -m ttt_cache_lab.cli version-report \
 
 ## Paper-scale study
 
-The frozen protocol is in [`docs/paper_experiment_protocol.md`](docs/paper_experiment_protocol.md). The checked-in matrix contains 66 configurations and expands to 198 jobs over seeds 7, 17, and 29. Qwen2.5-7B is the complete main evaluation; 14B and 32B are explicit primary scaling evidence.
+The frozen protocol is in [`docs/paper_experiment_protocol.md`](docs/paper_experiment_protocol.md). The checked-in matrix contains 72 configurations and expands to 216 jobs over seeds 7, 17, and 29. Every Qwen calibration scale covers all six controlled task families. Qwen2.5-7B is the complete main evaluation; 14B and 32B are explicit primary scaling evidence.
 
 Generate the stable job matrix:
 

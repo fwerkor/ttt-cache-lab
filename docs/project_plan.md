@@ -844,6 +844,6 @@ The frozen study now includes:
 - E1-E8, adding sustained cache-pressure and tail-latency evaluation;
 - conservative failure-map selection across all compatible calibration seeds and tasks;
 - paired cluster-bootstrap intervals, Wilson false-safe bounds, and repeated p50/p95 performance measurement;
-- a 66-configuration, 198-job shardable manifest under `configs/paper/`.
+- a 72-configuration, 216-job shardable manifest under `configs/paper/`, with all six controlled tasks represented at 1.5B, 7B, 14B, and 32B.
 
 The paper experiment order is now enforced by artifact dependencies: E4/E5/E6/E7/E8 jobs require the finalized E3 failure map. Test results must not be used to modify that artifact.

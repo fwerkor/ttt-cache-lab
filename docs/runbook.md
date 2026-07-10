@@ -360,7 +360,7 @@ The local aLoRA-, LRAgent-, and ForkKV-style methods are labeled `paper_reimplem
 
 The authoritative protocol is [`paper_experiment_protocol.md`](paper_experiment_protocol.md). Do not tune planner thresholds or regenerate the failure map after observing held-out test results.
 
-Inspect the 198-job matrix without running models:
+Inspect the 216-job matrix without running models:
 
 ```bash
 python -m ttt_cache_lab.cli study-plan --manifest configs/paper/study.yaml

@@ -33,6 +33,33 @@ def test_paper_matrix_contains_large_models_real_tasks_and_cache_pressure() -> N
     assert any(config.model.max_length == 65536 for config in configs)
 
 
+def test_controlled_calibration_covers_six_tasks_at_every_qwen_scale() -> None:
+    expected_tasks = {
+        "multi_needle",
+        "needle_absent",
+        "multi_hop_tracing",
+        "aggregation",
+        "common_words",
+        "variable_tracking",
+    }
+    for model_key in ("qwen_1_5b", "qwen_7b", "qwen_14b", "qwen_32b"):
+        paths = sorted(Path("configs/paper/calibration").glob(f"e3_{model_key}_*.yaml"))
+        configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
+        assert {config.data.task for config in configs} == expected_tasks
+
+
+def test_synthetic_paper_configs_use_explicit_nontruncating_generation_budgets() -> None:
+    paths = sorted(Path("configs/paper").glob("*/*.yaml"))
+    configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
+    synthetic = [config for config in configs if config.data.source == "synthetic"]
+    assert synthetic
+    assert all(config.data.max_generation_tokens >= 32 for config in synthetic)
+    assert all(
+        config.data.max_generation_tokens >= config.data.answer_length
+        for config in synthetic
+    )
+
+
 def test_longbench_v2_partitions_are_disjoint_for_qwen_7b() -> None:
     validation = VersionedExperimentConfig.from_yaml(
         Path("configs/paper/validation/e4_qwen_7b_longbench_v2_validation.yaml")

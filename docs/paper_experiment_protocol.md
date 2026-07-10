@@ -151,7 +151,7 @@ The run metadata records git commit, config hash, package versions, dtype, atten
 
 ## 9. Main model/task matrix
 
-The checked-in matrix contains 66 configurations and expands to 198 jobs at three seeds.
+The checked-in matrix contains 72 configurations and expands to 216 jobs at three seeds. Every Qwen calibration scale covers all six controlled task families, so task coverage does not silently shrink as model size increases.
 
 The principal results are:
 

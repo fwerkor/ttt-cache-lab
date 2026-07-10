@@ -23,6 +23,7 @@ data:
   context_length: 8192
   answer_length: 4
   scorer: contains
+  max_generation_tokens: 32
 updates:
   targets:
   - lora.q
