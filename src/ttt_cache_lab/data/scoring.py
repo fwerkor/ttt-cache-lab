@@ -13,6 +13,8 @@ def score_prediction(sample: TaskSample, prediction: str) -> float:
     references = _references(sample)
     if scorer == "exact_match":
         return max(_exact_match(prediction, reference) for reference in references)
+    if scorer == "prefix_match":
+        return max(_prefix_match(prediction, reference) for reference in references)
     if scorer == "contains":
         return max(_contains(prediction, reference) for reference in references)
     if scorer == "token_f1":
@@ -106,6 +108,17 @@ def _normalize(text: str) -> str:
 
 def _exact_match(prediction: str, reference: str) -> float:
     return 1.0 if _normalize(prediction) == _normalize(reference) else 0.0
+
+
+def _prefix_match(prediction: str, reference: str) -> float:
+    normalized_prediction = _normalize(prediction)
+    normalized_reference = _normalize(reference)
+    if not normalized_reference:
+        return 0.0
+    return float(
+        normalized_prediction == normalized_reference
+        or normalized_prediction.startswith(f"{normalized_reference} ")
+    )
 
 
 def _contains(prediction: str, reference: str) -> float:

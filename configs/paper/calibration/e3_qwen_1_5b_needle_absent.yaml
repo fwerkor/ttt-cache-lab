@@ -22,7 +22,7 @@ data:
   num_samples: 48
   context_length: 16384
   answer_length: 4
-  scorer: exact_match
+  scorer: prefix_match
   max_generation_tokens: 32
 updates:
   targets:

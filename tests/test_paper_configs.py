@@ -60,6 +60,13 @@ def test_synthetic_paper_configs_use_explicit_nontruncating_generation_budgets()
     )
 
 
+def test_needle_absence_uses_answer_prefix_scoring() -> None:
+    paths = sorted(Path("configs/paper/calibration").glob("e3_qwen_*_needle_absent.yaml"))
+    assert len(paths) == 4
+    configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
+    assert all(config.data.scorer == "prefix_match" for config in configs)
+
+
 def test_longbench_v2_partitions_are_disjoint_for_qwen_7b() -> None:
     validation = VersionedExperimentConfig.from_yaml(
         Path("configs/paper/validation/e4_qwen_7b_longbench_v2_validation.yaml")

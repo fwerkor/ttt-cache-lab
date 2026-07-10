@@ -31,6 +31,12 @@ def test_contains_supports_retrieval_answers() -> None:
     assert score_prediction(sample, "The identifier is alpha-7.") == 1.0
 
 
+def test_prefix_match_allows_explanation_but_not_late_instruction_echo() -> None:
+    sample = _sample(scorer="prefix_match", answers=("NOT_FOUND",))
+    assert score_prediction(sample, "NOT_FOUND because the record is absent.") == 1.0
+    assert score_prediction(sample, "The code is 1234; the prompt said NOT_FOUND.") == 0.0
+
+
 def test_code_similarity_ignores_outer_whitespace() -> None:
     sample = _sample(scorer="code_similarity", answers=("function value() { return 1; }",))
     assert score_prediction(sample, "  function value() { return 1; }  ") == 1.0

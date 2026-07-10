@@ -46,6 +46,7 @@ class DataConfig(BaseModel):
     answer_field: str = "answer"
     scorer: Literal[
         "exact_match",
+        "prefix_match",
         "contains",
         "token_f1",
         "rouge_l",
