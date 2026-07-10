@@ -175,6 +175,21 @@ class StaticAdapterExperimentRunner:
                         strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
                         decode_latency = output_decode_latency(approx)
                         maintenance_latency = output_cache_maintenance_latency(approx)
+                        task_score = (
+                            backend.score_answer(sample, approx)
+                            if self.config.metrics.compute_task_metrics
+                            else 0.0
+                        )
+                        full_task_score = (
+                            backend.score_answer(sample, full)
+                            if self.config.metrics.compute_task_metrics
+                            else 0.0
+                        )
+                        logits_kl_value = (
+                            kl_divergence(full.logits, approx.logits)
+                            if self.config.metrics.compute_tensor_metrics
+                            else 0.0
+                        )
                         records.append(
                             ExperimentRecord(
                                 sample_id=sample_id,
@@ -183,16 +198,8 @@ class StaticAdapterExperimentRunner:
                                 action=str(decision.action),
                                 cache_state=str(decision.state),
                                 first_invalid_layer=decision.first_invalid_layer,
-                                task_score=(
-                                    backend.score_answer(sample, approx)
-                                    if self.config.metrics.compute_task_metrics
-                                    else 0.0
-                                ),
-                                logits_kl=(
-                                    kl_divergence(full.logits, approx.logits)
-                                    if self.config.metrics.compute_tensor_metrics
-                                    else 0.0
-                                ),
+                                task_score=task_score,
+                                logits_kl=logits_kl_value,
                                 top1_agreement=top1,
                                 relative_error=(
                                     relative_error(full.cache_tensor, approx.cache_tensor)
@@ -233,7 +240,16 @@ class StaticAdapterExperimentRunner:
                                 rejected_reuse=(
                                     decision.reject_reuse or decision.action is CacheAction.REJECT_UPDATE
                                 ),
-                                false_safe=is_false_safe(decision, full=full, approx=approx),
+                                false_safe=is_false_safe(
+                                    decision,
+                                    full=full,
+                                    approx=approx,
+                                    full_task_score=full_task_score,
+                                    approx_task_score=task_score,
+                                    kl_threshold=self.config.cache.oracle_kl_threshold,
+                                    top1_threshold=self.config.cache.oracle_top1_threshold,
+                                    task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
+                                ),
                                 strategy_mode=output_strategy_mode(approx),
                                 cache_block_count=backend.num_layers,
                                 cache_entry_count=len(per_adapter_cache[key]),

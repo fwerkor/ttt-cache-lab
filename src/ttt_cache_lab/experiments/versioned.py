@@ -371,6 +371,21 @@ class VersionedExperimentRunner:
             strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
             decode_latency = output_decode_latency(approx)
             maintenance_latency = output_cache_maintenance_latency(approx)
+            task_score = (
+                backend.score_answer(sample_answer, approx)  # type: ignore[arg-type]
+                if self.config.metrics.compute_task_metrics
+                else 0.0
+            )
+            full_task_score = (
+                backend.score_answer(sample_answer, full)  # type: ignore[arg-type]
+                if self.config.metrics.compute_task_metrics
+                else 0.0
+            )
+            logits_kl_value = (
+                kl_divergence(full.logits, approx.logits)
+                if self.config.metrics.compute_tensor_metrics
+                else 0.0
+            )
             records.append(
                 ExperimentRecord(
                     sample_id=sample_id,
@@ -379,16 +394,8 @@ class VersionedExperimentRunner:
                     action=str(decision.action),
                     cache_state=str(decision.state),
                     first_invalid_layer=decision.first_invalid_layer,
-                    task_score=(
-                        backend.score_answer(sample_answer, approx)  # type: ignore[arg-type]
-                        if self.config.metrics.compute_task_metrics
-                        else 0.0
-                    ),
-                    logits_kl=(
-                        kl_divergence(full.logits, approx.logits)
-                        if self.config.metrics.compute_tensor_metrics
-                        else 0.0
-                    ),
+                    task_score=task_score,
+                    logits_kl=logits_kl_value,
                     top1_agreement=top1,
                     relative_error=(
                         relative_error(full.cache_tensor, approx.cache_tensor)
@@ -424,7 +431,16 @@ class VersionedExperimentRunner:
                     cache_hit=is_cache_hit(decision),
                     refresh_count=new_refresh_count,
                     rejected_reuse=(decision.reject_reuse or decision.action is CacheAction.REJECT_UPDATE),
-                    false_safe=is_false_safe(decision, full=full, approx=approx),
+                    false_safe=is_false_safe(
+                        decision,
+                        full=full,
+                        approx=approx,
+                        full_task_score=full_task_score,
+                        approx_task_score=task_score,
+                        kl_threshold=self.config.cache.oracle_kl_threshold,
+                        top1_threshold=self.config.cache.oracle_top1_threshold,
+                        task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
+                    ),
                     strategy_mode=output_strategy_mode(approx),
                     cache_block_count=len(new_blocks),
                     cache_entry_count=len(cached.manager.versions(adapter_id)),
@@ -551,7 +567,7 @@ class VersionedExperimentRunner:
             candidate_score = backend.score_answer(sample, output)  # type: ignore[arg-type]
             safe = (
                 candidate_kl <= self.config.cache.oracle_kl_threshold
-                and candidate_top1 >= 1.0
+                and candidate_top1 >= self.config.cache.oracle_top1_threshold
                 and full_score - candidate_score <= self.config.cache.oracle_task_drop_threshold
             )
             if candidate.action is CacheAction.FULL_RECOMPUTE:

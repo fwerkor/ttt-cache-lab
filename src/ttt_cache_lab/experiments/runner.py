@@ -80,6 +80,21 @@ class ExperimentRunner:
                     decode_latency = output_decode_latency(approx)
                     maintenance_latency = output_cache_maintenance_latency(approx)
                     adaptation_latency = update_result.adaptation_latency
+                    task_score = (
+                        backend.score_answer(sample, approx)
+                        if self.config.metrics.compute_task_metrics
+                        else 0.0
+                    )
+                    full_task_score = (
+                        backend.score_answer(sample, full)
+                        if self.config.metrics.compute_task_metrics
+                        else 0.0
+                    )
+                    logits_kl_value = (
+                        kl_divergence(full.logits, approx.logits)
+                        if self.config.metrics.compute_tensor_metrics
+                        else 0.0
+                    )
                     records.append(
                         ExperimentRecord(
                             sample_id=sample_id,
@@ -88,16 +103,8 @@ class ExperimentRunner:
                             action=str(decision.action),
                             cache_state=str(decision.state),
                             first_invalid_layer=decision.first_invalid_layer,
-                            task_score=(
-                                backend.score_answer(sample, approx)
-                                if self.config.metrics.compute_task_metrics
-                                else 0.0
-                            ),
-                            logits_kl=(
-                                kl_divergence(full.logits, approx.logits)
-                                if self.config.metrics.compute_tensor_metrics
-                                else 0.0
-                            ),
+                            task_score=task_score,
+                            logits_kl=logits_kl_value,
                             top1_agreement=top1,
                             relative_error=(
                                 relative_error(full.cache_tensor, approx.cache_tensor)
@@ -125,7 +132,16 @@ class ExperimentRunner:
                             cache_hit=is_cache_hit(decision),
                             refresh_count=1 if is_refresh_action(decision) else 0,
                             rejected_reuse=(decision.reject_reuse or decision.action is CacheAction.REJECT_UPDATE),
-                            false_safe=is_false_safe(decision, full=full, approx=approx),
+                            false_safe=is_false_safe(
+                                decision,
+                                full=full,
+                                approx=approx,
+                                full_task_score=full_task_score,
+                                approx_task_score=task_score,
+                                kl_threshold=self.config.cache.oracle_kl_threshold,
+                                top1_threshold=self.config.cache.oracle_top1_threshold,
+                                task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
+                            ),
                             strategy_mode=output_strategy_mode(approx),
                             cache_block_count=backend.num_layers,
                             cache_entry_count=1,

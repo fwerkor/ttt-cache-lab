@@ -6,7 +6,7 @@ import numpy as np
 
 from ttt_cache_lab.cache.semantics import CacheAction
 from ttt_cache_lab.cache.strategies import StrategyDecision
-from ttt_cache_lab.metrics.tensor import top1_agreement
+from ttt_cache_lab.metrics.tensor import kl_divergence, top1_agreement
 from ttt_cache_lab.models.interface import BackendOutput
 
 
@@ -89,10 +89,32 @@ def is_refresh_action(decision: StrategyDecision) -> bool:
     }
 
 
-def is_false_safe(decision: StrategyDecision, *, full: BackendOutput, approx: BackendOutput) -> bool:
-    if decision.action not in {CacheAction.REUSE_STALE, CacheAction.REUSE_FROZEN, CacheAction.DELTA_CORRECT}:
+def is_false_safe(
+    decision: StrategyDecision,
+    *,
+    full: BackendOutput,
+    approx: BackendOutput,
+    full_task_score: float,
+    approx_task_score: float,
+    kl_threshold: float,
+    top1_threshold: float,
+    task_drop_threshold: float,
+) -> bool:
+    if decision.action not in {
+        CacheAction.REUSE_STALE,
+        CacheAction.REUSE_FROZEN,
+        CacheAction.DELTA_CORRECT,
+        CacheAction.ALORA_SUFFIX_RECOMPUTE,
+    }:
         return False
-    return bool(top1_agreement(full.logits, approx.logits) < 1.0)
+    logits_kl = kl_divergence(full.logits, approx.logits)
+    top1 = top1_agreement(full.logits, approx.logits)
+    task_drop = full_task_score - approx_task_score
+    return bool(
+        logits_kl > kl_threshold
+        or top1 < top1_threshold
+        or task_drop > task_drop_threshold
+    )
 
 
 def output_strategy_mode(output: BackendOutput) -> str:

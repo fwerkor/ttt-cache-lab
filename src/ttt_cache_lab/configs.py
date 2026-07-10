@@ -53,6 +53,7 @@ class CacheConfig(BaseModel):
     refresh_period: int = 4
     update_norm_threshold: float = 0.05
     oracle_kl_threshold: float = 0.05
+    oracle_top1_threshold: float = 0.99
     oracle_task_drop_threshold: float = 0.01
 
 
