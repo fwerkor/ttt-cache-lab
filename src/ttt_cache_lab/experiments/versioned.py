@@ -12,6 +12,7 @@ from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, Stra
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.experiments.metrics import (
+    attention_distribution_shift,
     estimate_recompute_fraction,
     is_cache_hit,
     is_false_safe,
@@ -19,8 +20,10 @@ from ttt_cache_lab.experiments.metrics import (
     output_cache_bytes,
     output_cache_maintenance_latency,
     output_decode_latency,
+    output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
+    output_strategy_flops,
     output_strategy_latency,
     output_strategy_mode,
     output_throughput,
@@ -58,6 +61,7 @@ class VersionedExperimentRunner:
     def run(self) -> ExperimentArtifacts:
         data = build_task_samples(self.config.data, seed=self.config.seed)
         backend = build_backend(self.config.model, seed=self.config.seed)
+        backend.configure_metrics(capture_attention=self.config.metrics.compute_attention_metrics)
         strategies = [
             build_strategy(
                 name,
@@ -256,6 +260,14 @@ class VersionedExperimentRunner:
         accumulated_update_norm: float,
         accumulated_adaptation_latency: float,
     ) -> None:
+        full_decision = StrategyDecision(
+            StrategyName.FULL_RECOMPUTE,
+            CacheAction.FULL_RECOMPUTE,
+            CacheBlockState.INVALID,
+            None,
+            "FLOP accounting probe.",
+            recompute_fraction=1.0,
+        )
         for strategy in strategies:
             cache_key = str(strategy.name)
             cached = strategy_caches[cache_key]
@@ -272,14 +284,7 @@ class VersionedExperimentRunner:
                     full_recompute_latency=max(
                         1e-9,
                         backend.estimate_latency(
-                            StrategyDecision(
-                                StrategyName.FULL_RECOMPUTE,
-                                CacheAction.FULL_RECOMPUTE,
-                                CacheBlockState.INVALID,
-                                None,
-                                "Planner cost probe.",
-                                recompute_fraction=1.0,
-                            ),
+                            full_decision,
                             context_length=self.config.data.context_length,
                         ),
                     ),
@@ -419,6 +424,28 @@ class VersionedExperimentRunner:
                 if strategy.name is StrategyName.NO_ADAPTATION
                 else accumulated_adaptation_latency
             )
+            strategy_flops = (
+                output_strategy_flops(
+                    approx,
+                    fallback=backend.estimate_flops(
+                        decision,
+                        context_length=self.config.data.context_length,
+                    ),
+                )
+                if self.config.metrics.compute_flops_metrics
+                else 0.0
+            )
+            full_recompute_flops = (
+                output_full_recompute_flops(
+                    full,
+                    fallback=backend.estimate_flops(
+                        full_decision,
+                        context_length=self.config.data.context_length,
+                    ),
+                )
+                if self.config.metrics.compute_flops_metrics
+                else 0.0
+            )
             records.append(
                 ExperimentRecord(
                     sample_id=sample_id,
@@ -488,6 +515,18 @@ class VersionedExperimentRunner:
                     model_num_layers=backend.num_layers,
                     model_hidden_size=self.config.model.hidden_size,
                     configured_update_norm=self.config.updates.update_norm,
+                    attention_shift=(
+                        attention_distribution_shift(full, approx)
+                        if self.config.metrics.compute_attention_metrics
+                        else 0.0
+                    ),
+                    strategy_flops=strategy_flops,
+                    full_recompute_flops=full_recompute_flops,
+                    flops_fraction=(
+                        strategy_flops / full_recompute_flops
+                        if full_recompute_flops > 0.0
+                        else 0.0
+                    ),
                 )
             )
 
@@ -694,6 +733,10 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "cache_entry_count_mean",
         "total_cache_bytes_mean",
         "evicted_cache_entries_mean",
+        "attention_shift_mean",
+        "strategy_flops_mean",
+        "full_recompute_flops_mean",
+        "flops_fraction_mean",
     ]
     with output_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=[*dimension_fields, *metric_fields])
@@ -726,6 +769,10 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "cache_entry_count_mean": _mean(records, "cache_entry_count"),
                     "total_cache_bytes_mean": _mean(records, "total_cache_bytes"),
                     "evicted_cache_entries_mean": _mean(records, "evicted_cache_entries"),
+                    "attention_shift_mean": _mean(records, "attention_shift"),
+                    "strategy_flops_mean": _mean(records, "strategy_flops"),
+                    "full_recompute_flops_mean": _mean(records, "full_recompute_flops"),
+                    "flops_fraction_mean": _mean(records, "flops_fraction"),
                 }
             )
 

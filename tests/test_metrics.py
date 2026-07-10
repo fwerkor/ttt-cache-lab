@@ -3,6 +3,7 @@ import numpy as np
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName
 from ttt_cache_lab.experiments.metrics import (
+    attention_distribution_shift,
     is_false_safe,
     output_cache_bytes,
     output_cache_maintenance_latency,
@@ -105,3 +106,30 @@ def test_false_safe_uses_kl_top1_and_task_drop() -> None:
         top1_threshold=0.99,
         task_drop_threshold=0.01,
     )
+
+
+
+def test_attention_distribution_shift_uses_jensen_shannon_divergence() -> None:
+    full = BackendOutput(
+        logits=np.zeros((1, 2)),
+        cache_tensor=np.zeros((1, 1)),
+        hidden_tensor=np.zeros((1, 1)),
+        parameter_version=1,
+        extras={"attention_summary": np.array([[0.9, 0.1]])},
+    )
+    same = BackendOutput(
+        logits=np.zeros((1, 2)),
+        cache_tensor=np.zeros((1, 1)),
+        hidden_tensor=np.zeros((1, 1)),
+        parameter_version=1,
+        extras={"attention_summary": np.array([[0.9, 0.1]])},
+    )
+    shifted = BackendOutput(
+        logits=np.zeros((1, 2)),
+        cache_tensor=np.zeros((1, 1)),
+        hidden_tensor=np.zeros((1, 1)),
+        parameter_version=1,
+        extras={"attention_summary": np.array([[0.1, 0.9]])},
+    )
+    assert attention_distribution_shift(full, same) == 0.0
+    assert attention_distribution_shift(full, shifted) > 0.0

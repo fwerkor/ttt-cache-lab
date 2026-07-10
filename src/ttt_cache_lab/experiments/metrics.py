@@ -126,6 +126,42 @@ def output_strategy_mode(output: BackendOutput) -> str:
     return ""
 
 
+def attention_distribution_shift(full: BackendOutput, approx: BackendOutput) -> float:
+    full_summary = _attention_summary(full)
+    approx_summary = _attention_summary(approx)
+    if full_summary is None or approx_summary is None or full_summary.shape != approx_summary.shape:
+        return 0.0
+    epsilon = 1e-12
+    left = np.clip(full_summary.astype(np.float64), epsilon, None)
+    right = np.clip(approx_summary.astype(np.float64), epsilon, None)
+    left /= np.sum(left, axis=-1, keepdims=True)
+    right /= np.sum(right, axis=-1, keepdims=True)
+    midpoint = 0.5 * (left + right)
+    js = 0.5 * np.sum(left * np.log(left / midpoint), axis=-1)
+    js += 0.5 * np.sum(right * np.log(right / midpoint), axis=-1)
+    return float(np.mean(js))
+
+
+def output_strategy_flops(output: BackendOutput, *, fallback: float = 0.0) -> float:
+    extras = output.extras or {}
+    value = extras.get("strategy_flops")
+    return float(value) if isinstance(value, int | float) else float(fallback)
+
+
+def output_full_recompute_flops(output: BackendOutput, *, fallback: float = 0.0) -> float:
+    extras = output.extras or {}
+    value = extras.get("full_recompute_flops")
+    return float(value) if isinstance(value, int | float) else float(fallback)
+
+
+def _attention_summary(output: BackendOutput) -> np.ndarray | None:
+    extras = output.extras or {}
+    value = extras.get("attention_summary")
+    if isinstance(value, np.ndarray):
+        return value
+    return None
+
+
 def as_float(value: Any) -> float:
     if isinstance(value, np.generic):
         return float(value)

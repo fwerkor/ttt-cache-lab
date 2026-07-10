@@ -3,11 +3,12 @@ from __future__ import annotations
 import random
 
 from ttt_cache_lab.cache.planner import PlannerRuntime
-from ttt_cache_lab.cache.semantics import CacheAction
-from ttt_cache_lab.cache.strategies import StrategyName, build_strategy
+from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
+from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import ExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.experiments.metrics import (
+    attention_distribution_shift,
     estimate_recompute_fraction,
     is_cache_hit,
     is_false_safe,
@@ -15,8 +16,10 @@ from ttt_cache_lab.experiments.metrics import (
     output_cache_bytes,
     output_cache_maintenance_latency,
     output_decode_latency,
+    output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
+    output_strategy_flops,
     output_strategy_latency,
     output_strategy_mode,
     output_throughput,
@@ -36,6 +39,7 @@ class ExperimentRunner:
     def run(self) -> ExperimentArtifacts:
         data = build_task_samples(self.config.data, seed=self.config.seed)
         backend = build_backend(self.config.model, seed=self.config.seed)
+        backend.configure_metrics(capture_attention=self.config.metrics.compute_attention_metrics)
         strategies = [
             build_strategy(
                 name,
@@ -53,6 +57,14 @@ class ExperimentRunner:
             for name in self.config.cache.strategies
         ]
         records: list[ExperimentRecord] = []
+        full_decision = StrategyDecision(
+            StrategyName.FULL_RECOMPUTE,
+            CacheAction.FULL_RECOMPUTE,
+            CacheBlockState.INVALID,
+            None,
+            "FLOP accounting probe.",
+            recompute_fraction=1.0,
+        )
 
         for sample_id, sample in enumerate(data):
             sample = backend.prepare_sample(sample, context_length=self.config.data.context_length)
@@ -123,6 +135,28 @@ class ExperimentRunner:
                         if self.config.metrics.compute_tensor_metrics
                         else 0.0
                     )
+                    strategy_flops = (
+                        output_strategy_flops(
+                            approx,
+                            fallback=backend.estimate_flops(
+                                decision,
+                                context_length=self.config.data.context_length,
+                            ),
+                        )
+                        if self.config.metrics.compute_flops_metrics
+                        else 0.0
+                    )
+                    full_recompute_flops = (
+                        output_full_recompute_flops(
+                            full,
+                            fallback=backend.estimate_flops(
+                                full_decision,
+                                context_length=self.config.data.context_length,
+                            ),
+                        )
+                        if self.config.metrics.compute_flops_metrics
+                        else 0.0
+                    )
                     records.append(
                         ExperimentRecord(
                             sample_id=sample_id,
@@ -183,6 +217,18 @@ class ExperimentRunner:
                             model_num_layers=backend.num_layers,
                             model_hidden_size=self.config.model.hidden_size,
                             configured_update_norm=self.config.updates.update_norm,
+                            attention_shift=(
+                                attention_distribution_shift(full, approx)
+                                if self.config.metrics.compute_attention_metrics
+                                else 0.0
+                            ),
+                            strategy_flops=strategy_flops,
+                            full_recompute_flops=full_recompute_flops,
+                            flops_fraction=(
+                                strategy_flops / full_recompute_flops
+                                if full_recompute_flops > 0.0
+                                else 0.0
+                            ),
                         )
                     )
                 backend.restore_after_update()

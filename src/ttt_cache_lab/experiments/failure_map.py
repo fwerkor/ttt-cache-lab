@@ -26,6 +26,7 @@ class FailureCell:
     top1_agreement_mean: float
     relative_error_mean: float
     false_safe_rate: float
+    attention_shift_mean: float
 
     def to_dict(self) -> dict[str, str | int | float]:
         return {
@@ -62,6 +63,7 @@ def generate_failure_map(
         "task_drop_vs_full": "task_drop_heatmap.svg",
         "top1_agreement_mean": "top1_agreement_heatmap.svg",
         "false_safe_rate": "false_safe_heatmap.svg",
+        "attention_shift_mean": "attention_shift_heatmap.svg",
     }
     for metric, filename in heatmaps.items():
         heatmap_path = output_dir / filename
@@ -114,6 +116,7 @@ def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
                 top1_agreement_mean=_mean(records, "top1_agreement"),
                 relative_error_mean=_mean(records, "relative_error"),
                 false_safe_rate=_mean_bool(records, "false_safe"),
+                attention_shift_mean=_mean(records, "attention_shift"),
             )
         )
     return cells

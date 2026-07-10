@@ -132,6 +132,9 @@ class HuggingFaceBackend:
         self._sample_answer_token_counts: dict[str, int] = {}
         self._sample_activation_boundaries: dict[str, int] = {}
         self._alora_base_cache: dict[str, tuple[Any, np.ndarray]] = {}
+        self._capture_attention_metrics = False
+        self._last_attention_summary: np.ndarray | None = None
+        self._last_correction_flops = 0.0
 
     def _infer_num_layers(self) -> int:
         return self._infer_num_layers_from_config(self.model.config)
@@ -268,6 +271,9 @@ class HuggingFaceBackend:
                 "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
                 "strategy_latency": prefill_s + decode_s,
+                "strategy_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
+                "full_recompute_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
+                **self._attention_metadata(),
                 **self._alora_base_extras(state),
             },
         )
@@ -342,6 +348,9 @@ class HuggingFaceBackend:
                 "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
                 "strategy_latency": prefill_s + decode_s,
+                "strategy_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
+                "full_recompute_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
+                **self._attention_metadata(),
                 **self._alora_base_extras(state),
             },
         )
@@ -392,6 +401,51 @@ class HuggingFaceBackend:
         if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
             return self._last_alora_s or max(1e-6, (self._last_prefill_s or 1.0) * 0.25)
         return max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
+
+    def configure_metrics(self, *, capture_attention: bool) -> None:
+        self._capture_attention_metrics = capture_attention
+
+    def estimate_flops(self, decision: StrategyDecision, *, context_length: int) -> float:
+        full = self._full_prefill_flops(max(1, context_length))
+        if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
+            return full
+        if decision.action is CacheAction.PARTIAL_RECOMPUTE:
+            first = decision.first_invalid_layer or 0
+            return full * max(0, self.num_layers - first) / max(1, self.num_layers)
+        if decision.action is CacheAction.DELTA_CORRECT:
+            if self._last_correction_flops > 0.0:
+                return self._last_correction_flops
+            rank = max((int(getattr(module, "rank", 0)) for module in self._active_lora_modules), default=8)
+            hidden = self._hidden_size()
+            return 4.0 * max(1, context_length) * hidden * max(1, rank)
+        if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
+            return full * (decision.recompute_fraction or 0.25)
+        return 0.0
+
+    def _full_prefill_flops(self, tokens: int) -> float:
+        hidden = self._hidden_size()
+        intermediate = self._intermediate_size(hidden)
+        heads = max(1, int(getattr(self.model.config, "num_attention_heads", 1) or 1))
+        kv_heads = int(getattr(self.model.config, "num_key_value_heads", heads) or heads)
+        kv_width = hidden * kv_heads / heads
+        projection = 2.0 * tokens * hidden * (2.0 * hidden + 2.0 * kv_width)
+        attention = 4.0 * tokens * tokens * hidden
+        mlp = 6.0 * tokens * hidden * intermediate
+        return self.num_layers * (projection + attention + mlp)
+
+    def _hidden_size(self) -> int:
+        for name in ("hidden_size", "n_embd", "d_model"):
+            value = getattr(self.model.config, name, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return 1
+
+    def _intermediate_size(self, hidden: int) -> int:
+        for name in ("intermediate_size", "n_inner", "ffn_dim"):
+            value = getattr(self.model.config, name, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return 4 * hidden
 
     def last_adaptation_latency(self) -> float:
         return self._last_adaptation_s
@@ -605,12 +659,23 @@ class HuggingFaceBackend:
         current_past = self._clone_past(past)
         generated: list[Any] = []
         first_logits = None
+        self._last_attention_summary = None
         start = time.perf_counter()
-        for _ in range(max_new_tokens):
-            result = self.model(input_ids=current, past_key_values=current_past, use_cache=True)
+        for generation_step in range(max_new_tokens):
+            capture_attention = self._capture_attention_metrics and generation_step == 0
+            result = self.model(
+                input_ids=current,
+                past_key_values=current_past,
+                use_cache=True,
+                output_attentions=capture_attention,
+            )
             logits = result.logits[:, -1, :]
             if first_logits is None:
                 first_logits = logits
+            if capture_attention:
+                self._last_attention_summary = self._summarize_attentions(
+                    getattr(result, "attentions", None)
+                )
             next_token = self.torch.argmax(logits, dim=-1, keepdim=True)
             generated.append(next_token)
             current = next_token
@@ -622,6 +687,24 @@ class HuggingFaceBackend:
         generated_ids = self.torch.cat(generated, dim=1)[0].detach().cpu().tolist()
         generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         return first_logits, generated_text, decode_s
+
+    def _summarize_attentions(self, attentions: Any) -> np.ndarray | None:
+        if not isinstance(attentions, tuple | list) or not attentions:
+            return None
+        layers: list[np.ndarray] = []
+        for attention in attentions:
+            if attention is None or not hasattr(attention, "ndim") or attention.ndim != 4:
+                continue
+            last_query = attention[:, :, -1, :].detach().float().mean(dim=(0, 1))
+            layers.append(last_query.cpu().numpy())
+        if not layers or len({layer.shape for layer in layers}) != 1:
+            return None
+        return np.stack(layers, axis=0)
+
+    def _attention_metadata(self) -> dict[str, np.ndarray]:
+        if self._last_attention_summary is None:
+            return {}
+        return {"attention_summary": self._last_attention_summary}
 
     def _set_lora_enabled(self, enabled: bool) -> None:
         for module in self._lora_modules:
@@ -710,6 +793,9 @@ class HuggingFaceBackend:
                 "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
                 "generated_text": generated_text,
                 "cache_mode": "alora_base_prefix_suffix_recompute",
+                "strategy_flops": self._full_prefill_flops(int(suffix_ids.shape[1])),
+                "full_recompute_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
+                **self._attention_metadata(),
                 **self._alora_base_extras(state),
             },
         )
@@ -722,6 +808,7 @@ class HuggingFaceBackend:
                 "cache_mode": cache_mode,
                 "cache_maintenance_latency": 0.0,
                 "strategy_latency": decode_s,
+                "strategy_flops": 0.0,
             }
         )
         return BackendOutput(
@@ -747,7 +834,7 @@ class HuggingFaceBackend:
             past=past,
             cache_tensor=baseline.cache_tensor,
             hidden_tensor=baseline.hidden_tensor,
-            extra_metadata={"cache_mode": cache_mode},
+            extra_metadata={"cache_mode": cache_mode, "strategy_flops": 0.0},
             reset_memory_stats=reset_memory_stats,
         )
         self._last_stale_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
@@ -855,6 +942,11 @@ class HuggingFaceBackend:
                 "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
                 "generated_text": generated_text,
                 "partial_mode": f"native_{family}_layer_restart",
+                "strategy_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1]))
+                * max(0, self.num_layers - split_layer)
+                / max(1, self.num_layers),
+                "full_recompute_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
+                **self._attention_metadata(),
             },
         )
 
@@ -989,6 +1081,7 @@ class HuggingFaceBackend:
             result.extras["cache_maintenance_latency"] = max(0.0, total_s - decode_s)
             result.extras["strategy_latency"] = total_s
             result.extras["peak_memory_allocated"] = max_memory_allocated(self.torch, self.devices)
+            result.extras["strategy_flops"] = self._last_correction_flops
         self._last_delta_s = total_s
         return result
 
@@ -1028,6 +1121,9 @@ class HuggingFaceBackend:
             "generated_text": generated_text,
             "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
             "decode_latency": decode_s,
+            "strategy_flops": 0.0,
+            "full_recompute_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
+            **self._attention_metadata(),
         }
         if extra_metadata:
             extras.update(extra_metadata)
@@ -1082,6 +1178,8 @@ class HuggingFaceBackend:
         applied = False
         low_rank_cache_bytes = 0
         residual_cache_bytes = 0
+        correction_flops = 0.0
+        self._last_correction_flops = 0.0
         for name, old_state in old_lora_cache.items():
             if not isinstance(old_state, dict):
                 continue
@@ -1106,12 +1204,12 @@ class HuggingFaceBackend:
                 continue
             rank = int(old_state.get("rank", 0) or 0)
             if rank > 0 and hasattr(cached_input, "shape") and len(cached_input.shape) >= 2:
-                low_rank_cache_bytes += int(
-                    int(cached_input.shape[0])
-                    * int(cached_input.shape[1])
-                    * rank
-                    * int(cached_input.element_size())
-                )
+                batch = int(cached_input.shape[0])
+                tokens = int(cached_input.shape[1])
+                input_width = int(cached_input.shape[-1])
+                output_width = int(delta.shape[-1])
+                low_rank_cache_bytes += batch * tokens * rank * int(cached_input.element_size())
+                correction_flops += 4.0 * batch * tokens * rank * (input_width + output_width)
             residual_cache_bytes += int(projected.numel() * projected.element_size())
             corrected[layer][item_index] = corrected[layer][item_index] + projected.to(
                 device=corrected[layer][item_index].device,
@@ -1138,6 +1236,7 @@ class HuggingFaceBackend:
                     state["projection"] = old_state.get("projection")
                     new_lora_cache[str(name)] = state
         corrected_layers = tuple(tuple(layer) for layer in corrected)
+        self._last_correction_flops = correction_flops
         return (
             self._restore_past_type(past_key_values, corrected_layers),
             new_lora_cache,

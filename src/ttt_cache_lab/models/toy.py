@@ -25,6 +25,7 @@ class ToyBackend:
         self.hidden_size = hidden_size
         self.vocab_size = vocab_size
         self.seed = seed
+        self._capture_attention_metrics = False
 
     def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample:
         del context_length
@@ -43,7 +44,13 @@ class ToyBackend:
         answer = self._extract_answer(prompt)
         if answer:
             logits[0, self._answer_bucket(answer)] += 8.0
-        return BackendOutput(logits=logits, cache_tensor=cache, hidden_tensor=hidden, parameter_version=0)
+        return BackendOutput(
+            logits=logits,
+            cache_tensor=cache,
+            hidden_tensor=hidden,
+            parameter_version=0,
+            extras=self._attention_extras(cache),
+        )
 
     def simulate_update(self, baseline: BackendOutput, target: UpdateTarget, *, update_norm: float) -> BackendOutput:
         drift = self._target_drift(target, update_norm)
@@ -57,11 +64,13 @@ class ToyBackend:
     def full_recompute(self, prompt: str, updated: BackendOutput) -> BackendOutput:
         rng = self._rng_for(prompt, updated.parameter_version)
         noise_scale = 0.01
+        cache = updated.cache_tensor + rng.normal(scale=noise_scale, size=updated.cache_tensor.shape)
         return BackendOutput(
             logits=updated.logits + rng.normal(scale=noise_scale, size=updated.logits.shape),
-            cache_tensor=updated.cache_tensor + rng.normal(scale=noise_scale, size=updated.cache_tensor.shape),
+            cache_tensor=cache,
             hidden_tensor=updated.hidden_tensor + rng.normal(scale=noise_scale, size=updated.hidden_tensor.shape),
             parameter_version=updated.parameter_version,
+            extras=self._attention_extras(cache),
         )
 
     def apply_cache_strategy(
@@ -82,6 +91,7 @@ class ToyBackend:
                 cache_tensor=baseline.cache_tensor,
                 hidden_tensor=updated.hidden_tensor,
                 parameter_version=updated.parameter_version,
+                extras=self._attention_extras(baseline.cache_tensor),
             )
         if decision.action is CacheAction.REUSE_STALE:
             return BackendOutput(
@@ -89,6 +99,7 @@ class ToyBackend:
                 cache_tensor=baseline.cache_tensor,
                 hidden_tensor=baseline.hidden_tensor,
                 parameter_version=updated.parameter_version,
+                extras=self._attention_extras(baseline.cache_tensor),
             )
         if decision.action is CacheAction.DELTA_CORRECT:
             corrected = baseline.cache_tensor + 0.75 * (full.cache_tensor - baseline.cache_tensor)
@@ -110,6 +121,7 @@ class ToyBackend:
                     "cache_bytes": logical_cache_bytes,
                     "physical_cache_bytes": int(corrected.nbytes),
                     "baseline_fidelity": "paper_reimplementation",
+                    **self._attention_extras(corrected),
                 },
             )
         if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
@@ -118,7 +130,10 @@ class ToyBackend:
                 cache_tensor=full.cache_tensor.copy(),
                 hidden_tensor=full.hidden_tensor.copy(),
                 parameter_version=updated.parameter_version,
-                extras={"cache_mode": "alora_base_prefix_suffix_recompute"},
+                extras={
+                    "cache_mode": "alora_base_prefix_suffix_recompute",
+                    **self._attention_extras(full.cache_tensor),
+                },
             )
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             if decision.first_invalid_layer is None:
@@ -133,6 +148,7 @@ class ToyBackend:
                 cache_tensor=cache,
                 hidden_tensor=hidden,
                 parameter_version=updated.parameter_version,
+                extras=self._attention_extras(cache),
             )
         return full
 
@@ -157,6 +173,34 @@ class ToyBackend:
         if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
             return 2.5 * base
         return 1.0 * base
+
+    def configure_metrics(self, *, capture_attention: bool) -> None:
+        self._capture_attention_metrics = capture_attention
+
+    def estimate_flops(self, decision: StrategyDecision, *, context_length: int) -> float:
+        tokens = max(1, context_length)
+        hidden = self.hidden_size
+        per_layer = 12.0 * tokens * hidden * hidden + 4.0 * tokens * tokens * hidden
+        full = self.num_layers * per_layer
+        if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
+            return full
+        if decision.action is CacheAction.PARTIAL_RECOMPUTE:
+            first = decision.first_invalid_layer or 0
+            return max(0, self.num_layers - first) * per_layer
+        if decision.action is CacheAction.DELTA_CORRECT:
+            return 4.0 * tokens * hidden * max(1, hidden // 8)
+        if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
+            return full * (decision.recompute_fraction or 0.25)
+        return 0.0
+
+    def _attention_extras(self, cache: np.ndarray) -> dict[str, np.ndarray]:
+        if not self._capture_attention_metrics:
+            return {}
+        scores = cache[:, 0, :].astype(np.float64)
+        scores -= np.max(scores, axis=-1, keepdims=True)
+        probabilities = np.exp(scores)
+        probabilities /= np.sum(probabilities, axis=-1, keepdims=True)
+        return {"attention_summary": probabilities}
 
     def last_adaptation_latency(self) -> float:
         return 0.0

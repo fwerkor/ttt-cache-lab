@@ -68,6 +68,8 @@ class CacheConfig(BaseModel):
 class MetricsConfig(BaseModel):
     compute_tensor_metrics: bool = True
     compute_task_metrics: bool = True
+    compute_attention_metrics: bool = False
+    compute_flops_metrics: bool = True
 
 
 class ExperimentConfig(BaseModel):

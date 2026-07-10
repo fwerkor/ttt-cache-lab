@@ -276,3 +276,34 @@ def test_related_work_baselines_use_distinct_cache_representations(tmp_path: Pat
     assert lragent.strategy_mode == "lragent_shared_base_plus_low_rank_component"
     assert forkkv.strategy_mode == "forkkv_copy_on_write_residual"
     assert lragent.cache_bytes < forkkv.cache_bytes
+
+
+
+def test_versioned_runner_records_attention_shift_and_action_flops(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-attention-flops",
+            "experiment_id": "unit_attention_flops",
+            "seed": 9,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 4, "hidden_size": 16, "vocab_size": 32},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k:1"], "update_norm": 0.1},
+            "cache": {"strategies": ["full_recompute", "stale_reuse", "layerwise_recompute"]},
+            "metrics": {"compute_attention_metrics": True, "compute_flops_metrics": True},
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [1],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    by_strategy = {record.cache_strategy: record for record in records}
+    full = by_strategy["full_recompute"]
+    stale = by_strategy["stale_reuse"]
+    partial = by_strategy["layerwise_recompute"]
+    assert full.attention_shift == 0.0
+    assert stale.attention_shift > 0.0
+    assert full.strategy_flops == full.full_recompute_flops
+    assert full.flops_fraction == 1.0
+    assert stale.strategy_flops == 0.0
+    assert partial.strategy_flops < partial.full_recompute_flops
+    assert 0.0 < partial.flops_fraction < 1.0

@@ -99,7 +99,16 @@ def _analyze_e2(
     summary = _aggregate(
         enriched,
         keys=("update_target", "cache_strategy", "version_gap"),
-        metrics=("task_score", "task_drop_vs_full", "logits_kl", "top1_agreement", "end_to_end_latency"),
+        metrics=(
+            "task_score",
+            "task_drop_vs_full",
+            "logits_kl",
+            "top1_agreement",
+            "attention_shift",
+            "end_to_end_latency",
+            "strategy_flops",
+            "flops_fraction",
+        ),
     )
     csv_path = output_dir / "e2_version_drift.csv"
     _write_dicts(csv_path, summary)
@@ -184,6 +193,8 @@ def _analyze_e5(
                 "task_drop_vs_full_mean": _mean(records, "task_drop_vs_full"),
                 "logits_kl_mean": _mean(records, "logits_kl"),
                 "top1_agreement_mean": _mean(records, "top1_agreement"),
+                "attention_shift_mean": _mean(records, "attention_shift"),
+                "flops_fraction_mean": _mean(records, "flops_fraction"),
             }
         )
     csv_path = output_dir / "e5_safe_region.csv"
@@ -202,6 +213,8 @@ def _analyze_e5(
                 "task_drop_vs_full_mean",
                 "logits_kl_mean",
                 "top1_agreement_mean",
+                "attention_shift_mean",
+                "flops_fraction_mean",
             ),
         ),
         encoding="utf-8",
@@ -231,7 +244,16 @@ def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
     summary = _aggregate(
         e6_rows,
         keys=("model_name", "model_num_layers", "context_length", "cache_strategy"),
-        metrics=("task_score", "logits_kl", "end_to_end_latency", "throughput_tokens_per_s", "total_cache_bytes"),
+        metrics=(
+            "task_score",
+            "logits_kl",
+            "attention_shift",
+            "end_to_end_latency",
+            "throughput_tokens_per_s",
+            "total_cache_bytes",
+            "strategy_flops",
+            "flops_fraction",
+        ),
     )
     csv_path = output_dir / "e6_context_model_scaling.csv"
     _write_dicts(csv_path, summary)
@@ -247,9 +269,12 @@ def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
                 "cache_strategy",
                 "task_score_mean",
                 "logits_kl_mean",
+                "attention_shift_mean",
                 "end_to_end_latency_mean",
                 "throughput_tokens_per_s_mean",
                 "total_cache_bytes_mean",
+                "strategy_flops_mean",
+                "flops_fraction_mean",
             ),
         ),
         encoding="utf-8",
@@ -301,6 +326,8 @@ def _analyze_e7(
                 "first_unsafe_update_norm": _number(first, "update_norm_since_cache") if first else 0.0,
                 "first_unsafe_kl": _number(first, "logits_kl") if first else 0.0,
                 "first_unsafe_task_drop": _number(first, "task_drop_vs_full") if first else 0.0,
+                "first_unsafe_attention_shift": _number(first, "attention_shift") if first else 0.0,
+                "first_unsafe_flops_fraction": _number(first, "flops_fraction") if first else 0.0,
                 "false_safe_rate": sum(_bool(row, "false_safe") for row in points) / len(points),
             }
         )
@@ -320,6 +347,8 @@ def _analyze_e7(
                 "first_unsafe_update_norm",
                 "first_unsafe_kl",
                 "first_unsafe_task_drop",
+                "first_unsafe_attention_shift",
+                "first_unsafe_flops_fraction",
                 "false_safe_rate",
             ),
         ),
