@@ -135,6 +135,8 @@ class HuggingFaceBackend:
         self._capture_attention_metrics = False
         self._last_attention_summary: np.ndarray | None = None
         self._last_correction_flops = 0.0
+        self._last_low_rank_cache_bytes = 0
+        self._last_residual_cache_bytes = 0
 
     def _infer_num_layers(self) -> int:
         return self._infer_num_layers_from_config(self.model.config)
@@ -1031,12 +1033,7 @@ class HuggingFaceBackend:
         reset_peak_memory(self.torch, self.devices)
         synchronize(self.torch, self.devices)
         start = time.perf_counter()
-        (
-            corrected_past,
-            corrected_lora_cache,
-            low_rank_cache_bytes,
-            residual_cache_bytes,
-        ) = self._apply_lora_weight_delta_to_past(
+        corrected_past, corrected_lora_cache = self._apply_lora_weight_delta_to_past(
             baseline.extras["past_key_values"],
             baseline.extras.get("lora_cache", {}),
             split_layer=split_layer,
@@ -1057,10 +1054,10 @@ class HuggingFaceBackend:
         logical_cache_bytes = self._past_nbytes(corrected_past)
         if decision.strategy is StrategyName.LRAGENT_ADAPTER_CACHE:
             delta_mode = "lragent_shared_base_plus_low_rank_component"
-            logical_cache_bytes = low_rank_cache_bytes
+            logical_cache_bytes = self._last_low_rank_cache_bytes
         elif decision.strategy is StrategyName.FORKKV_BASE_DELTA:
             delta_mode = "forkkv_copy_on_write_residual"
-            logical_cache_bytes = residual_cache_bytes
+            logical_cache_bytes = self._last_residual_cache_bytes
         result = self._probe_with_past(
             baseline=baseline,
             past=corrected_past,
@@ -1164,9 +1161,11 @@ class HuggingFaceBackend:
         old_lora_cache: Any,
         *,
         split_layer: int,
-    ) -> tuple[Any | None, dict[str, Any], int, int]:
+    ) -> tuple[Any | None, dict[str, Any]]:
+        self._last_low_rank_cache_bytes = 0
+        self._last_residual_cache_bytes = 0
         if not isinstance(old_lora_cache, dict) or not old_lora_cache:
-            return None, {}, 0, 0
+            return None, {}
         module_by_name = {
             str(getattr(module, "lora_name", "")): module
             for module in self._lora_modules
@@ -1223,7 +1222,7 @@ class HuggingFaceBackend:
             new_lora_cache[str(name)] = state
             applied = True
         if not applied:
-            return None, {}, 0, 0
+            return None, {}
         for name, old_state in old_lora_cache.items():
             if str(name) not in new_lora_cache and isinstance(old_state, dict):
                 module = module_by_name.get(str(name))
@@ -1237,12 +1236,9 @@ class HuggingFaceBackend:
                     new_lora_cache[str(name)] = state
         corrected_layers = tuple(tuple(layer) for layer in corrected)
         self._last_correction_flops = correction_flops
-        return (
-            self._restore_past_type(past_key_values, corrected_layers),
-            new_lora_cache,
-            low_rank_cache_bytes,
-            residual_cache_bytes,
-        )
+        self._last_low_rank_cache_bytes = low_rank_cache_bytes
+        self._last_residual_cache_bytes = residual_cache_bytes
+        return self._restore_past_type(past_key_values, corrected_layers), new_lora_cache
 
     def _reshape_projection_delta(self, delta: Any, target_past: Any) -> Any | None:
         if not hasattr(delta, "reshape") or not hasattr(target_past, "shape"):
