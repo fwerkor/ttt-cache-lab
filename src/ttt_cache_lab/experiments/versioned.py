@@ -5,7 +5,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
+from ttt_cache_lab.cache.blocks import CacheBlockMetadata, VersionedCacheEntry, VersionedCacheManager
+from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState, CacheSemantics
 from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.synthetic import SyntheticTaskFactory, TaskSample
@@ -30,7 +31,9 @@ class _StrategyCache:
     output: BackendOutput
     cached_version: int
     refresh_count: int = 0
-    version_outputs: dict[int, BackendOutput] = field(default_factory=dict)
+    cached_update_norm: float = 0.0
+    blocks: tuple[CacheBlockMetadata, ...] = field(default_factory=tuple)
+    manager: VersionedCacheManager = field(default_factory=VersionedCacheManager)
 
 
 @dataclass(frozen=True)
@@ -77,14 +80,26 @@ class VersionedExperimentRunner:
                 backend.restore_after_update()
                 self._prepare_backend_for_target(backend, target)
                 cached_v0 = backend.prefill(sample.prompt)
-                strategy_caches = {
-                    str(strategy.name): _StrategyCache(
+                adapter_id = f"sample-{sample_id}:{target_name}"
+                initial_blocks = self._make_cache_blocks(
+                    output=cached_v0,
+                    adapter_id=adapter_id,
+                    adapter_version=0,
+                    cached_step=0,
+                    target_name=target_name,
+                    accumulated_update_norm=0.0,
+                    state=CacheBlockState.VALID_EXACT,
+                )
+                strategy_caches = {}
+                for strategy in strategies:
+                    manager = VersionedCacheManager()
+                    manager.put(adapter_id, 0, VersionedCacheEntry(cached_v0, initial_blocks))
+                    strategy_caches[str(strategy.name)] = _StrategyCache(
                         output=cached_v0,
                         cached_version=0,
-                        version_outputs={0: cached_v0},
+                        blocks=initial_blocks,
+                        manager=manager,
                     )
-                    for strategy in strategies
-                }
                 accumulated_update_norm = 0.0
                 current = cached_v0
 
@@ -97,6 +112,7 @@ class VersionedExperimentRunner:
                         sample_answer=sample,
                         target=target,
                         target_name=target_name,
+                        adapter_id=adapter_id,
                         strategies=strategies,
                         strategy_caches=strategy_caches,
                         current=current,
@@ -119,6 +135,7 @@ class VersionedExperimentRunner:
                         sample_answer=sample,
                         target=target,
                         target_name=target_name,
+                        adapter_id=adapter_id,
                         strategies=strategies,
                         strategy_caches=strategy_caches,
                         current=current,
@@ -185,6 +202,7 @@ class VersionedExperimentRunner:
         sample_answer: object,
         target: UpdateTarget,
         target_name: str,
+        adapter_id: str,
         strategies: Sequence[CacheStrategy],
         strategy_caches: dict[str, _StrategyCache],
         current: BackendOutput,
@@ -195,11 +213,13 @@ class VersionedExperimentRunner:
         for strategy in strategies:
             cache_key = str(strategy.name)
             cached = strategy_caches[cache_key]
-            version_gap = adapter_version - cached.cached_version
+            record_cached_version = cached.cached_version
+            version_gap = adapter_version - record_cached_version
+            update_norm_since_cache = max(0.0, accumulated_update_norm - cached.cached_update_norm)
             decision = strategy.decide(
                 target,
                 step=version_gap,
-                update_norm=accumulated_update_norm,
+                update_norm=update_norm_since_cache,
             )
             baseline_output = cached.output
             if strategy.name is StrategyName.NO_ADAPTATION:
@@ -210,9 +230,13 @@ class VersionedExperimentRunner:
                     None,
                     "No-adaptation baseline keeps the original model and v0 output fixed.",
                 )
-                baseline_output = cached.version_outputs[0]
+                base_entry = cached.manager.get(adapter_id, 0)
+                if base_entry is None:
+                    raise RuntimeError("No-adaptation baseline lost its v0 cache entry")
+                baseline_output = base_entry.output
             elif strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
-                existing = cached.version_outputs.get(adapter_version)
+                entry = cached.manager.get(adapter_id, adapter_version)
+                existing = entry.output if entry is not None else None
                 if existing is not None:
                     decision = StrategyDecision(
                         decision.strategy,
@@ -256,21 +280,49 @@ class VersionedExperimentRunner:
                     decision=decision,
                 )
             new_refresh_count = cached.refresh_count + (1 if is_refresh_action(decision) else 0)
+            block_state = (
+                CacheBlockState.VALID_EXACT
+                if decision.action
+                in {
+                    CacheAction.FULL_RECOMPUTE,
+                    CacheAction.REUSE_EXACT,
+                    CacheAction.PARTIAL_RECOMPUTE,
+                    CacheAction.REJECT_UPDATE,
+                }
+                else decision.state
+            )
+            new_blocks = self._make_cache_blocks(
+                output=approx,
+                adapter_id=adapter_id,
+                adapter_version=adapter_version,
+                cached_step=adapter_version,
+                target_name=target_name,
+                accumulated_update_norm=accumulated_update_norm,
+                state=block_state,
+                previous=cached.blocks,
+                first_invalid_layer=decision.first_invalid_layer,
+                action=decision.action,
+            )
             if strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
-                cached.version_outputs[adapter_version] = approx
+                cached.manager.put(adapter_id, adapter_version, VersionedCacheEntry(approx, new_blocks))
                 cached.output = approx
                 cached.cached_version = adapter_version
+                cached.cached_update_norm = accumulated_update_norm
+                cached.blocks = new_blocks
                 cached.refresh_count = new_refresh_count
             elif strategy.name is not StrategyName.NO_ADAPTATION and decision.action in {
                 CacheAction.FULL_RECOMPUTE,
                 CacheAction.REUSE_EXACT,
                 CacheAction.PARTIAL_RECOMPUTE,
                 CacheAction.DELTA_CORRECT,
+                CacheAction.REJECT_UPDATE,
             }:
                 cached.output = approx
                 cached.cached_version = adapter_version
+                cached.cached_update_norm = accumulated_update_norm
+                cached.blocks = new_blocks
                 cached.refresh_count = new_refresh_count
-                cached.version_outputs[adapter_version] = approx
+                cached.manager.put(adapter_id, adapter_version, VersionedCacheEntry(approx, new_blocks))
             top1 = top1_agreement(full.logits, approx.logits)
             records.append(
                 ExperimentRecord(
@@ -300,10 +352,11 @@ class VersionedExperimentRunner:
                     reason=decision.reason,
                     experiment_id=self.config.experiment_id,
                     adapter_version=adapter_version,
-                    cached_version=cached.cached_version,
+                    cached_version=record_cached_version,
                     version_gap=version_gap,
                     update_step=adapter_version,
                     accumulated_update_norm=accumulated_update_norm,
+                    update_norm_since_cache=update_norm_since_cache,
                     lora_rank=self.config.adapter.lora_rank,
                     update_mode=self.config.adapter.update_mode,
                     hidden_relative_error=(
@@ -316,11 +369,64 @@ class VersionedExperimentRunner:
                     recompute_fraction=estimate_recompute_fraction(decision, num_layers=backend.num_layers),
                     cache_hit=is_cache_hit(decision),
                     refresh_count=new_refresh_count,
-                    rejected_reuse=decision.reject_reuse,
+                    rejected_reuse=(decision.reject_reuse or decision.action is CacheAction.REJECT_UPDATE),
                     false_safe=is_false_safe(decision, full=full, approx=approx),
                     strategy_mode=output_strategy_mode(approx),
+                    cache_block_count=len(new_blocks),
                 )
             )
+
+    def _make_cache_blocks(
+        self,
+        *,
+        output: BackendOutput,
+        adapter_id: str,
+        adapter_version: int,
+        cached_step: int,
+        target_name: str,
+        accumulated_update_norm: float,
+        state: CacheBlockState,
+        previous: tuple[CacheBlockMetadata, ...] = (),
+        first_invalid_layer: int | None = None,
+        action: CacheAction = CacheAction.FULL_RECOMPUTE,
+    ) -> tuple[CacheBlockMetadata, ...]:
+        extras = output.extras or {}
+        token_length = int(extras.get("token_length", self.config.data.context_length))
+        model_id = self.config.model.model_name_or_path or "toy"
+        precision = self.config.model.torch_dtype
+        attention_impl = str(extras.get("attention_implementation", "transformers_default"))
+        semantics = {
+            CacheBlockState.VALID_EXACT: CacheSemantics.EXACT_CURRENT,
+            CacheBlockState.VALID_FROZEN: CacheSemantics.FROZEN_EVIDENCE,
+        }.get(state, CacheSemantics.BOUNDED_STALE)
+        blocks = []
+        for layer_id in range(len(output.cache_tensor)):
+            if (
+                previous
+                and first_invalid_layer is not None
+                and layer_id < first_invalid_layer
+                and action in {CacheAction.PARTIAL_RECOMPUTE, CacheAction.DELTA_CORRECT}
+            ):
+                blocks.append(previous[layer_id])
+                continue
+            blocks.append(
+                CacheBlockMetadata(
+                    token_start=0,
+                    token_end=token_length,
+                    layer_id=layer_id,
+                    base_model_id=model_id,
+                    adapter_id=adapter_id,
+                    adapter_version=adapter_version,
+                    cached_step=cached_step,
+                    update_target=target_name,
+                    accumulated_update_norm=accumulated_update_norm,
+                    state=state,
+                    semantics=semantics,
+                    precision=precision,
+                    attention_implementation=attention_impl,
+                )
+            )
+        return tuple(blocks)
 
     def _run_measured_oracle(
         self,
@@ -446,6 +552,8 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "refresh_count_mean",
         "false_safe_rate",
         "accumulated_update_norm_mean",
+        "update_norm_since_cache_mean",
+        "cache_block_count_mean",
     ]
     with output_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -470,6 +578,8 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "refresh_count_mean": _mean(records, "refresh_count"),
                     "false_safe_rate": _mean_bool(records, "false_safe"),
                     "accumulated_update_norm_mean": _mean(records, "accumulated_update_norm"),
+                    "update_norm_since_cache_mean": _mean(records, "update_norm_since_cache"),
+                    "cache_block_count_mean": _mean(records, "cache_block_count"),
                 }
             )
 

@@ -27,6 +27,7 @@ class ExperimentRecord:
     version_gap: int = 1
     update_step: int = 1
     accumulated_update_norm: float = 0.0
+    update_norm_since_cache: float = 0.0
     lora_rank: int = 0
     update_mode: str = "random"
     hidden_relative_error: float = 0.0
@@ -38,6 +39,7 @@ class ExperimentRecord:
     rejected_reuse: bool = False
     false_safe: bool = False
     strategy_mode: str = ""
+    cache_block_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -223,7 +223,7 @@ class HuggingFaceBackend:
         updated: BackendOutput,
         decision: StrategyDecision,
     ) -> BackendOutput:
-        if decision.action is CacheAction.FULL_RECOMPUTE:
+        if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
             return full
         if decision.action is CacheAction.REUSE_EXACT:
             return baseline
@@ -246,7 +246,7 @@ class HuggingFaceBackend:
         return 1.0 if decoded and decoded == sample.answer.strip() else 0.0
 
     def estimate_latency(self, decision: StrategyDecision, *, context_length: int) -> float:
-        if decision.action is CacheAction.FULL_RECOMPUTE:
+        if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
             return self._last_prefill_s or 1.0
         if decision.action in {CacheAction.REUSE_STALE, CacheAction.REUSE_FROZEN}:
             return self._last_stale_s or max(1e-6, (self._last_prefill_s or 1.0) / 10.0)

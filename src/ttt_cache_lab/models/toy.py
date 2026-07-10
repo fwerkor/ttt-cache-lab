@@ -72,7 +72,7 @@ class ToyBackend:
         updated: BackendOutput,
         decision: StrategyDecision,
     ) -> BackendOutput:
-        if decision.action is CacheAction.FULL_RECOMPUTE:
+        if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
             return full
         if decision.action is CacheAction.REUSE_EXACT:
             return baseline
@@ -120,7 +120,7 @@ class ToyBackend:
 
     def estimate_latency(self, decision: StrategyDecision, *, context_length: int) -> float:
         base = max(1.0, context_length / 1024.0)
-        if decision.action is CacheAction.FULL_RECOMPUTE:
+        if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
             return 10.0 * base
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             first = decision.first_invalid_layer or 0

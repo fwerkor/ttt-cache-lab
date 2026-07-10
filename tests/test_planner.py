@@ -35,7 +35,7 @@ def test_large_gap_lora_k_update_uses_partial_recompute() -> None:
 
 def test_norm_update_full_recompute() -> None:
     decision = CachePlanner().plan(parse_update_target("norm:1"), update_norm=0.01)
-    assert decision.action is CacheAction.FULL_RECOMPUTE
+    assert decision.action is CacheAction.REJECT_UPDATE
     assert decision.reject_reuse
 
 

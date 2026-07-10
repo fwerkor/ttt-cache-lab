@@ -21,7 +21,7 @@ def output_memory_allocated(output: BackendOutput) -> int:
 
 
 def estimate_recompute_fraction(decision: StrategyDecision, *, num_layers: int) -> float:
-    if decision.action is CacheAction.FULL_RECOMPUTE:
+    if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
         return 1.0
     if decision.action is CacheAction.PARTIAL_RECOMPUTE:
         if decision.first_invalid_layer is None:
@@ -43,7 +43,11 @@ def is_cache_hit(decision: StrategyDecision) -> bool:
 
 
 def is_refresh_action(decision: StrategyDecision) -> bool:
-    return decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.PARTIAL_RECOMPUTE}
+    return decision.action in {
+        CacheAction.FULL_RECOMPUTE,
+        CacheAction.PARTIAL_RECOMPUTE,
+        CacheAction.REJECT_UPDATE,
+    }
 
 
 def is_false_safe(decision: StrategyDecision, *, full: BackendOutput, approx: BackendOutput) -> bool:

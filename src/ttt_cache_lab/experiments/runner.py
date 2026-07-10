@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 
+from ttt_cache_lab.cache.semantics import CacheAction
 from ttt_cache_lab.cache.strategies import build_strategy
 from ttt_cache_lab.configs import ExperimentConfig
 from ttt_cache_lab.data.synthetic import SyntheticTaskFactory
@@ -104,7 +105,7 @@ class ExperimentRunner:
                             ),
                             cache_hit=is_cache_hit(decision),
                             refresh_count=1 if is_refresh_action(decision) else 0,
-                            rejected_reuse=decision.reject_reuse,
+                            rejected_reuse=(decision.reject_reuse or decision.action is CacheAction.REJECT_UPDATE),
                             false_safe=is_false_safe(decision, full=full, approx=approx),
                             strategy_mode=output_strategy_mode(approx),
                         )

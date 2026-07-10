@@ -123,8 +123,8 @@ class CachePlanner:
         if target.kind is ModuleKind.NORM:
             return PlannerDecision(
                 CacheBlockState.INVALID,
-                CacheAction.FULL_RECOMPUTE,
-                "Norm updates are treated as high-risk because they affect downstream activations broadly.",
+                CacheAction.REJECT_UPDATE if self.policy.reject_high_risk_reuse else CacheAction.FULL_RECOMPUTE,
+                "Norm updates reject cache reuse because they affect downstream activations broadly.",
                 first_invalid_layer=target.layer,
                 recompute_fraction=1.0,
                 reject_reuse=self.policy.reject_high_risk_reuse,
@@ -132,8 +132,8 @@ class CachePlanner:
 
         return PlannerDecision(
             CacheBlockState.INVALID,
-            CacheAction.FULL_RECOMPUTE,
-            "Unknown update target; conservative full recompute.",
+            CacheAction.REJECT_UPDATE if self.policy.reject_high_risk_reuse else CacheAction.FULL_RECOMPUTE,
+            "Unknown update target rejects cache reuse and falls back to a full refresh.",
             recompute_fraction=1.0,
             reject_reuse=self.policy.reject_high_risk_reuse,
         )
