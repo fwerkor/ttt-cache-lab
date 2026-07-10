@@ -42,3 +42,25 @@ def test_extended_long_context_tasks_are_deterministic() -> None:
         second = SyntheticTaskFactory(19).build(task, num_samples=2, context_length=2048, answer_length=4)
         assert first == second
         assert all(sample.answer for sample in first)
+
+
+def test_synthetic_prompts_reserve_tokenizer_headroom() -> None:
+    tasks = (
+        "passkey",
+        "key_value",
+        "multi_needle",
+        "needle_absent",
+        "multi_hop_tracing",
+        "aggregation",
+        "common_words",
+        "variable_tracking",
+    )
+    context_length = 4096
+    for task in tasks:
+        sample = SyntheticTaskFactory(2027).build(
+            task,
+            num_samples=1,
+            context_length=context_length,
+            answer_length=4,
+        )[0]
+        assert len(sample.prompt.split()) <= int(context_length * 0.45)

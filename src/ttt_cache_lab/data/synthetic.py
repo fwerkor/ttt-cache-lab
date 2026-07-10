@@ -29,7 +29,7 @@ class SyntheticTaskFactory:
     def key_value(self, *, context_length: int, answer_length: int) -> TaskSample:
         key = f"key_{self.rng.randrange(10_000)}"
         value = "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length))
-        pairs = [f"key_{i}: value_{self.rng.randrange(10_000)}" for i in range(max(1, context_length // 10))]
+        pairs = [f"key_{i}: value_{self.rng.randrange(10_000)}" for i in range(max(1, context_length // 16))]
         insert_at = self.rng.randrange(len(pairs))
         pairs.insert(insert_at, f"{key}: {value}")
         prompt = "\n".join(pairs) + f"\nQuestion: What is the value for {key}?\nAnswer:"
@@ -86,7 +86,7 @@ class SyntheticTaskFactory:
         requested = f"needle_{self.rng.randrange(100_000, 200_000)}"
         records = [
             f"Record needle_{self.rng.randrange(100_000)} has code {self.rng.randrange(10_000):04d}."
-            for _ in range(max(4, context_length // 10))
+            for _ in range(max(4, context_length // 20))
         ]
         prompt = " ".join(records) + (
             f"\nQuestion: What code is stored in {requested}? "
@@ -106,7 +106,7 @@ class SyntheticTaskFactory:
         facts.append(f"{entities[-1]} stores value {answer}.")
         distractors = [
             f"entity_{self.rng.randrange(1_000_000)} points to entity_{self.rng.randrange(1_000_000)}."
-            for _ in range(max(hop_count, context_length // 12))
+            for _ in range(max(hop_count, context_length // 24))
         ]
         combined = distractors + facts
         self.rng.shuffle(combined)
