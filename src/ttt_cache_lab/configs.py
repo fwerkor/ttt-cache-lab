@@ -77,6 +77,8 @@ class ExperimentConfig(BaseModel):
     name: str
     seed: int = 0
     output_dir: Path = Path("runs/default")
+    resume: bool = False
+    checkpoint_each_target: bool = True
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     updates: UpdateConfig = Field(default_factory=UpdateConfig)
@@ -156,6 +158,8 @@ class VersionedExperimentConfig(BaseModel):
     name: str
     seed: int = 0
     output_dir: Path = Path("runs/versioned")
+    resume: bool = False
+    checkpoint_each_target: bool = True
     experiment_id: str = "versioned"
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)

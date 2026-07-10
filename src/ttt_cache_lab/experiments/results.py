@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -75,9 +77,33 @@ class ExperimentRecord:
     failure_map_path: str = ""
     failure_map_sha256: str = ""
     cache_manager_scope: str = ""
+    seed: int = 0
+    task_name: str = ""
+    backend_name: str = ""
+    torch_dtype: str = ""
+    attention_implementation: str = ""
+    git_commit: str = ""
+    run_config_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def identity(self) -> tuple[Any, ...]:
+        return (
+            self.experiment_id,
+            self.sample_id,
+            self.update_target,
+            self.cache_strategy,
+            self.adapter_id,
+            self.adapter_version,
+            self.cached_version,
+            self.update_step,
+            self.lora_rank,
+            self.configured_update_norm,
+            self.context_length,
+            self.model_name,
+            self.seed,
+        )
 
 
 @dataclass(frozen=True)
@@ -85,22 +111,96 @@ class ExperimentArtifacts:
     jsonl_path: Path
     csv_path: Path
     records: list[ExperimentRecord]
+    metadata_path: Path | None = None
 
 
-def write_records(records: list[ExperimentRecord], output_dir: Path) -> ExperimentArtifacts:
+def write_records(
+    records: list[ExperimentRecord],
+    output_dir: Path,
+    *,
+    merge_existing: bool = False,
+    metadata_path: Path | None = None,
+) -> ExperimentArtifacts:
     output_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = output_dir / "records.jsonl"
     csv_path = output_dir / "summary.csv"
 
-    with jsonl_path.open("w", encoding="utf-8") as handle:
+    merged: dict[tuple[Any, ...], ExperimentRecord] = {}
+    if merge_existing and jsonl_path.exists():
+        for record in read_records(jsonl_path):
+            merged[record.identity()] = record
+    for record in records:
+        merged[record.identity()] = record
+    final_records = list(merged.values())
+
+    _atomic_write_jsonl(jsonl_path, final_records)
+    _atomic_write_csv(csv_path, final_records)
+    return ExperimentArtifacts(
+        jsonl_path=jsonl_path,
+        csv_path=csv_path,
+        records=final_records,
+        metadata_path=metadata_path,
+    )
+
+
+def read_records(path: Path) -> list[ExperimentRecord]:
+    records: list[ExperimentRecord] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            payload = json.loads(stripped)
+            if not isinstance(payload, dict):
+                raise ValueError(f"Record {line_number} in {path} is not a JSON object")
+            records.append(ExperimentRecord(**payload))
+    return records
+
+
+def _atomic_write_jsonl(path: Path, records: list[ExperimentRecord]) -> None:
+    with _temporary_text_file(path) as (handle, temporary):
         for record in records:
             handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
 
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+
+def _atomic_write_csv(path: Path, records: list[ExperimentRecord]) -> None:
+    with _temporary_text_file(path, newline="") as (handle, temporary):
         fieldnames = list(records[0].to_dict().keys()) if records else []
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for record in records:
             writer.writerow(record.to_dict())
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
 
-    return ExperimentArtifacts(jsonl_path=jsonl_path, csv_path=csv_path, records=records)
+
+class _temporary_text_file:
+    def __init__(self, destination: Path, *, newline: str | None = None) -> None:
+        self.destination = destination
+        self.newline = newline
+        self.handle: Any | None = None
+        self.path: Path | None = None
+
+    def __enter__(self) -> tuple[Any, Path]:
+        handle = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline=self.newline,
+            dir=self.destination.parent,
+            prefix=f".{self.destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        self.handle = handle
+        self.path = Path(handle.name)
+        return handle, self.path
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if self.handle is not None:
+            self.handle.close()
+        if exc_type is not None and self.path is not None:
+            self.path.unlink(missing_ok=True)

@@ -21,6 +21,7 @@ def test_versioned_runner_writes_version_fields(tmp_path: Path) -> None:
     )
     artifacts = VersionedExperimentRunner(config).run()
     assert artifacts.csv_path.exists()
+    assert artifacts.metadata_path is not None and artifacts.metadata_path.exists()
     assert len(artifacts.records) == 9
     assert {record.adapter_version for record in artifacts.records} == {0, 1, 2}
     assert all(record.experiment_id == "unit_e2" for record in artifacts.records)
@@ -32,9 +33,35 @@ def test_versioned_runner_writes_version_fields(tmp_path: Path) -> None:
     assert all(record.update_scale > 0.0 for record in updated_records)
     assert all(record.physical_cache_bytes >= record.cache_bytes for record in artifacts.records)
     assert all(record.full_task_score >= 0.0 for record in artifacts.records)
+    assert {record.seed for record in artifacts.records} == {1}
+    assert {record.task_name for record in artifacts.records} == {"passkey"}
+    assert {record.backend_name for record in artifacts.records} == {"toy"}
+    assert all(len(record.run_config_sha256) == 64 for record in artifacts.records)
     output = tmp_path / "version_summary.csv"
     write_version_summary(artifacts.csv_path, output)
     assert output.exists()
+
+
+def test_versioned_runner_resume_does_not_duplicate_records(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-resume",
+            "experiment_id": "unit_resume",
+            "seed": 1,
+            "output_dir": tmp_path,
+            "resume": True,
+            "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"], "step_count": 1, "update_norm": 0.01},
+            "cache": {"strategies": ["full_recompute", "stale_reuse"]},
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [0, 1],
+        }
+    )
+    first = VersionedExperimentRunner(config).run()
+    second = VersionedExperimentRunner(config).run()
+    assert len(first.records) == 4
+    assert len(second.records) == 4
 
 
 def test_versioned_runner_preserves_random_update_drift(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ import csv
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ttt_cache_lab.cache.blocks import CacheBlockMetadata, VersionedCacheEntry, VersionedCacheManager
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState, CacheSemantics
@@ -35,6 +36,11 @@ from ttt_cache_lab.experiments.metrics import (
 from ttt_cache_lab.experiments.planner_runtime import build_planner_runtime
 from ttt_cache_lab.experiments.provenance import planner_provenance
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
+from ttt_cache_lab.experiments.run_metadata import (
+    collect_run_metadata,
+    record_run_fields,
+    write_run_metadata,
+)
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
@@ -64,11 +70,15 @@ class VersionedExperimentRunner:
 
     def __init__(self, config: VersionedExperimentConfig) -> None:
         self.config = config
+        self._run_metadata: dict[str, Any] = {}
 
     def run(self) -> ExperimentArtifacts:
         data = build_task_samples(self.config.data, seed=self.config.seed)
         backend = build_backend(self.config.model, seed=self.config.seed)
         backend.configure_metrics(capture_attention=self.config.metrics.compute_attention_metrics)
+        run_metadata = collect_run_metadata(self.config)
+        self._run_metadata = run_metadata
+        metadata_path = write_run_metadata(self.config.output_dir, run_metadata)
         strategies = [
             build_strategy(
                 name,
@@ -245,8 +255,20 @@ class VersionedExperimentRunner:
                         accumulated_adaptation_latency=accumulated_adaptation_latency,
                     )
                 backend.restore_after_update()
+                if self.config.checkpoint_each_target:
+                    write_records(
+                        records,
+                        self.config.output_dir,
+                        merge_existing=self.config.resume,
+                        metadata_path=metadata_path,
+                    )
 
-        return write_records(records, self.config.output_dir)
+        return write_records(
+            records,
+            self.config.output_dir,
+            merge_existing=self.config.resume,
+            metadata_path=metadata_path,
+        )
 
     def _prepare_backend_for_target(self, backend: ModelBackend, target: UpdateTarget) -> None:
         if self.config.adapter.update_mode != "lora_train" or not target.is_lora:
@@ -604,6 +626,7 @@ class VersionedExperimentRunner:
                     failure_map_path=failure_map_path,
                     failure_map_sha256=failure_map_sha256,
                     cache_manager_scope=self.config.cache.manager_scope,
+                    **record_run_fields(self.config, approx, self._run_metadata),
                 )
             )
 

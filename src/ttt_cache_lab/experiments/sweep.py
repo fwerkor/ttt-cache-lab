@@ -35,7 +35,7 @@ def run_sweep(config: SweepConfig) -> SweepArtifacts:
     fieldnames: list[str] | None = None
 
     for experiment in config.expand():
-        if experiment.output_dir.exists():
+        if experiment.output_dir.exists() and not experiment.resume:
             shutil.rmtree(experiment.output_dir)
         artifacts = ExperimentRunner(experiment).run()
         run_dirs.append(experiment.output_dir)
@@ -78,7 +78,7 @@ def run_versioned_sweep(config: VersionedSweepConfig) -> SweepArtifacts:
     fieldnames: list[str] | None = None
 
     for experiment in config.expand():
-        if experiment.output_dir.exists():
+        if experiment.output_dir.exists() and not experiment.resume:
             shutil.rmtree(experiment.output_dir)
         artifacts = VersionedExperimentRunner(experiment).run()
         run_dirs.append(experiment.output_dir)
