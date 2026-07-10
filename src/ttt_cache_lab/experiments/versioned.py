@@ -485,6 +485,15 @@ class VersionedExperimentRunner:
                     cache_entry_count=cached.manager.entry_count(),
                     total_cache_bytes=cached.manager.total_cache_bytes(),
                     evicted_cache_entries=cached.manager.eviction_count(),
+                    context_length=self.config.data.context_length,
+                    model_name=(
+                        self.config.model.model_name_or_path
+                        or self.config.model.modelscope_model_id
+                        or "toy"
+                    ),
+                    model_num_layers=backend.num_layers,
+                    model_hidden_size=self.config.model.hidden_size,
+                    configured_update_norm=self.config.updates.update_norm,
                 )
             )
 

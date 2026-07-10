@@ -303,6 +303,15 @@ class StaticAdapterExperimentRunner:
                                 cache_entry_count=manager.entry_count(),
                                 total_cache_bytes=manager.total_cache_bytes(),
                                 evicted_cache_entries=manager.eviction_count(),
+                                context_length=self.config.data.context_length,
+                                model_name=(
+                                    self.config.model.model_name_or_path
+                                    or self.config.model.modelscope_model_id
+                                    or "toy"
+                                ),
+                                model_num_layers=backend.num_layers,
+                                model_hidden_size=self.config.model.hidden_size,
+                                configured_update_norm=self.config.updates.update_norm,
                             )
                         )
                 backend.restore_after_update()

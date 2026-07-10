@@ -6,6 +6,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import cast
 
+from ttt_cache_lab.experiments.study_analysis import generate_study_analysis
+
 NUMERIC_FIELDS = [
     "task_score",
     "logits_kl",
@@ -31,6 +33,7 @@ def generate_report(input_csv: Path, output_dir: Path) -> Path:
             metric=metric,
             output=output_dir / f"{metric}_by_version.svg",
         )
+    generate_study_analysis(input_csv, output_dir)
     return report_path
 
 

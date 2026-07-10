@@ -1,0 +1,128 @@
+from pathlib import Path
+
+from ttt_cache_lab.experiments.results import ExperimentRecord, write_records
+from ttt_cache_lab.experiments.study_analysis import generate_study_analysis
+
+
+def _record(
+    *,
+    experiment_id: str,
+    strategy: str,
+    version: int,
+    gap: int,
+    task_score: float,
+    logits_kl: float,
+    top1: float,
+    rank: int = 4,
+    norm: float = 0.01,
+    context: int = 128,
+    model: str = "toy",
+) -> ExperimentRecord:
+    return ExperimentRecord(
+        sample_id=0,
+        update_target="lora.k:1",
+        cache_strategy=strategy,
+        action="full_recompute" if strategy == "full_recompute" else "reuse_stale",
+        cache_state="invalid" if strategy == "full_recompute" else "valid_approx",
+        first_invalid_layer=None,
+        task_score=task_score,
+        logits_kl=logits_kl,
+        top1_agreement=top1,
+        relative_error=logits_kl,
+        latency_units=10.0 if strategy == "full_recompute" else 1.0,
+        reason="test",
+        experiment_id=experiment_id,
+        adapter_id="a",
+        adapter_version=version,
+        cached_version=max(0, version - gap),
+        version_gap=gap,
+        update_step=version,
+        accumulated_update_norm=norm * version,
+        update_norm_since_cache=norm * max(1, gap),
+        lora_rank=rank,
+        hidden_relative_error=logits_kl,
+        cache_bytes=100,
+        end_to_end_latency=10.0 if strategy == "full_recompute" else 1.0,
+        throughput_tokens_per_s=1.0,
+        cache_hit=strategy != "full_recompute",
+        false_safe=logits_kl > 0.05 or top1 < 0.99,
+        cache_entry_count=version + 1,
+        total_cache_bytes=100 * (version + 1),
+        context_length=context,
+        model_name=model,
+        model_num_layers=4,
+        model_hidden_size=32,
+        configured_update_norm=norm,
+    )
+
+
+def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
+    records = []
+    for experiment in ("e1_static", "e2_drift", "e5_delta", "e6_scaling", "e7_ablation"):
+        records.extend(
+            [
+                _record(
+                    experiment_id=experiment,
+                    strategy="full_recompute",
+                    version=1,
+                    gap=1,
+                    task_score=1.0,
+                    logits_kl=0.0,
+                    top1=1.0,
+                ),
+                _record(
+                    experiment_id=experiment,
+                    strategy="stale_reuse",
+                    version=1,
+                    gap=1,
+                    task_score=0.8,
+                    logits_kl=0.2,
+                    top1=0.0,
+                ),
+            ]
+        )
+    records.extend(
+        [
+            _record(
+                experiment_id="e5_delta",
+                strategy="delta_correction",
+                version=2,
+                gap=2,
+                task_score=1.0,
+                logits_kl=0.01,
+                top1=1.0,
+                rank=8,
+                norm=0.02,
+            ),
+            _record(
+                experiment_id="e6_scaling",
+                strategy="full_recompute",
+                version=2,
+                gap=2,
+                task_score=1.0,
+                logits_kl=0.0,
+                top1=1.0,
+                context=256,
+                model="toy-large",
+            ),
+        ]
+    )
+    source = write_records(records, tmp_path / "run").csv_path
+    output = tmp_path / "analysis"
+    artifacts = generate_study_analysis(source, output)
+    assert artifacts
+    expected = {
+        "e1_cache_cost.csv",
+        "e1_memory_latency.svg",
+        "e2_version_drift.csv",
+        "e2_first_boundary.csv",
+        "e2_task_drop_by_gap.svg",
+        "e5_safe_region.csv",
+        "e5_safe_region_heatmap.svg",
+        "e6_context_model_scaling.csv",
+        "e6_latency_by_context.svg",
+        "e7_failure_boundary.csv",
+        "e7_false_safe_rate.svg",
+    }
+    assert expected <= {path.name for path in artifacts}
+    assert all((output / name).exists() for name in expected)

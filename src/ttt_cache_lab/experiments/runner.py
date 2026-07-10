@@ -173,6 +173,16 @@ class ExperimentRunner:
                             strategy_mode=output_strategy_mode(approx),
                             cache_block_count=backend.num_layers,
                             cache_entry_count=1,
+                            total_cache_bytes=output_cache_bytes(approx),
+                            context_length=self.config.data.context_length,
+                            model_name=(
+                                self.config.model.model_name_or_path
+                                or self.config.model.modelscope_model_id
+                                or "toy"
+                            ),
+                            model_num_layers=backend.num_layers,
+                            model_hidden_size=self.config.model.hidden_size,
+                            configured_update_norm=self.config.updates.update_norm,
                         )
                     )
                 backend.restore_after_update()

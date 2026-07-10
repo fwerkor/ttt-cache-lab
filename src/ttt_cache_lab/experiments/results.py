@@ -50,6 +50,11 @@ class ExperimentRecord:
     cache_entry_count: int = 0
     total_cache_bytes: int = 0
     evicted_cache_entries: int = 0
+    context_length: int = 0
+    model_name: str = ""
+    model_num_layers: int = 0
+    model_hidden_size: int = 0
+    configured_update_norm: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

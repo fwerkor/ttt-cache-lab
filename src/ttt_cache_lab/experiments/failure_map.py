@@ -57,8 +57,15 @@ def generate_failure_map(
     _write_cells(cells, csv_path)
     policy_path = output_dir / "policy_table.md"
     policy_path.write_text(_policy_table(cells, thresholds=thresholds), encoding="utf-8")
-    heatmap_path = output_dir / "logits_kl_heatmap.svg"
-    heatmap_path.write_text(_heatmap_svg(cells, metric="logits_kl_mean"), encoding="utf-8")
+    heatmaps = {
+        "logits_kl_mean": "logits_kl_heatmap.svg",
+        "task_drop_vs_full": "task_drop_heatmap.svg",
+        "top1_agreement_mean": "top1_agreement_heatmap.svg",
+        "false_safe_rate": "false_safe_heatmap.svg",
+    }
+    for metric, filename in heatmaps.items():
+        heatmap_path = output_dir / filename
+        heatmap_path.write_text(_heatmap_svg(cells, metric=metric), encoding="utf-8")
     return policy_path
 
 
