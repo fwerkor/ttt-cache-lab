@@ -26,6 +26,12 @@ def test_versioned_runner_writes_version_fields(tmp_path: Path) -> None:
     assert all(record.experiment_id == "unit_e2" for record in artifacts.records)
     assert all(record.attention_shift is None for record in artifacts.records)
     assert not any(record.attention_metric_available for record in artifacts.records)
+    updated_records = [record for record in artifacts.records if record.adapter_version > 0]
+    assert all(record.accumulated_raw_update_norm > 0.0 for record in updated_records)
+    assert all(record.accumulated_update_norm > 0.0 for record in updated_records)
+    assert all(record.update_scale > 0.0 for record in updated_records)
+    assert all(record.physical_cache_bytes >= record.cache_bytes for record in artifacts.records)
+    assert all(record.full_task_score >= 0.0 for record in artifacts.records)
     output = tmp_path / "version_summary.csv"
     write_version_summary(artifacts.csv_path, output)
     assert output.exists()

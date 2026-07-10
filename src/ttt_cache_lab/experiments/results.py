@@ -28,11 +28,16 @@ class ExperimentRecord:
     version_gap: int = 1
     update_step: int = 1
     accumulated_update_norm: float = 0.0
+    accumulated_raw_update_norm: float = 0.0
     update_norm_since_cache: float = 0.0
+    raw_update_norm_since_cache: float = 0.0
+    update_scale: float = 0.0
     lora_rank: int = 0
     update_mode: str = "random"
+    norm_control: str = ""
     hidden_relative_error: float = 0.0
     cache_bytes: int = 0
+    physical_cache_bytes: int = 0
     memory_allocated: int = 0
     peak_memory_allocated: int = 0
     adaptation_latency: float = 0.0
@@ -46,6 +51,8 @@ class ExperimentRecord:
     rejected_reuse: bool = False
     false_safe: bool = False
     strategy_mode: str = ""
+    strategy_available: bool = True
+    strategy_fallback: str = ""
     baseline_fidelity: str = ""
     cache_block_count: int = 0
     cache_entry_count: int = 0
@@ -56,6 +63,9 @@ class ExperimentRecord:
     model_num_layers: int = 0
     model_hidden_size: int = 0
     configured_update_norm: float = 0.0
+    baseline_task_score: float = 0.0
+    full_task_score: float = 0.0
+    adaptation_gain_vs_base: float = 0.0
     attention_shift: float | None = None
     attention_metric_available: bool = False
     strategy_flops: float = 0.0

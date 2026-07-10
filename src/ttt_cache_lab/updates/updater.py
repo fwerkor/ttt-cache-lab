@@ -12,6 +12,8 @@ from ttt_cache_lab.updates.targets import UpdateTarget
 class UpdateResult:
     output: BackendOutput
     update_norm: float
+    raw_update_norm: float
+    update_scale: float
     step_count: int
     adaptation_latency: float
 
@@ -43,12 +45,18 @@ class RandomPerturbationUpdater:
             raise ValueError("step_count must be at least 1")
         current = baseline
         total_latency = 0.0
+        total_raw_norm = 0.0
+        total_applied_norm = 0.0
         for _ in range(step_count):
             current = self.backend.simulate_update(current, target, update_norm=update_norm)
             total_latency += float(self.backend.last_adaptation_latency())
+            total_raw_norm += float(self.backend.last_raw_update_norm())
+            total_applied_norm += float(self.backend.last_applied_update_norm())
         return UpdateResult(
             output=current,
-            update_norm=update_norm * step_count,
+            update_norm=total_applied_norm,
+            raw_update_norm=total_raw_norm,
+            update_scale=(total_applied_norm / total_raw_norm if total_raw_norm > 0.0 else 0.0),
             step_count=step_count,
             adaptation_latency=total_latency,
         )
@@ -64,6 +72,7 @@ class SupervisedLoraUpdater:
         alpha: float,
         learning_rate: float,
         freeze_base_model: bool,
+        norm_control: str,
     ) -> None:
         self.backend = backend
         self.sample = sample
@@ -71,6 +80,7 @@ class SupervisedLoraUpdater:
         self.alpha = alpha
         self.learning_rate = learning_rate
         self.freeze_base_model = freeze_base_model
+        self.norm_control = norm_control
 
     def update(
         self,
@@ -86,6 +96,7 @@ class SupervisedLoraUpdater:
         if not callable(train):
             raise RuntimeError("The selected backend does not implement supervised LoRA updates")
         total_norm = 0.0
+        total_raw_norm = 0.0
         total_latency = 0.0
         for _ in range(step_count):
             total_norm += float(
@@ -96,9 +107,12 @@ class SupervisedLoraUpdater:
                     alpha=self.alpha,
                     learning_rate=self.learning_rate,
                     freeze_base_model=self.freeze_base_model,
-                    target_update_norm=update_norm,
+                    target_update_norm=(
+                        update_norm if self.norm_control == "target_l2" else None
+                    ),
                 )
             )
+            total_raw_norm += float(self.backend.last_raw_update_norm())
             total_latency += float(self.backend.last_adaptation_latency())
         next_version = int(getattr(self.backend, "parameter_version", baseline.parameter_version + step_count))
         return UpdateResult(
@@ -110,6 +124,8 @@ class SupervisedLoraUpdater:
                 extras=baseline.extras,
             ),
             update_norm=total_norm,
+            raw_update_norm=total_raw_norm,
+            update_scale=(total_norm / total_raw_norm if total_raw_norm > 0.0 else 0.0),
             step_count=step_count,
             adaptation_latency=total_latency,
         )
@@ -125,6 +141,7 @@ def build_updater(
     alpha: float = 16.0,
     learning_rate: float = 1e-3,
     freeze_base_model: bool = True,
+    norm_control: str = "target_l2",
 ) -> TTTUpdater:
     if mode == "lora_train" and target is not None and target.is_lora:
         if sample is None:
@@ -136,6 +153,7 @@ def build_updater(
             alpha=alpha,
             learning_rate=learning_rate,
             freeze_base_model=freeze_base_model,
+            norm_control=norm_control,
         )
     if mode in {"random", "lora_train"}:
         return RandomPerturbationUpdater(backend)

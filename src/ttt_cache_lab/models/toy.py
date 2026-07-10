@@ -27,6 +27,8 @@ class ToyBackend:
         self.seed = seed
         self._capture_attention_metrics = False
         self._sample_answers: dict[str, str] = {}
+        self._last_raw_update_norm = 0.0
+        self._last_applied_update_norm = 0.0
 
     def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample:
         del context_length
@@ -55,6 +57,8 @@ class ToyBackend:
         )
 
     def simulate_update(self, baseline: BackendOutput, target: UpdateTarget, *, update_norm: float) -> BackendOutput:
+        self._last_raw_update_norm = update_norm
+        self._last_applied_update_norm = update_norm
         drift = self._target_drift(target, update_norm)
         return BackendOutput(
             logits=baseline.logits + drift["logits"],
@@ -207,8 +211,15 @@ class ToyBackend:
     def last_adaptation_latency(self) -> float:
         return 0.0
 
+    def last_raw_update_norm(self) -> float:
+        return self._last_raw_update_norm
+
+    def last_applied_update_norm(self) -> float:
+        return self._last_applied_update_norm
+
     def restore_after_update(self) -> None:
-        return None
+        self._last_raw_update_norm = 0.0
+        self._last_applied_update_norm = 0.0
 
     def train_lora_step(
         self,
@@ -224,7 +235,10 @@ class ToyBackend:
         del sample, rank, alpha, freeze_base_model
         # Toy mode has no persistent parameters. Return a deterministic update-norm proxy.
         measured = learning_rate * self._target_multiplier(target)
-        return measured if target_update_norm is None else target_update_norm
+        applied = measured if target_update_norm is None else target_update_norm
+        self._last_raw_update_norm = measured
+        self._last_applied_update_norm = applied
+        return applied
 
     def _target_multiplier(self, target: UpdateTarget) -> float:
         return {

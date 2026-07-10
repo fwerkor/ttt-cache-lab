@@ -23,6 +23,9 @@ from ttt_cache_lab.experiments.metrics import (
     output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
+    output_physical_cache_bytes,
+    output_strategy_available,
+    output_strategy_fallback,
     output_strategy_flops,
     output_strategy_latency,
     output_strategy_mode,
@@ -42,6 +45,7 @@ class _StaticAdapter:
     adapter_id: int
     current: BackendOutput
     update_norm: float
+    raw_update_norm: float
     state: Any | None = None
 
 
@@ -124,6 +128,11 @@ class StaticAdapterExperimentRunner:
                 backend.restore_after_update()
                 self._prepare_backend(backend, target)
                 baseline = backend.prefill(sample.prompt)
+                baseline_task_score = (
+                    backend.score_answer(sample, baseline)
+                    if self.config.metrics.compute_task_metrics
+                    else 0.0
+                )
                 adapters = self._build_static_adapters(backend, sample, target, baseline)
                 cache_namespace = f"sample-{sample_id}:{target_name}"
                 for strategy in strategies:
@@ -141,6 +150,11 @@ class StaticAdapterExperimentRunner:
                     adapter = adapters[adapter_number]
                     self._activate_adapter(backend, adapter)
                     full = backend.full_recompute(sample.prompt, adapter.current)
+                    full_task_score = (
+                        backend.score_answer(sample, full)
+                        if self.config.metrics.compute_task_metrics
+                        else 0.0
+                    )
                     for strategy in strategies:
                         key = str(strategy.name)
                         manager = strategy_managers[key]
@@ -270,11 +284,6 @@ class StaticAdapterExperimentRunner:
                             if self.config.metrics.compute_task_metrics
                             else 0.0
                         )
-                        full_task_score = (
-                            backend.score_answer(sample, full)
-                            if self.config.metrics.compute_task_metrics
-                            else 0.0
-                        )
                         logits_kl_value = (
                             kl_divergence(full.logits, approx.logits)
                             if self.config.metrics.compute_tensor_metrics
@@ -336,15 +345,26 @@ class StaticAdapterExperimentRunner:
                                 version_gap=version_gap,
                                 update_step=sequence_step,
                                 accumulated_update_norm=adapter.update_norm,
+                                accumulated_raw_update_norm=adapter.raw_update_norm,
                                 update_norm_since_cache=adapter.update_norm if version_gap else 0.0,
+                                raw_update_norm_since_cache=(
+                                    adapter.raw_update_norm if version_gap else 0.0
+                                ),
+                                update_scale=(
+                                    adapter.update_norm / adapter.raw_update_norm
+                                    if adapter.raw_update_norm > 0.0
+                                    else 0.0
+                                ),
                                 lora_rank=self.config.adapter.lora_rank,
                                 update_mode=self.config.adapter.update_mode,
+                                norm_control=self.config.adapter.norm_control,
                                 hidden_relative_error=(
                                     relative_error(full.hidden_tensor, approx.hidden_tensor)
                                     if self.config.metrics.compute_tensor_metrics
                                     else 0.0
                                 ),
                                 cache_bytes=output_cache_bytes(approx),
+                                physical_cache_bytes=output_physical_cache_bytes(approx),
                                 memory_allocated=output_memory_allocated(approx),
                                 peak_memory_allocated=output_peak_memory_allocated(approx),
                                 adaptation_latency=0.0,
@@ -372,6 +392,8 @@ class StaticAdapterExperimentRunner:
                                     task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
                                 ),
                                 strategy_mode=output_strategy_mode(approx),
+                                strategy_available=output_strategy_available(approx),
+                                strategy_fallback=output_strategy_fallback(approx),
                                 baseline_fidelity=output_baseline_fidelity(approx),
                                 cache_block_count=manager.total_block_count(),
                                 cache_entry_count=manager.entry_count(),
@@ -386,6 +408,9 @@ class StaticAdapterExperimentRunner:
                                 model_num_layers=backend.num_layers,
                                 model_hidden_size=self.config.model.hidden_size,
                                 configured_update_norm=self.config.updates.update_norm,
+                                baseline_task_score=baseline_task_score,
+                                full_task_score=full_task_score,
+                                adaptation_gain_vs_base=full_task_score - baseline_task_score,
                                 attention_shift=attention_shift_value,
                                 attention_metric_available=attention_shift_value is not None,
                                 strategy_flops=strategy_flops,
@@ -427,12 +452,13 @@ class StaticAdapterExperimentRunner:
         train = getattr(backend, "train_lora_step", None)
         if callable(snapshot) and callable(load) and callable(train):
             zero_state = snapshot()
-            adapters = {0: _StaticAdapter(0, baseline, 0.0, zero_state)}
+            adapters = {0: _StaticAdapter(0, baseline, 0.0, 0.0, zero_state)}
             for adapter_id in adapter_ids:
                 if adapter_id == 0:
                     continue
                 load(zero_state, version=0)
                 norm = 0.0
+                raw_norm = 0.0
                 for _ in range(self.config.adapter.train_steps_per_version):
                     norm += float(
                         train(
@@ -442,8 +468,14 @@ class StaticAdapterExperimentRunner:
                             alpha=self.config.adapter.lora_alpha,
                             learning_rate=self.config.adapter.learning_rate * adapter_id,
                             freeze_base_model=self.config.adapter.freeze_base_model,
+                            target_update_norm=(
+                                self.config.updates.update_norm
+                                if self.config.adapter.norm_control == "target_l2"
+                                else None
+                            ),
                         )
                     )
+                    raw_norm += float(backend.last_raw_update_norm())
                 state = snapshot()
                 current = BackendOutput(
                     logits=baseline.logits,
@@ -452,17 +484,21 @@ class StaticAdapterExperimentRunner:
                     parameter_version=adapter_id,
                     extras=baseline.extras,
                 )
-                adapters[adapter_id] = _StaticAdapter(adapter_id, current, norm, state)
+                adapters[adapter_id] = _StaticAdapter(
+                    adapter_id, current, norm, raw_norm, state
+                )
             load(zero_state, version=0)
             return adapters
 
-        adapters = {0: _StaticAdapter(0, baseline, 0.0)}
+        adapters = {0: _StaticAdapter(0, baseline, 0.0, 0.0)}
         for adapter_id in adapter_ids:
             if adapter_id == 0:
                 continue
             norm = self.config.updates.update_norm * adapter_id
             current = backend.simulate_update(baseline, target, update_norm=norm)
-            adapters[adapter_id] = _StaticAdapter(adapter_id, current, norm)
+            adapters[adapter_id] = _StaticAdapter(
+                adapter_id, current, norm, backend.last_raw_update_norm()
+            )
         return adapters
 
     def _activate_adapter(self, backend: ModelBackend, adapter: _StaticAdapter) -> None:

@@ -19,6 +19,9 @@ from ttt_cache_lab.experiments.metrics import (
     output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
+    output_physical_cache_bytes,
+    output_strategy_available,
+    output_strategy_fallback,
     output_strategy_flops,
     output_strategy_latency,
     output_strategy_mode,
@@ -81,6 +84,16 @@ class ExperimentRunner:
                 )
                 updated = update_result.output
                 full = backend.full_recompute(sample.prompt, updated)
+                baseline_task_score = (
+                    backend.score_answer(sample, baseline)
+                    if self.config.metrics.compute_task_metrics
+                    else 0.0
+                )
+                full_task_score = (
+                    backend.score_answer(sample, full)
+                    if self.config.metrics.compute_task_metrics
+                    else 0.0
+                )
 
                 for strategy in strategies:
                     decision = strategy.decide_with_runtime(
@@ -124,11 +137,6 @@ class ExperimentRunner:
                     )
                     task_score = (
                         backend.score_answer(sample, approx)
-                        if self.config.metrics.compute_task_metrics
-                        else 0.0
-                    )
-                    full_task_score = (
-                        backend.score_answer(sample, full)
                         if self.config.metrics.compute_task_metrics
                         else 0.0
                     )
@@ -186,12 +194,19 @@ class ExperimentRunner:
                             ),
                             latency_units=strategy_latency,
                             reason=decision.reason,
+                            accumulated_update_norm=update_result.update_norm,
+                            accumulated_raw_update_norm=update_result.raw_update_norm,
+                            update_norm_since_cache=update_result.update_norm,
+                            raw_update_norm_since_cache=update_result.raw_update_norm,
+                            update_scale=update_result.update_scale,
+                            norm_control="target_l2",
                             hidden_relative_error=(
                                 relative_error(full.hidden_tensor, approx.hidden_tensor)
                                 if self.config.metrics.compute_tensor_metrics
                                 else 0.0
                             ),
                             cache_bytes=output_cache_bytes(approx),
+                            physical_cache_bytes=output_physical_cache_bytes(approx),
                             memory_allocated=output_memory_allocated(approx),
                             peak_memory_allocated=output_peak_memory_allocated(approx),
                             adaptation_latency=adaptation_latency,
@@ -216,6 +231,8 @@ class ExperimentRunner:
                                 task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
                             ),
                             strategy_mode=output_strategy_mode(approx),
+                            strategy_available=output_strategy_available(approx),
+                            strategy_fallback=output_strategy_fallback(approx),
                             baseline_fidelity=output_baseline_fidelity(approx),
                             cache_block_count=backend.num_layers,
                             cache_entry_count=1,
@@ -229,6 +246,9 @@ class ExperimentRunner:
                             model_num_layers=backend.num_layers,
                             model_hidden_size=self.config.model.hidden_size,
                             configured_update_norm=self.config.updates.update_norm,
+                            baseline_task_score=baseline_task_score,
+                            full_task_score=full_task_score,
+                            adaptation_gain_vs_base=full_task_score - baseline_task_score,
                             attention_shift=attention_shift_value,
                             attention_metric_available=attention_shift_value is not None,
                             strategy_flops=strategy_flops,

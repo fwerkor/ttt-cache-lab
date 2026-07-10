@@ -18,6 +18,14 @@ def output_cache_bytes(output: BackendOutput) -> int:
     return int(output.cache_tensor.nbytes + output.hidden_tensor.nbytes)
 
 
+def output_physical_cache_bytes(output: BackendOutput) -> int:
+    extras = output.extras or {}
+    value = extras.get("physical_cache_bytes")
+    if isinstance(value, int | float):
+        return int(value)
+    return output_cache_bytes(output)
+
+
 def output_memory_allocated(output: BackendOutput) -> int:
     extras = output.extras or {}
     value = extras.get("memory_allocated", 0)
@@ -124,6 +132,16 @@ def output_strategy_mode(output: BackendOutput) -> str:
         if isinstance(value, str):
             return value
     return ""
+
+
+def output_strategy_available(output: BackendOutput) -> bool:
+    mode = output_strategy_mode(output)
+    return not mode.startswith("unavailable_")
+
+
+def output_strategy_fallback(output: BackendOutput) -> str:
+    mode = output_strategy_mode(output)
+    return mode if mode.startswith("unavailable_") else ""
 
 
 def output_baseline_fidelity(output: BackendOutput) -> str:

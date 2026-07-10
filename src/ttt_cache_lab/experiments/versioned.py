@@ -24,6 +24,9 @@ from ttt_cache_lab.experiments.metrics import (
     output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
+    output_physical_cache_bytes,
+    output_strategy_available,
+    output_strategy_fallback,
     output_strategy_flops,
     output_strategy_latency,
     output_strategy_mode,
@@ -47,6 +50,7 @@ class _StrategyCache:
     manager: VersionedCacheManager
     refresh_count: int = 0
     cached_update_norm: float = 0.0
+    cached_raw_update_norm: float = 0.0
     blocks: tuple[CacheBlockMetadata, ...] = field(default_factory=tuple)
 
 
@@ -137,13 +141,16 @@ class VersionedExperimentRunner:
                     alpha=self.config.adapter.lora_alpha,
                     learning_rate=self.config.adapter.learning_rate,
                     freeze_base_model=self.config.adapter.freeze_base_model,
+                    norm_control=self.config.adapter.norm_control,
                 )
                 accumulated_update_norm = 0.0
+                accumulated_raw_update_norm = 0.0
                 accumulated_adaptation_latency = 0.0
                 current = base_v0
                 for _ in range(1, cached_version + 1):
                     version_update = self._update_one_version(updater, target, current)
                     accumulated_update_norm += version_update.update_norm
+                    accumulated_raw_update_norm += version_update.raw_update_norm
                     accumulated_adaptation_latency += version_update.adaptation_latency
                     current = version_update.output
                 cached_output = (
@@ -187,6 +194,7 @@ class VersionedExperimentRunner:
                         original_output=base_v0,
                         cached_version=cached_version,
                         cached_update_norm=accumulated_update_norm,
+                        cached_raw_update_norm=accumulated_raw_update_norm,
                         blocks=cached_blocks,
                         manager=manager,
                     )
@@ -206,12 +214,14 @@ class VersionedExperimentRunner:
                         full=cached_output,
                         adapter_version=cached_version,
                         accumulated_update_norm=accumulated_update_norm,
+                        accumulated_raw_update_norm=accumulated_raw_update_norm,
                         accumulated_adaptation_latency=accumulated_adaptation_latency,
                     )
 
                 for step in range(cached_version + 1, max_version + 1):
                     version_update = self._update_one_version(updater, target, current)
                     accumulated_update_norm += version_update.update_norm
+                    accumulated_raw_update_norm += version_update.raw_update_norm
                     accumulated_adaptation_latency += version_update.adaptation_latency
                     current = version_update.output
                     if step not in target_steps:
@@ -231,6 +241,7 @@ class VersionedExperimentRunner:
                         full=full,
                         adapter_version=step,
                         accumulated_update_norm=accumulated_update_norm,
+                        accumulated_raw_update_norm=accumulated_raw_update_norm,
                         accumulated_adaptation_latency=accumulated_adaptation_latency,
                     )
                 backend.restore_after_update()
@@ -284,6 +295,7 @@ class VersionedExperimentRunner:
         full: BackendOutput,
         adapter_version: int,
         accumulated_update_norm: float,
+        accumulated_raw_update_norm: float,
         accumulated_adaptation_latency: float,
     ) -> None:
         full_decision = StrategyDecision(
@@ -294,12 +306,25 @@ class VersionedExperimentRunner:
             "FLOP accounting probe.",
             recompute_fraction=1.0,
         )
+        baseline_task_score = (
+            backend.score_answer(sample_answer, next(iter(strategy_caches.values())).original_output)  # type: ignore[arg-type]
+            if self.config.metrics.compute_task_metrics
+            else 0.0
+        )
+        full_task_score = (
+            backend.score_answer(sample_answer, full)  # type: ignore[arg-type]
+            if self.config.metrics.compute_task_metrics
+            else 0.0
+        )
         for strategy in strategies:
             cache_key = str(strategy.name)
             cached = strategy_caches[cache_key]
             record_cached_version = cached.cached_version
             version_gap = adapter_version - record_cached_version
             update_norm_since_cache = max(0.0, accumulated_update_norm - cached.cached_update_norm)
+            raw_update_norm_since_cache = max(
+                0.0, accumulated_raw_update_norm - cached.cached_raw_update_norm
+            )
             decision = strategy.decide_with_runtime(
                 target,
                 step=version_gap,
@@ -408,6 +433,7 @@ class VersionedExperimentRunner:
                 cached.output = approx
                 cached.cached_version = adapter_version
                 cached.cached_update_norm = accumulated_update_norm
+                cached.cached_raw_update_norm = accumulated_raw_update_norm
                 cached.blocks = new_blocks
                 cached.refresh_count = new_refresh_count
             elif strategy.name not in {
@@ -423,6 +449,7 @@ class VersionedExperimentRunner:
                 cached.output = approx
                 cached.cached_version = adapter_version
                 cached.cached_update_norm = accumulated_update_norm
+                cached.cached_raw_update_norm = accumulated_raw_update_norm
                 cached.blocks = new_blocks
                 cached.refresh_count = new_refresh_count
                 cached.manager.put(adapter_id, adapter_version, VersionedCacheEntry(approx, new_blocks))
@@ -436,11 +463,6 @@ class VersionedExperimentRunner:
             maintenance_latency = output_cache_maintenance_latency(approx)
             task_score = (
                 backend.score_answer(sample_answer, approx)  # type: ignore[arg-type]
-                if self.config.metrics.compute_task_metrics
-                else 0.0
-            )
-            full_task_score = (
-                backend.score_answer(sample_answer, full)  # type: ignore[arg-type]
                 if self.config.metrics.compute_task_metrics
                 else 0.0
             )
@@ -510,15 +532,24 @@ class VersionedExperimentRunner:
                     version_gap=version_gap,
                     update_step=adapter_version,
                     accumulated_update_norm=accumulated_update_norm,
+                    accumulated_raw_update_norm=accumulated_raw_update_norm,
                     update_norm_since_cache=update_norm_since_cache,
+                    raw_update_norm_since_cache=raw_update_norm_since_cache,
+                    update_scale=(
+                        accumulated_update_norm / accumulated_raw_update_norm
+                        if accumulated_raw_update_norm > 0.0
+                        else 0.0
+                    ),
                     lora_rank=self.config.adapter.lora_rank,
                     update_mode=self.config.adapter.update_mode,
+                    norm_control=self.config.adapter.norm_control,
                     hidden_relative_error=(
                         relative_error(full.hidden_tensor, approx.hidden_tensor)
                         if self.config.metrics.compute_tensor_metrics
                         else 0.0
                     ),
                     cache_bytes=output_cache_bytes(approx),
+                    physical_cache_bytes=output_physical_cache_bytes(approx),
                     memory_allocated=output_memory_allocated(approx),
                     peak_memory_allocated=output_peak_memory_allocated(approx),
                     adaptation_latency=strategy_adaptation_latency,
@@ -541,6 +572,8 @@ class VersionedExperimentRunner:
                         task_drop_threshold=self.config.cache.oracle_task_drop_threshold,
                     ),
                     strategy_mode=output_strategy_mode(approx),
+                    strategy_available=output_strategy_available(approx),
+                    strategy_fallback=output_strategy_fallback(approx),
                     baseline_fidelity=output_baseline_fidelity(approx),
                     cache_block_count=cached.manager.total_block_count(),
                     cache_entry_count=cached.manager.entry_count(),
@@ -555,6 +588,9 @@ class VersionedExperimentRunner:
                     model_num_layers=backend.num_layers,
                     model_hidden_size=self.config.model.hidden_size,
                     configured_update_norm=self.config.updates.update_norm,
+                    baseline_task_score=baseline_task_score,
+                    full_task_score=full_task_score,
+                    adaptation_gain_vs_base=full_task_score - baseline_task_score,
                     attention_shift=attention_shift_value,
                     attention_metric_available=attention_shift_value is not None,
                     strategy_flops=strategy_flops,
@@ -773,7 +809,10 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "refresh_count_mean",
         "false_safe_rate",
         "accumulated_update_norm_mean",
+        "accumulated_raw_update_norm_mean",
         "update_norm_since_cache_mean",
+        "raw_update_norm_since_cache_mean",
+        "update_scale_mean",
         "cache_block_count_mean",
         "adaptation_latency_mean",
         "cache_maintenance_latency_mean",
@@ -781,9 +820,14 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "end_to_end_latency_mean",
         "throughput_tokens_per_s_mean",
         "peak_memory_allocated_mean",
+        "physical_cache_bytes_mean",
         "cache_entry_count_mean",
         "total_cache_bytes_mean",
         "evicted_cache_entries_mean",
+        "baseline_task_score_mean",
+        "full_task_score_mean",
+        "adaptation_gain_vs_base_mean",
+        "strategy_available_rate",
         "attention_shift_mean",
         "attention_metric_available_rate",
         "strategy_flops_mean",
@@ -810,7 +854,14 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "refresh_count_mean": _mean(records, "refresh_count"),
                     "false_safe_rate": _mean_bool(records, "false_safe"),
                     "accumulated_update_norm_mean": _mean(records, "accumulated_update_norm"),
+                    "accumulated_raw_update_norm_mean": _mean(
+                        records, "accumulated_raw_update_norm"
+                    ),
                     "update_norm_since_cache_mean": _mean(records, "update_norm_since_cache"),
+                    "raw_update_norm_since_cache_mean": _mean(
+                        records, "raw_update_norm_since_cache"
+                    ),
+                    "update_scale_mean": _mean(records, "update_scale"),
                     "cache_block_count_mean": _mean(records, "cache_block_count"),
                     "adaptation_latency_mean": _mean(records, "adaptation_latency"),
                     "cache_maintenance_latency_mean": _mean(records, "cache_maintenance_latency"),
@@ -818,9 +869,16 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "end_to_end_latency_mean": _mean(records, "end_to_end_latency"),
                     "throughput_tokens_per_s_mean": _mean(records, "throughput_tokens_per_s"),
                     "peak_memory_allocated_mean": _mean(records, "peak_memory_allocated"),
+                    "physical_cache_bytes_mean": _mean(records, "physical_cache_bytes"),
                     "cache_entry_count_mean": _mean(records, "cache_entry_count"),
                     "total_cache_bytes_mean": _mean(records, "total_cache_bytes"),
                     "evicted_cache_entries_mean": _mean(records, "evicted_cache_entries"),
+                    "baseline_task_score_mean": _mean(records, "baseline_task_score"),
+                    "full_task_score_mean": _mean(records, "full_task_score"),
+                    "adaptation_gain_vs_base_mean": _mean(
+                        records, "adaptation_gain_vs_base"
+                    ),
+                    "strategy_available_rate": _mean_bool(records, "strategy_available"),
                     "attention_shift_mean": _mean(records, "attention_shift"),
                     "attention_metric_available_rate": _mean_bool(
                         records, "attention_metric_available"

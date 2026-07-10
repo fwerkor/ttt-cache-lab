@@ -126,6 +126,8 @@ class HuggingFaceBackend:
         self._last_delta_s = 0.0
         self._last_alora_s = 0.0
         self._last_adaptation_s = 0.0
+        self._last_raw_update_norm = 0.0
+        self._last_applied_update_norm = 0.0
         self._lora_modules: list[Any] = []
         self._active_lora_modules: list[Any] = []
         self._prepared_input_ids: dict[str, Any] = {}
@@ -299,6 +301,8 @@ class HuggingFaceBackend:
             squared_norm += self.torch.sum(noise.detach().double() ** 2).to(self.device)
         raw_norm = float(self.torch.sqrt(squared_norm).cpu())
         scale = update_norm / raw_norm if raw_norm > 0.0 else 0.0
+        self._last_raw_update_norm = raw_norm
+        self._last_applied_update_norm = update_norm if raw_norm > 0.0 else 0.0
         with self.torch.no_grad():
             for param, noise in pending:
                 delta = noise * scale
@@ -452,6 +456,12 @@ class HuggingFaceBackend:
     def last_adaptation_latency(self) -> float:
         return self._last_adaptation_s
 
+    def last_raw_update_norm(self) -> float:
+        return self._last_raw_update_norm
+
+    def last_applied_update_norm(self) -> float:
+        return self._last_applied_update_norm
+
     def restore_after_update(self) -> None:
         for param, delta in reversed(self._deltas):
             with self.torch.no_grad():
@@ -460,6 +470,8 @@ class HuggingFaceBackend:
         self.reset_lora_adapters()
         self.parameter_version = 0
         self._last_adaptation_s = 0.0
+        self._last_raw_update_norm = 0.0
+        self._last_applied_update_norm = 0.0
 
     def setup_lora(self, target: UpdateTarget, *, rank: int, alpha: float, freeze_base_model: bool = True) -> int:
         from torch import nn
@@ -583,6 +595,9 @@ class HuggingFaceBackend:
                     raise ValueError("target_update_norm must be non-negative")
                 if raw_norm > 0.0:
                     scale = target_update_norm / raw_norm
+            applied_norm = raw_norm * scale
+            self._last_raw_update_norm = raw_norm
+            self._last_applied_update_norm = applied_norm
             for param, delta in pending_updates:
                 param.add_(delta * scale)
                 param.grad = None
@@ -591,7 +606,7 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.devices)
         self._last_adaptation_s = time.perf_counter() - adaptation_start
         self.parameter_version += 1
-        return raw_norm * scale
+        return self._last_applied_update_norm
 
     def snapshot_adapter_state(self) -> tuple[tuple[Any, Any], ...]:
         return tuple((module.lora_a.detach().clone(), module.lora_b.detach().clone()) for module in self._lora_modules)
