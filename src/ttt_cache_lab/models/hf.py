@@ -1016,6 +1016,15 @@ class HuggingFaceBackend:
         factory = getattr(type(original), "from_legacy_cache", None)
         if callable(factory):
             return factory(layers)
+        if hasattr(original, "update") and hasattr(original, "get_seq_length"):
+            cache_type = type(original)
+            try:
+                return cache_type(layers, config=self.model.config)
+            except TypeError:
+                try:
+                    return cache_type(layers)
+                except TypeError:
+                    pass
         return layers
 
     def _past_as_layers(self, past: Any) -> list[Any]:
