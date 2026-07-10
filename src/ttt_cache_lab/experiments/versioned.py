@@ -239,12 +239,22 @@ class VersionedExperimentRunner:
                     None,
                     "Cache version matches adapter version; reuse is exact.",
                 )
-            approx = backend.apply_cache_strategy(
-                baseline=baseline_output,
-                full=full,
-                updated=current,
-                decision=decision,
-            )
+            if strategy.name is StrategyName.ORACLE_PLANNER:
+                decision, approx = self._run_measured_oracle(
+                    backend=backend,
+                    baseline=baseline_output,
+                    full=full,
+                    current=current,
+                    target=target,
+                    sample=sample_answer,
+                )
+            else:
+                approx = backend.apply_cache_strategy(
+                    baseline=baseline_output,
+                    full=full,
+                    updated=current,
+                    decision=decision,
+                )
             new_refresh_count = cached.refresh_count + (1 if is_refresh_action(decision) else 0)
             if strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
                 cached.version_outputs[adapter_version] = approx
@@ -311,6 +321,104 @@ class VersionedExperimentRunner:
                     strategy_mode=output_strategy_mode(approx),
                 )
             )
+
+    def _run_measured_oracle(
+        self,
+        *,
+        backend: ModelBackend,
+        baseline: BackendOutput,
+        full: BackendOutput,
+        current: BackendOutput,
+        target: UpdateTarget,
+        sample: object,
+    ) -> tuple[StrategyDecision, BackendOutput]:
+        candidates = [
+            StrategyDecision(
+                StrategyName.ORACLE_PLANNER,
+                CacheAction.REUSE_STALE,
+                CacheBlockState.VALID_APPROX,
+                None,
+                "Oracle candidate: stale reuse.",
+            ),
+            StrategyDecision(
+                StrategyName.ORACLE_PLANNER,
+                CacheAction.DELTA_CORRECT,
+                CacheBlockState.VALID_APPROX,
+                target.layer,
+                "Oracle candidate: delta correction.",
+                recompute_fraction=0.15,
+            ),
+        ]
+        if target.layer is not None:
+            candidates.append(
+                StrategyDecision(
+                    StrategyName.ORACLE_PLANNER,
+                    CacheAction.PARTIAL_RECOMPUTE,
+                    CacheBlockState.INVALID,
+                    target.layer,
+                    "Oracle candidate: native layer restart.",
+                )
+            )
+        candidates.append(
+            StrategyDecision(
+                StrategyName.ORACLE_PLANNER,
+                CacheAction.FULL_RECOMPUTE,
+                CacheBlockState.INVALID,
+                None,
+                "Oracle candidate: full recompute.",
+                recompute_fraction=1.0,
+            )
+        )
+
+        full_score = backend.score_answer(sample, full)  # type: ignore[arg-type]
+        feasible: list[tuple[float, StrategyDecision, BackendOutput, float, float, float]] = []
+        for candidate in candidates:
+            try:
+                output = backend.apply_cache_strategy(
+                    baseline=baseline,
+                    full=full,
+                    updated=current,
+                    decision=candidate,
+                )
+            except RuntimeError:
+                continue
+            mode = output_strategy_mode(output)
+            if candidate.action is CacheAction.DELTA_CORRECT and mode.startswith("unavailable_"):
+                continue
+            candidate_kl = kl_divergence(full.logits, output.logits)
+            candidate_top1 = top1_agreement(full.logits, output.logits)
+            candidate_score = backend.score_answer(sample, output)  # type: ignore[arg-type]
+            safe = (
+                candidate_kl <= self.config.cache.oracle_kl_threshold
+                and candidate_top1 >= 1.0
+                and full_score - candidate_score <= self.config.cache.oracle_task_drop_threshold
+            )
+            if candidate.action is CacheAction.FULL_RECOMPUTE:
+                safe = True
+            if not safe:
+                continue
+            cost = backend.estimate_latency(candidate, context_length=self.config.data.context_length)
+            feasible.append((cost, candidate, output, candidate_kl, candidate_top1, candidate_score))
+
+        if not feasible:
+            raise RuntimeError("Measured oracle found no feasible action, including full recompute")
+        cost, selected, output, selected_kl, selected_top1, selected_score = min(
+            feasible,
+            key=lambda item: (item[0], item[1].recompute_fraction),
+        )
+        decision = StrategyDecision(
+            StrategyName.ORACLE_PLANNER,
+            selected.action,
+            selected.state,
+            selected.first_invalid_layer,
+            (
+                f"Measured oracle selected {selected.action}: latency={cost:.6g}, "
+                f"KL={selected_kl:.6g}, top1={selected_top1:.3f}, task={selected_score:.3f}."
+            ),
+            recompute_fraction=selected.recompute_fraction,
+        )
+        return decision, output
+
 
 
 def write_version_summary(input_csv: Path, output_csv: Path) -> None:

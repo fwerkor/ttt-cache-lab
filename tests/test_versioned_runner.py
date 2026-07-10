@@ -135,3 +135,23 @@ def test_adapter_specific_cache_builds_each_unseen_version(tmp_path: Path) -> No
     )
     records = VersionedExperimentRunner(config).run().records
     assert [record.action for record in records] == ["reuse_exact", "full_recompute", "full_recompute"]
+
+
+def test_oracle_selects_measured_safe_candidate(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-measured-oracle",
+            "experiment_id": "unit_oracle",
+            "seed": 7,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 4, "hidden_size": 32, "vocab_size": 256},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["output_head"], "update_norm": 0.001},
+            "cache": {"strategies": ["oracle_planner"]},
+            "adapter": {"update_mode": "random"},
+            "version_steps": [1],
+        }
+    )
+    record = VersionedExperimentRunner(config).run().records[0]
+    assert record.action == "reuse_stale"
+    assert record.reason.startswith("Measured oracle selected")

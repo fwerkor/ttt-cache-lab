@@ -277,24 +277,14 @@ class OraclePlannerStrategy(CacheStrategy):
         )
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
-        decision = self.planner.plan(target, update_norm=update_norm, version_gap=step)
-        if decision.action is CacheAction.FULL_RECOMPUTE:
-            return StrategyDecision(
-                self.name,
-                CacheAction.PARTIAL_RECOMPUTE if target.layer is not None else CacheAction.FULL_RECOMPUTE,
-                CacheBlockState.INVALID,
-                target.layer,
-                "Oracle upper bound: choose the cheapest safe refresh action implied by target metadata.",
-                recompute_fraction=0.0 if target.layer is not None else 1.0,
-            )
+        del step, update_norm
         return StrategyDecision(
             self.name,
-            decision.action,
-            decision.state,
-            decision.first_invalid_layer,
-            f"Oracle upper bound: {decision.reason}",
-            recompute_fraction=decision.recompute_fraction,
-            reject_reuse=decision.reject_reuse,
+            CacheAction.FULL_RECOMPUTE,
+            CacheBlockState.INVALID,
+            target.layer,
+            "Measured oracle selection is deferred to the experiment runner.",
+            recompute_fraction=1.0,
         )
 
 
