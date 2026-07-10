@@ -1,0 +1,79 @@
+name: paper-e3-qwen-14b-needle_absent
+output_dir: runs/paper/direct/calibration/qwen_14b/needle_absent
+experiment_id: e3_failure_map
+seed: 7
+model:
+  backend: hf
+  model_name_or_path: Qwen/Qwen2.5-14B-Instruct
+  device: auto
+  torch_dtype: bfloat16
+  max_length: 16384
+  trust_remote_code: true
+  parallelism: model_shard
+  device_ids: []
+data:
+  source: synthetic
+  task: needle_absent
+  benchmark_name: controlled-long-context
+  task_family: retrieval_rejection
+  evaluation_partition: calibration
+  selection_seed: 2027
+  sample_offset: 0
+  num_samples: 12
+  context_length: 16384
+  answer_length: 4
+  scorer: exact_match
+  max_generation_tokens: 32
+updates:
+  targets:
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  - lora.mlp_early
+  - lora.mlp_late
+  - norm
+  - output_head
+  step_count: 1
+  update_norm: 0.001
+cache:
+  strategies:
+  - full_recompute
+  - stale_reuse
+  - frozen_reuse
+  - periodic_refresh
+  - threshold_refresh
+  - delta_correction
+  - layerwise_recompute
+  - adaptive
+  refresh_period: 4
+  update_norm_threshold: 0.01
+  version_gap_threshold: 8
+  oracle_kl_threshold: 0.05
+  oracle_top1_threshold: 0.99
+  oracle_task_drop_threshold: 0.01
+metrics:
+  compute_tensor_metrics: true
+  compute_task_metrics: true
+  compute_attention_metrics: false
+  compute_flops_metrics: true
+measurement:
+  warmup_runs: 0
+  timed_runs: 1
+  bootstrap_resamples: 2000
+  confidence_level: 0.95
+adapter:
+  update_mode: lora_train
+  norm_control: target_l2
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps:
+- 0
+- 1
+- 2
+- 4
+- 8
+- 16

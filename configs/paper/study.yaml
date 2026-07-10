@@ -52,6 +52,26 @@ jobs:
   - calibration
   - qwen_14b
   - controlled
+- name: calibration_e3_qwen_14b_common_words
+  config: configs/paper/calibration/e3_qwen_14b_common_words.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - calibration
+  - qwen_14b
+  - controlled
+- name: calibration_e3_qwen_14b_needle_absent
+  config: configs/paper/calibration/e3_qwen_14b_needle_absent.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - calibration
+  - qwen_14b
+  - controlled
 - name: calibration_e3_qwen_1_5b_aggregation
   config: configs/paper/calibration/e3_qwen_1_5b_aggregation.yaml
   seeds:
@@ -152,6 +172,26 @@ jobs:
   - calibration
   - qwen_32b
   - controlled
+- name: calibration_e3_qwen_32b_common_words
+  config: configs/paper/calibration/e3_qwen_32b_common_words.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - calibration
+  - qwen_32b
+  - controlled
+- name: calibration_e3_qwen_32b_needle_absent
+  config: configs/paper/calibration/e3_qwen_32b_needle_absent.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - calibration
+  - qwen_32b
+  - controlled
 - name: calibration_e3_qwen_7b_aggregation
   config: configs/paper/calibration/e3_qwen_7b_aggregation.yaml
   seeds:
@@ -184,6 +224,26 @@ jobs:
   - controlled
 - name: calibration_e3_qwen_7b_variable_tracking
   config: configs/paper/calibration/e3_qwen_7b_variable_tracking.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - calibration
+  - qwen_7b
+  - controlled
+- name: calibration_e3_qwen_7b_common_words
+  config: configs/paper/calibration/e3_qwen_7b_common_words.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - calibration
+  - qwen_7b
+  - controlled
+- name: calibration_e3_qwen_7b_needle_absent
+  config: configs/paper/calibration/e3_qwen_7b_needle_absent.yaml
   seeds:
   - 7
   - 17
