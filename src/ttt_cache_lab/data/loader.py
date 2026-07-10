@@ -70,7 +70,7 @@ def _records_to_samples(records: Iterable[Mapping[str, Any]], *, config: DataCon
     for index, record in enumerate(records):
         if len(samples) >= config.num_samples:
             break
-        prompt = _build_prompt(record, config=config)
+        prompt = _attach_activation_marker(_build_prompt(record, config=config), config=config)
         answer = _coerce_answer(_field(record, config.answer_field))
         if not prompt.strip():
             raise ValueError(f"Dataset record {index} produced an empty prompt")
@@ -85,13 +85,13 @@ def _records_to_samples(records: Iterable[Mapping[str, Any]], *, config: DataCon
                     "source": config.source,
                     "record_index": index,
                     "truncation_strategy": config.truncation_strategy,
+                    "adapter_activation_marker": config.adapter_activation_marker or "",
                 },
             )
         )
     if not samples:
         raise ValueError("The configured dataset produced no samples")
     return samples
-
 
 def _build_prompt(record: Mapping[str, Any], *, config: DataConfig) -> str:
     if config.context_field is None and config.question_field is None:
@@ -122,6 +122,17 @@ def _coerce_answer(value: Any) -> str:
     return str(value)
 
 
+
+def _attach_activation_marker(prompt: str, *, config: DataConfig) -> str:
+    marker = config.adapter_activation_marker
+    if not marker or marker in prompt:
+        return prompt
+    answer_index = prompt.rfind("Answer:")
+    if answer_index >= 0:
+        return prompt[:answer_index] + marker + " " + prompt[answer_index:]
+    return prompt + "\n" + marker
+
+
 def _with_runtime_metadata(sample: TaskSample, *, config: DataConfig, index: int) -> TaskSample:
     metadata = dict(sample.metadata)
     metadata.update(
@@ -129,6 +140,8 @@ def _with_runtime_metadata(sample: TaskSample, *, config: DataConfig, index: int
             "source": config.source,
             "record_index": index,
             "truncation_strategy": config.truncation_strategy,
+            "adapter_activation_marker": config.adapter_activation_marker or "",
         }
     )
-    return TaskSample(prompt=sample.prompt, answer=sample.answer, metadata=metadata)
+    prompt = _attach_activation_marker(sample.prompt, config=config)
+    return TaskSample(prompt=prompt, answer=sample.answer, metadata=metadata)

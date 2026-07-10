@@ -22,5 +22,6 @@ class CacheAction(StrEnum):
     REUSE_STALE = "reuse_stale"
     DELTA_CORRECT = "delta_correct"
     PARTIAL_RECOMPUTE = "partial_recompute"
+    ALORA_SUFFIX_RECOMPUTE = "alora_suffix_recompute"
     FULL_RECOMPUTE = "full_recompute"
     REJECT_UPDATE = "reject_update"

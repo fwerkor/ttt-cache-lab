@@ -261,7 +261,10 @@ class VersionedExperimentRunner:
                 if base_entry is None:
                     raise RuntimeError("No-adaptation baseline lost its v0 cache entry")
                 baseline_output = base_entry.output
-            elif strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
+            elif strategy.name in {
+                StrategyName.ADAPTER_SPECIFIC_CACHE,
+                StrategyName.LRAGENT_ADAPTER_CACHE,
+            }:
                 entry = cached.manager.get(adapter_id, adapter_version)
                 existing = entry.output if entry is not None else None
                 if existing is not None:
@@ -334,14 +337,20 @@ class VersionedExperimentRunner:
                 first_invalid_layer=decision.first_invalid_layer,
                 action=decision.action,
             )
-            if strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
+            if strategy.name in {
+                StrategyName.ADAPTER_SPECIFIC_CACHE,
+                StrategyName.LRAGENT_ADAPTER_CACHE,
+            }:
                 cached.manager.put(adapter_id, adapter_version, VersionedCacheEntry(approx, new_blocks))
                 cached.output = approx
                 cached.cached_version = adapter_version
                 cached.cached_update_norm = accumulated_update_norm
                 cached.blocks = new_blocks
                 cached.refresh_count = new_refresh_count
-            elif strategy.name is not StrategyName.NO_ADAPTATION and decision.action in {
+            elif strategy.name not in {
+                StrategyName.NO_ADAPTATION,
+                StrategyName.ALORA_PREFIX_REUSE,
+            } and decision.action in {
                 CacheAction.FULL_RECOMPUTE,
                 CacheAction.REUSE_EXACT,
                 CacheAction.PARTIAL_RECOMPUTE,

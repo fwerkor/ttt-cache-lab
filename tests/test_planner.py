@@ -111,3 +111,19 @@ def test_adaptive_periodic_fallback_ablation() -> None:
     no_periodic = build_strategy("adaptive_no_periodic", refresh_period=4).decide(target, step=8, update_norm=0.01)
     assert full.action is CacheAction.FULL_RECOMPUTE
     assert no_periodic.action is CacheAction.REUSE_FROZEN
+
+
+
+def test_related_work_baselines_have_distinct_actions() -> None:
+    from ttt_cache_lab.cache.strategies import build_strategy
+
+    target = parse_update_target("lora.k:1")
+    alora = build_strategy("alora_prefix_reuse").decide(target, step=1, update_norm=0.01)
+    lragent = build_strategy("lragent_adapter_cache").decide(target, step=1, update_norm=0.01)
+    forkkv = build_strategy("forkkv_base_delta").decide(target, step=1, update_norm=0.01)
+    assert alora.action is CacheAction.ALORA_SUFFIX_RECOMPUTE
+    assert lragent.action is CacheAction.FULL_RECOMPUTE
+    assert forkkv.action is CacheAction.DELTA_CORRECT
+    assert str(alora.strategy) == "alora_prefix_reuse"
+    assert str(lragent.strategy) == "lragent_adapter_cache"
+    assert str(forkkv.strategy) == "forkkv_base_delta"

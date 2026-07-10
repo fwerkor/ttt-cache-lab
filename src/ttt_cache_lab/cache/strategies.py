@@ -20,6 +20,9 @@ class StrategyName(StrEnum):
     BASE_CACHE_REUSE = "base_cache_reuse"
     ADAPTER_SPECIFIC_CACHE = "adapter_specific_cache"
     STATIC_BASE_DELTA = "static_base_delta"
+    ALORA_PREFIX_REUSE = "alora_prefix_reuse"
+    LRAGENT_ADAPTER_CACHE = "lragent_adapter_cache"
+    FORKKV_BASE_DELTA = "forkkv_base_delta"
     ORACLE_PLANNER = "oracle_planner"
     ADAPTIVE = "adaptive"
     ADAPTIVE_NO_VERSION = "adaptive_no_version"
@@ -292,6 +295,61 @@ class StaticBaseDeltaStrategy(CacheStrategy):
         )
 
 
+class AloraPrefixReuseStrategy(CacheStrategy):
+    name = StrategyName.ALORA_PREFIX_REUSE
+
+    def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
+        del step, update_norm
+        if target.is_lora:
+            return StrategyDecision(
+                self.name,
+                CacheAction.ALORA_SUFFIX_RECOMPUTE,
+                CacheBlockState.VALID_EXACT,
+                target.layer,
+                "aLoRA baseline: reuse the base-model prefix before the invocation marker and recompute the suffix.",
+                recompute_fraction=0.25,
+            )
+        return StrategyDecision(
+            self.name,
+            CacheAction.FULL_RECOMPUTE,
+            CacheBlockState.INVALID,
+            target.layer,
+            "aLoRA activation semantics apply only to adapter updates.",
+            recompute_fraction=1.0,
+        )
+
+
+class LrAgentAdapterCacheStrategy(AdapterSpecificCacheStrategy):
+    name = StrategyName.LRAGENT_ADAPTER_CACHE
+
+    def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
+        decision = super().decide(target, step=step, update_norm=update_norm)
+        return StrategyDecision(
+            self.name,
+            decision.action,
+            decision.state,
+            decision.first_invalid_layer,
+            "LRAgent-style baseline: keep a dedicated complete cache entry per fixed adapter identity.",
+            recompute_fraction=decision.recompute_fraction,
+        )
+
+
+class ForkKvBaseDeltaStrategy(StaticBaseDeltaStrategy):
+    name = StrategyName.FORKKV_BASE_DELTA
+
+    def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
+        decision = super().decide(target, step=step, update_norm=update_norm)
+        return StrategyDecision(
+            self.name,
+            decision.action,
+            decision.state,
+            decision.first_invalid_layer,
+            f"ForkKV-style base/delta decomposition: {decision.reason}",
+            recompute_fraction=decision.recompute_fraction,
+            reject_reuse=decision.reject_reuse,
+        )
+
+
 class OraclePlannerStrategy(CacheStrategy):
     name = StrategyName.ORACLE_PLANNER
 
@@ -361,6 +419,12 @@ def build_strategy(name: str, *, refresh_period: int = 4, update_norm_threshold:
         return AdapterSpecificCacheStrategy()
     if parsed is StrategyName.STATIC_BASE_DELTA:
         return StaticBaseDeltaStrategy(update_norm_threshold=update_norm_threshold)
+    if parsed is StrategyName.ALORA_PREFIX_REUSE:
+        return AloraPrefixReuseStrategy()
+    if parsed is StrategyName.LRAGENT_ADAPTER_CACHE:
+        return LrAgentAdapterCacheStrategy()
+    if parsed is StrategyName.FORKKV_BASE_DELTA:
+        return ForkKvBaseDeltaStrategy(update_norm_threshold=update_norm_threshold)
     if parsed is StrategyName.ORACLE_PLANNER:
         return OraclePlannerStrategy(update_norm_threshold=update_norm_threshold)
     raise ValueError(f"Unsupported cache strategy: {name}")

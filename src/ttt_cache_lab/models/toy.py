@@ -98,6 +98,14 @@ class ToyBackend:
                 hidden_tensor=updated.hidden_tensor,
                 parameter_version=updated.parameter_version,
             )
+        if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
+            return BackendOutput(
+                logits=full.logits.copy(),
+                cache_tensor=full.cache_tensor.copy(),
+                hidden_tensor=full.hidden_tensor.copy(),
+                parameter_version=updated.parameter_version,
+                extras={"cache_mode": "alora_base_prefix_suffix_recompute"},
+            )
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             layer = decision.first_invalid_layer or 0
             cache = baseline.cache_tensor.copy()
@@ -128,6 +136,8 @@ class ToyBackend:
             return 10.0 * base * fraction
         if decision.action is CacheAction.DELTA_CORRECT:
             return 2.0 * base
+        if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
+            return 2.5 * base
         return 1.0 * base
 
     def last_adaptation_latency(self) -> float:

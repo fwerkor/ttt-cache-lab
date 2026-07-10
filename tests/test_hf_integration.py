@@ -161,3 +161,44 @@ def test_direct_update_uses_all_matching_parameters_and_global_norm(tiny_llama_d
         sum(torch.sum(delta.detach().double() ** 2) for _, delta in backend._deltas)
     ).item()
     assert measured == pytest.approx(0.125, rel=1e-6)
+
+
+
+def test_alora_reuses_base_prefix_and_recomputes_adapter_suffix(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    raw = TaskSample(
+        prompt="key is alpha <ADAPTER> Answer :",
+        answer="alpha",
+        metadata={"adapter_activation_marker": "<ADAPTER>"},
+    )
+    sample = backend.prepare_sample(raw, context_length=16)
+    target = parse_update_target("lora.k:1", num_layers=backend.num_layers)
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    baseline = backend.prefill(sample.prompt)
+    backend.train_lora_step(
+        sample,
+        target,
+        rank=2,
+        alpha=4.0,
+        learning_rate=0.05,
+        target_update_norm=0.02,
+    )
+    full = backend.full_recompute(sample.prompt, baseline)
+    decision = StrategyDecision(
+        StrategyName.ALORA_PREFIX_REUSE,
+        CacheAction.ALORA_SUFFIX_RECOMPUTE,
+        CacheBlockState.VALID_EXACT,
+        1,
+        "integration",
+    )
+    output = backend.apply_cache_strategy(
+        baseline=baseline,
+        full=full,
+        updated=baseline,
+        decision=decision,
+    )
+    assert output.extras is not None
+    assert output.extras["cache_mode"] == "alora_base_prefix_suffix_recompute"
+    assert output.extras["alora_activation_boundary"] < output.extras["token_length"]
+    assert output.extras["cache_maintenance_latency"] >= 0.0
+    assert output.extras["cache_bytes"] > 0

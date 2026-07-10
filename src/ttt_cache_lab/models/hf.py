@@ -27,6 +27,7 @@ class _PromptState:
     prefix_ids: Any
     probe_ids: Any
     attention_mask: Any
+    activation_boundary: int | None = None
 
 
 class HuggingFaceBackend:
@@ -123,6 +124,7 @@ class HuggingFaceBackend:
         self._last_stale_s = 0.0
         self._last_partial_s = 0.0
         self._last_delta_s = 0.0
+        self._last_alora_s = 0.0
         self._last_adaptation_s = 0.0
         self._lora_modules: list[Any] = []
         self._active_lora_modules: list[Any] = []
@@ -130,6 +132,8 @@ class HuggingFaceBackend:
         self._prepared_input_ids: dict[str, Any] = {}
         self._sample_answers: dict[str, str] = {}
         self._sample_answer_token_counts: dict[str, int] = {}
+        self._sample_activation_boundaries: dict[str, int] = {}
+        self._alora_base_cache: dict[str, tuple[Any, np.ndarray]] = {}
 
     def _infer_num_layers(self) -> int:
         return self._infer_num_layers_from_config(self.model.config)
@@ -149,17 +153,42 @@ class HuggingFaceBackend:
         encoded = self.tokenizer(sample.prompt, return_tensors="pt", add_special_tokens=True)
         input_ids = encoded["input_ids"]
         current = int(input_ids.shape[1])
+        activation_boundary: int | None = None
+        activation_marker = str(sample.metadata.get("adapter_activation_marker", ""))
+        if activation_marker:
+            marker_index = sample.prompt.find(activation_marker)
+            if marker_index < 0:
+                raise ValueError("Configured adapter activation marker is absent from the prompt")
+            marker_end = marker_index + len(activation_marker)
+            marker_prefix = self.tokenizer(
+                sample.prompt[:marker_end],
+                return_tensors="pt",
+                add_special_tokens=True,
+            )["input_ids"]
+            activation_boundary = int(marker_prefix.shape[1])
         if current > context_length:
+            original_length = current
             strategy = str(sample.metadata.get("truncation_strategy", "error"))
             if strategy == "left":
+                removed = current - context_length
                 input_ids = input_ids[:, -context_length:]
+                if activation_boundary is not None:
+                    activation_boundary -= removed
             elif strategy == "middle":
                 left = (context_length + 1) // 2
                 right = context_length - left
+                right_start = original_length - right
                 input_ids = self.torch.cat(
                     [input_ids[:, :left], input_ids[:, -right:] if right else input_ids[:, :0]],
                     dim=1,
                 )
+                if activation_boundary is not None:
+                    if activation_boundary <= left:
+                        pass
+                    elif activation_boundary >= right_start:
+                        activation_boundary = left + activation_boundary - right_start
+                    else:
+                        raise ValueError("Middle truncation removed the adapter activation marker")
             elif strategy == "error":
                 raise ValueError(
                     "Prompt tokenization exceeded the requested context length; "
@@ -172,8 +201,15 @@ class HuggingFaceBackend:
         if current < context_length:
             filler = self.tokenizer(" filler", add_special_tokens=False).get("input_ids", [])
             filler_id = int(filler[0]) if filler else int(self.tokenizer.eos_token_id or 0)
-            padding = self.torch.full((1, context_length - current), filler_id, dtype=input_ids.dtype)
+            pad_count = context_length - current
+            padding = self.torch.full((1, pad_count), filler_id, dtype=input_ids.dtype)
             input_ids = self.torch.cat([padding, input_ids], dim=1)
+            if activation_boundary is not None:
+                activation_boundary += pad_count
+        if activation_boundary is not None:
+            if activation_boundary <= 0 or activation_boundary >= context_length:
+                raise ValueError("Adapter activation marker must remain inside the retained prompt context")
+            self._sample_activation_boundaries[sample.prompt] = activation_boundary
         self._prepared_input_ids[sample.prompt] = input_ids
         answer_ids = self.tokenizer(sample.answer, add_special_tokens=False).get("input_ids", [])
         self._sample_answers[sample.prompt] = sample.answer
@@ -236,6 +272,7 @@ class HuggingFaceBackend:
                 "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
                 "strategy_latency": prefill_s + decode_s,
+                **self._alora_base_extras(state),
             },
         )
 
@@ -309,6 +346,7 @@ class HuggingFaceBackend:
                 "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
                 "strategy_latency": prefill_s + decode_s,
+                **self._alora_base_extras(state),
             },
         )
 
@@ -328,6 +366,8 @@ class HuggingFaceBackend:
             return self._reuse_old_prefix_cache(baseline, cache_mode="exact_reuse")
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             return self._partial_recompute_prefix_cache(baseline=baseline, full=full, decision=decision)
+        if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
+            return self._alora_suffix_recompute(baseline)
         if decision.action is CacheAction.DELTA_CORRECT:
             return self._delta_correct_prefix_cache(baseline=baseline, full=full, decision=decision)
         if decision.action in {CacheAction.REUSE_STALE, CacheAction.REUSE_FROZEN}:
@@ -353,6 +393,8 @@ class HuggingFaceBackend:
             return getattr(self, "_last_partial_s", 0.0) or max(1e-6, (self._last_prefill_s or 1.0) * 0.5)
         if decision.action is CacheAction.DELTA_CORRECT:
             return getattr(self, "_last_delta_s", 0.0) or max(1e-6, (self._last_prefill_s or 1.0) * 0.15)
+        if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
+            return self._last_alora_s or max(1e-6, (self._last_prefill_s or 1.0) * 0.25)
         return max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
 
     def last_adaptation_latency(self) -> float:
@@ -561,6 +603,7 @@ class HuggingFaceBackend:
             prefix_ids=input_ids[:, :-1],
             probe_ids=input_ids[:, -1:],
             attention_mask=attention_mask,
+            activation_boundary=self._sample_activation_boundaries.get(prompt),
         )
 
     def _generate_answer(self, state: _PromptState, past: Any) -> tuple[Any, str, float]:
@@ -586,6 +629,97 @@ class HuggingFaceBackend:
         generated_ids = self.torch.cat(generated, dim=1)[0].detach().cpu().tolist()
         generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         return first_logits, generated_text, decode_s
+
+    def _set_lora_enabled(self, enabled: bool) -> None:
+        for module in self._lora_modules:
+            if hasattr(module, "lora_enabled"):
+                module.lora_enabled = enabled
+
+    def _alora_base_extras(self, state: _PromptState) -> dict[str, Any]:
+        boundary = state.activation_boundary
+        if boundary is None:
+            return {}
+        cached = self._alora_base_cache.get(state.prompt)
+        if cached is None:
+            base_ids = state.prefix_ids[:, :boundary]
+            if base_ids.shape[1] == 0:
+                raise ValueError("aLoRA base prefix is empty")
+            self._set_lora_enabled(False)
+            try:
+                with self.torch.no_grad():
+                    base = self.model(input_ids=base_ids, use_cache=True, output_hidden_states=True)
+            finally:
+                self._set_lora_enabled(True)
+            cached = (
+                self._clone_past(base.past_key_values),
+                self._summarize_hidden(base.hidden_states),
+            )
+            self._alora_base_cache[state.prompt] = cached
+        past, hidden = cached
+        return {
+            "alora_base_past": past,
+            "alora_base_hidden": hidden,
+            "alora_activation_boundary": boundary,
+        }
+
+    def _alora_suffix_recompute(self, baseline: BackendOutput) -> BackendOutput:
+        if not baseline.extras:
+            raise ValueError("aLoRA prefix reuse requires cached prompt state")
+        state = baseline.extras.get("prompt_state")
+        boundary = baseline.extras.get("alora_activation_boundary")
+        base_past = baseline.extras.get("alora_base_past")
+        if not isinstance(state, _PromptState) or not isinstance(boundary, int) or base_past is None:
+            raise ValueError(
+                "aLoRA prefix reuse requires data.adapter_activation_marker and a prepared base-prefix cache"
+            )
+        past = self._clone_past(base_past)
+        suffix_ids = state.prefix_ids[:, boundary:]
+        reset_peak_memory(self.torch, self.devices)
+        synchronize(self.torch, self.devices)
+        start = time.perf_counter()
+        self._set_lora_enabled(True)
+        self._set_lora_capture(True)
+        hidden_tensor = baseline.extras.get("alora_base_hidden", baseline.hidden_tensor)
+        with self.torch.no_grad():
+            if suffix_ids.shape[1] > 0:
+                suffix = self.model(
+                    input_ids=suffix_ids,
+                    past_key_values=past,
+                    use_cache=True,
+                    output_hidden_states=True,
+                )
+                past = suffix.past_key_values
+                hidden_tensor = self._summarize_hidden(suffix.hidden_states)
+            self._set_lora_capture(False)
+        synchronize(self.torch, self.devices)
+        maintenance_s = time.perf_counter() - start
+        with self.torch.no_grad():
+            probe_logits, generated_text, decode_s = self._generate_answer(state, past)
+        latency = maintenance_s + decode_s
+        self._last_alora_s = latency
+        return BackendOutput(
+            logits=self._to_numpy(probe_logits),
+            cache_tensor=self._summarize_past(past),
+            hidden_tensor=np.asarray(hidden_tensor),
+            parameter_version=self.parameter_version,
+            extras={
+                "past_key_values": past,
+                "prompt_state": state,
+                "lora_cache": self._snapshot_lora_cache(),
+                "memory_allocated": memory_allocated(self.torch, self.devices),
+                "peak_memory_allocated": max_memory_allocated(self.torch, self.devices),
+                "cache_bytes": self._past_nbytes(past),
+                "token_length": int(state.input_ids.shape[1]),
+                "attention_implementation": self._attention_implementation(),
+                "strategy_latency": latency,
+                "cache_maintenance_latency": maintenance_s,
+                "decode_latency": decode_s,
+                "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
+                "generated_text": generated_text,
+                "cache_mode": "alora_base_prefix_suffix_recompute",
+                **self._alora_base_extras(state),
+            },
+        )
 
     def _cached_output_with_runtime(self, baseline: BackendOutput, *, cache_mode: str) -> BackendOutput:
         extras = dict(baseline.extras or {})

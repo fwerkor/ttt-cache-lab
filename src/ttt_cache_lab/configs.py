@@ -39,6 +39,7 @@ class DataConfig(BaseModel):
     question_field: str | None = None
     prompt_template: str = "{context}\n\nQuestion: {question}\nAnswer:"
     truncation_strategy: Literal["error", "left", "middle"] = "error"
+    adapter_activation_marker: str | None = None
 
 
 class UpdateConfig(BaseModel):

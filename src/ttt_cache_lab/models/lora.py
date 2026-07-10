@@ -23,13 +23,16 @@ def make_lora_linear(torch: Any, nn: Any, base: Any, *, rank: int, alpha: float)
             self.lora_b = nn.Parameter(torch.zeros(out_features, rank, dtype=base_module.weight.dtype))
             self.capture_lora_input = False
             self.cached_lora_input = None
+            self.lora_enabled = True
             self.lora_name = ""
             nn.init.kaiming_uniform_(self.lora_a, a=5**0.5)
 
         def forward(self, x: Any) -> Any:
-            if self.capture_lora_input:
+            if self.capture_lora_input and self.lora_enabled:
                 self.cached_lora_input = x.detach()
             base_out = self.base(x)
+            if not self.lora_enabled:
+                return base_out
             lora_hidden = torch.nn.functional.linear(x, self.lora_a)
             lora_out = torch.nn.functional.linear(lora_hidden, self.lora_b)
             return base_out + lora_out * self.scaling
@@ -40,6 +43,7 @@ def make_lora_linear(torch: Any, nn: Any, base: Any, *, rank: int, alpha: float)
                 self.lora_b.zero_()
             self.cached_lora_input = None
             self.capture_lora_input = False
+            self.lora_enabled = True
 
         def lora_parameters(self) -> list[Any]:
             return [self.lora_a, self.lora_b]

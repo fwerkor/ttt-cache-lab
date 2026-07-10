@@ -15,17 +15,25 @@ data:
   num_samples: 4
   context_length: 2048
   answer_length: 4
+  adapter_activation_marker: <ADAPTER>
 updates:
-  targets: [lora.q, lora.k, lora.v, lora.qv]
-  update_norm: 0.00001
+  targets:
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  update_norm: 1.0e-05
 cache:
   strategies:
-    - full_recompute
-    - no_adaptation
-    - base_cache_reuse
-    - adapter_specific_cache
-    - static_base_delta
-    - stale_reuse
+  - full_recompute
+  - no_adaptation
+  - base_cache_reuse
+  - adapter_specific_cache
+  - static_base_delta
+  - stale_reuse
+  - alora_prefix_reuse
+  - lragent_adapter_cache
+  - forkkv_base_delta
   update_norm_threshold: 0.05
 adapter:
   update_mode: static_lora
@@ -34,5 +42,13 @@ adapter:
   learning_rate: 0.0002
   train_steps_per_version: 1
   freeze_base_model: true
-  static_adapter_sequence: [0, 1, 2, 0, 2, 1, 0]
-version_steps: [0]
+  static_adapter_sequence:
+  - 0
+  - 1
+  - 2
+  - 0
+  - 2
+  - 1
+  - 0
+version_steps:
+- 0

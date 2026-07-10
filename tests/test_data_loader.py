@@ -86,3 +86,17 @@ def test_synthetic_loader_adds_runtime_metadata() -> None:
     sample = build_task_samples(config, seed=1)[0]
     assert sample.metadata["source"] == "synthetic"
     assert sample.metadata["record_index"] == 0
+
+
+
+def test_activation_marker_is_inserted_before_answer() -> None:
+    config = DataConfig(
+        task="passkey",
+        num_samples=1,
+        context_length=64,
+        answer_length=2,
+        adapter_activation_marker="<ADAPTER>",
+    )
+    sample = build_task_samples(config, seed=1)[0]
+    assert "<ADAPTER> Answer:" in sample.prompt
+    assert sample.metadata["adapter_activation_marker"] == "<ADAPTER>"

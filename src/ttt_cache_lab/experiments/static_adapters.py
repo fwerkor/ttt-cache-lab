@@ -100,7 +100,10 @@ class StaticAdapterExperimentRunner:
                                 "No-adaptation baseline uses the base model and base cache.",
                             )
                             baseline_output = baseline
-                        elif strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
+                        elif strategy.name in {
+                            StrategyName.ADAPTER_SPECIFIC_CACHE,
+                            StrategyName.LRAGENT_ADAPTER_CACHE,
+                        }:
                             existing = per_adapter_cache[key].get(adapter_number)
                             if existing is None:
                                 decision = StrategyDecision(
@@ -132,6 +135,8 @@ class StaticAdapterExperimentRunner:
                         elif strategy.name not in {
                             StrategyName.BASE_CACHE_REUSE,
                             StrategyName.STATIC_BASE_DELTA,
+                            StrategyName.FORKKV_BASE_DELTA,
+                            StrategyName.ALORA_PREFIX_REUSE,
                             StrategyName.STALE_REUSE,
                             StrategyName.FROZEN_REUSE,
                         }:
@@ -143,9 +148,15 @@ class StaticAdapterExperimentRunner:
                             updated=adapter.current,
                             decision=decision,
                         )
-                        if strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE:
+                        if strategy.name in {
+                            StrategyName.ADAPTER_SPECIFIC_CACHE,
+                            StrategyName.LRAGENT_ADAPTER_CACHE,
+                        }:
                             per_adapter_cache[key][adapter_number] = approx
-                        if strategy.name is not StrategyName.NO_ADAPTATION and decision.action in {
+                        if strategy.name not in {
+                            StrategyName.NO_ADAPTATION,
+                            StrategyName.ALORA_PREFIX_REUSE,
+                        } and decision.action in {
                             CacheAction.FULL_RECOMPUTE,
                             CacheAction.REUSE_EXACT,
                             CacheAction.PARTIAL_RECOMPUTE,

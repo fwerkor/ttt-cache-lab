@@ -65,6 +65,8 @@ def estimate_recompute_fraction(decision: StrategyDecision, *, num_layers: int) 
         return max(0.0, min(1.0, remaining / max(1, num_layers)))
     if decision.action is CacheAction.DELTA_CORRECT:
         return decision.recompute_fraction or 0.15
+    if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
+        return decision.recompute_fraction or 0.25
     return decision.recompute_fraction
 
 
@@ -74,6 +76,7 @@ def is_cache_hit(decision: StrategyDecision) -> bool:
         CacheAction.REUSE_FROZEN,
         CacheAction.REUSE_STALE,
         CacheAction.DELTA_CORRECT,
+        CacheAction.ALORA_SUFFIX_RECOMPUTE,
     }
 
 
@@ -82,6 +85,7 @@ def is_refresh_action(decision: StrategyDecision) -> bool:
         CacheAction.FULL_RECOMPUTE,
         CacheAction.PARTIAL_RECOMPUTE,
         CacheAction.REJECT_UPDATE,
+        CacheAction.ALORA_SUFFIX_RECOMPUTE,
     }
 
 
