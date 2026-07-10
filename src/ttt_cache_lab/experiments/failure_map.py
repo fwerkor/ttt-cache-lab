@@ -69,22 +69,31 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
 
 def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
     groups: dict[tuple[str, str, int, str], list[dict[str, str]]] = defaultdict(list)
-    full_scores: dict[tuple[str, str, int], float] = {}
+    full_records: dict[tuple[tuple[str, str], ...], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
         experiment = row.get("experiment_id", "")
         target = row.get("update_target", "")
         gap = int(float(row.get("version_gap", row.get("adapter_version", "0")) or 0))
         strategy = row.get("cache_strategy", "")
         groups[(experiment, target, gap, strategy)].append(row)
-
-    for (experiment, target, gap, strategy), records in groups.items():
         if strategy == "full_recompute":
-            full_scores[(experiment, target, gap)] = _mean(records, "task_score")
+            full_records[_reference_key(row)].append(row)
 
+    full_scores = {key: _mean(records, "task_score") for key, records in full_records.items()}
     cells = []
     for (experiment, target, gap, strategy), records in sorted(groups.items()):
-        full_score = full_scores.get((experiment, target, gap), _mean(records, "task_score"))
         task_score = _mean(records, "task_score")
+        task_drops = []
+        for record in records:
+            reference = full_scores.get(_reference_key(record))
+            if reference is None:
+                raise ValueError(
+                    "Missing full_recompute reference for "
+                    f"experiment={experiment!r}, target={target!r}, "
+                    f"adapter_version={record.get('adapter_version', '')!r}, "
+                    f"sample_id={record.get('sample_id', '')!r}"
+                )
+            task_drops.append(reference - float(record.get("task_score", 0.0) or 0.0))
         cells.append(
             FailureCell(
                 experiment_id=experiment,
@@ -93,7 +102,7 @@ def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
                 cache_strategy=strategy,
                 count=len(records),
                 task_score_mean=task_score,
-                task_drop_vs_full=full_score - task_score,
+                task_drop_vs_full=sum(task_drops) / len(task_drops),
                 logits_kl_mean=_mean(records, "logits_kl"),
                 top1_agreement_mean=_mean(records, "top1_agreement"),
                 relative_error_mean=_mean(records, "relative_error"),
@@ -101,6 +110,25 @@ def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
             )
         )
     return cells
+
+
+def _reference_key(row: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    fields = [
+        field
+        for field in (
+            "run_name",
+            "experiment_id",
+            "sample_id",
+            "update_target",
+            "adapter_id",
+            "adapter_version",
+            "lora_rank",
+            "update_mode",
+        )
+        if field in row
+    ]
+    fields.extend(sorted(field for field in row if field.startswith("sweep.")))
+    return tuple((field, row.get(field, "")) for field in fields)
 
 
 def _write_cells(cells: list[FailureCell], output: Path) -> None:

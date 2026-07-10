@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 from ttt_cache_lab.experiments.failure_map import generate_failure_map
@@ -82,11 +83,20 @@ def _row(values: list[str], *, experiment: str, task_score: str | None = None) -
 
 def test_generate_failure_map(tmp_path: Path) -> None:
     source = tmp_path / "summary.csv"
-    source.write_text(HEADER + _row(FULL_ROW, experiment="e3") + _row(STALE_ROW, experiment="e3"), encoding="utf-8")
+    full = FULL_ROW.copy()
+    full[13:16] = ["2", "1", "1"]
+    stale = STALE_ROW.copy()
+    stale[13:16] = ["2", "0", "2"]
+    source.write_text(HEADER + _row(full, experiment="e3") + _row(stale, experiment="e3"), encoding="utf-8")
     policy = generate_failure_map(source, tmp_path / "failure")
     assert policy.exists()
     assert "full_recompute" in policy.read_text(encoding="utf-8")
-    assert (tmp_path / "failure" / "failure_map.csv").exists()
+    failure_csv = tmp_path / "failure" / "failure_map.csv"
+    assert failure_csv.exists()
+    with failure_csv.open(newline="", encoding="utf-8") as handle:
+        cells = list(csv.DictReader(handle))
+    stale_cell = next(cell for cell in cells if cell["cache_strategy"] == "stale_reuse")
+    assert float(stale_cell["task_drop_vs_full"]) == 1.0
     heatmap = tmp_path / "failure" / "logits_kl_heatmap.svg"
     assert heatmap.exists()
     assert "stale_reuse / lora.k" in heatmap.read_text(encoding="utf-8")
