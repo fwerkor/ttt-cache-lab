@@ -1157,6 +1157,7 @@ class HuggingFaceBackend:
         latency = time.perf_counter() - start
         extras = {
             "past_key_values": past,
+            "hidden_states": baseline.extras.get("hidden_states"),
             "prompt_state": state,
             "lora_cache": lora_cache if lora_cache is not None else baseline.extras.get("lora_cache", {}),
             "memory_allocated": memory_allocated(self.torch, self.devices),

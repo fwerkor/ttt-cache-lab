@@ -100,6 +100,22 @@ def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
     assert update_norm > 0.0
     full = backend.full_recompute(sample.prompt, baseline)
 
+    exact_decision = StrategyDecision(
+        StrategyName.ADAPTIVE,
+        CacheAction.REUSE_EXACT,
+        CacheBlockState.VALID_EXACT,
+        None,
+        "integration",
+    )
+    reused = backend.apply_cache_strategy(
+        baseline=baseline,
+        full=full,
+        updated=baseline,
+        decision=exact_decision,
+    )
+    assert reused.extras is not None
+    assert isinstance(reused.extras["hidden_states"], tuple)
+
     delta_decision = StrategyDecision(
         StrategyName.DELTA_CORRECTION,
         CacheAction.DELTA_CORRECT,
@@ -126,7 +142,7 @@ def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
         "integration",
     )
     partial = backend.apply_cache_strategy(
-        baseline=baseline,
+        baseline=reused,
         full=full,
         updated=baseline,
         decision=partial_decision,
