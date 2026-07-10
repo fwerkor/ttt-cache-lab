@@ -71,10 +71,10 @@ class NoAdaptationStrategy(CacheStrategy):
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
         return StrategyDecision(
             self.name,
-            CacheAction.REUSE_FROZEN,
-            CacheBlockState.VALID_FROZEN,
+            CacheAction.REUSE_EXACT,
+            CacheBlockState.VALID_EXACT,
             None,
-            "Baseline: keep the original pre-adaptation evidence fixed.",
+            "Baseline: skip adaptation and reuse the original model output exactly.",
         )
 
 

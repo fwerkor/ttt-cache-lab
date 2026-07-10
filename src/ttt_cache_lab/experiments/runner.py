@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 
 from ttt_cache_lab.cache.semantics import CacheAction
-from ttt_cache_lab.cache.strategies import build_strategy
+from ttt_cache_lab.cache.strategies import StrategyName, build_strategy
 from ttt_cache_lab.configs import ExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.experiments.metrics import (
@@ -79,7 +79,11 @@ class ExperimentRunner:
                     strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
                     decode_latency = output_decode_latency(approx)
                     maintenance_latency = output_cache_maintenance_latency(approx)
-                    adaptation_latency = update_result.adaptation_latency
+                    adaptation_latency = (
+                        0.0
+                        if strategy.name is StrategyName.NO_ADAPTATION
+                        else update_result.adaptation_latency
+                    )
                     task_score = (
                         backend.score_answer(sample, approx)
                         if self.config.metrics.compute_task_metrics

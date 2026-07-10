@@ -137,6 +137,8 @@ def test_no_adaptation_keeps_original_cache_version(tmp_path: Path) -> None:
     assert {record.action for record in records} == {"reuse_exact"}
     assert {record.cached_version for record in records} == {0}
     assert [record.version_gap for record in records] == [1, 2]
+    assert {record.adaptation_latency for record in records} == {0.0}
+    assert all(record.end_to_end_latency == record.latency_units for record in records)
 
 
 def test_adapter_specific_cache_builds_each_unseen_version(tmp_path: Path) -> None:

@@ -386,6 +386,11 @@ class VersionedExperimentRunner:
                 if self.config.metrics.compute_tensor_metrics
                 else 0.0
             )
+            strategy_adaptation_latency = (
+                0.0
+                if strategy.name is StrategyName.NO_ADAPTATION
+                else accumulated_adaptation_latency
+            )
             records.append(
                 ExperimentRecord(
                     sample_id=sample_id,
@@ -422,10 +427,10 @@ class VersionedExperimentRunner:
                     cache_bytes=output_cache_bytes(approx),
                     memory_allocated=output_memory_allocated(approx),
                     peak_memory_allocated=output_peak_memory_allocated(approx),
-                    adaptation_latency=accumulated_adaptation_latency,
+                    adaptation_latency=strategy_adaptation_latency,
                     cache_maintenance_latency=maintenance_latency,
                     decode_latency=decode_latency,
-                    end_to_end_latency=accumulated_adaptation_latency + strategy_latency,
+                    end_to_end_latency=strategy_adaptation_latency + strategy_latency,
                     throughput_tokens_per_s=output_throughput(approx, latency=strategy_latency),
                     recompute_fraction=estimate_recompute_fraction(decision, num_layers=backend.num_layers),
                     cache_hit=is_cache_hit(decision),
