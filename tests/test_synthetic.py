@@ -81,15 +81,18 @@ def test_multi_hop_sources_have_one_outgoing_edge() -> None:
     assert len(sources) == len(set(sources))
 
 
-def test_aggregation_reference_matches_generated_target_count() -> None:
+def test_aggregation_reference_matches_ledger_majority() -> None:
     sample = SyntheticTaskFactory(7).aggregation(context_length=4096, answer_length=4)
     ledger = sample.prompt.split("BEGIN LEDGER\n", maxsplit=1)[1].split(
         "\nEND LEDGER", maxsplit=1
     )[0]
-    assert ledger.splitlines().count("TARGET_EVENT") == int(sample.answer)
-    assert ledger.splitlines().count("OTHER_EVENT") == int(
-        sample.metadata["distractor_count"]
-    )
+    counts = {
+        label: ledger.splitlines().count(label)
+        for label in ("TARGET_EVENT", "OTHER_EVENT")
+    }
+    assert sample.answer == max(counts, key=lambda label: counts[label])
+    assert counts[sample.answer] == int(sample.metadata["majority_count"])
+    assert min(counts.values()) == int(sample.metadata["minority_count"])
 
 
 def test_variable_tracking_distractors_never_reassign_target() -> None:
@@ -158,13 +161,16 @@ def test_synthetic_difficulty_controls_structural_complexity() -> None:
         answer_length=4,
         difficulty="hard",
     )
-    easy_semantic_events = int(easy_aggregation.answer) + int(
-        easy_aggregation.metadata["distractor_count"]
+    easy_semantic_events = int(easy_aggregation.metadata["majority_count"]) + int(
+        easy_aggregation.metadata["minority_count"]
     )
-    hard_semantic_events = int(hard_aggregation.answer) + int(
-        hard_aggregation.metadata["distractor_count"]
+    hard_semantic_events = int(hard_aggregation.metadata["majority_count"]) + int(
+        hard_aggregation.metadata["minority_count"]
     )
     assert easy_semantic_events < hard_semantic_events
+    assert int(easy_aggregation.metadata["margin"]) > int(
+        hard_aggregation.metadata["margin"]
+    )
 
     easy_edges = easy_hop.prompt.count(" points to ")
     hard_edges = hard_hop.prompt.count(" points to ")

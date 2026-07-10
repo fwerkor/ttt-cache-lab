@@ -288,27 +288,24 @@ class SyntheticTaskFactory:
         difficulty: SyntheticDifficulty = "hard",
     ) -> TaskSample:
         del answer_length
-        lower, upper = {
-            "easy": (2, 5),
-            "medium": (3, 7),
-            "hard": (3, 12),
-        }[difficulty]
-        target_count = self.rng.randrange(lower, upper)
-        hard_distractor_count = max(target_count, context_length // 10)
-        distractor_count = min(
-            hard_distractor_count,
-            _difficulty_value(
-                difficulty,
-                easy=4,
-                medium=16,
-                hard=hard_distractor_count,
-            ),
-        )
-        ledger = ["TARGET_EVENT" for _ in range(target_count)]
-        ledger.extend("OTHER_EVENT" for _ in range(distractor_count))
+        if difficulty == "easy":
+            majority_count = self.rng.randrange(6, 10)
+            minority_count = self.rng.randrange(2, 5)
+        elif difficulty == "medium":
+            majority_count = self.rng.randrange(12, 18)
+            minority_count = self.rng.randrange(7, 12)
+        else:
+            base_count = max(32, min(128, context_length // 128))
+            majority_count = base_count
+            minority_count = base_count - self.rng.randrange(1, 5)
+        majority = self.rng.choice(("TARGET_EVENT", "OTHER_EVENT"))
+        minority = "OTHER_EVENT" if majority == "TARGET_EVENT" else "TARGET_EVENT"
+        ledger = [majority for _ in range(majority_count)]
+        ledger.extend(minority for _ in range(minority_count))
         self.rng.shuffle(ledger)
+        neutral_count = max(0, context_length // 10 - len(ledger))
         neutral = neutral_background_sentences(
-            hard_distractor_count - distractor_count,
+            neutral_count,
             offset=self.rng.randrange(512),
         )
         prompt = "\n".join(
@@ -317,19 +314,20 @@ class SyntheticTaskFactory:
                 "BEGIN LEDGER",
                 *ledger,
                 "END LEDGER",
-                "Question: Count only the lines equal to TARGET_EVENT between BEGIN LEDGER and END LEDGER. "
-                "Do not count this question. Reply with one integer.",
+                "Question: Between BEGIN LEDGER and END LEDGER, which exact line occurs more often: "
+                "TARGET_EVENT or OTHER_EVENT? Reply with only the more frequent line label.",
                 "Answer:",
             ]
         )
         return TaskSample(
             prompt=prompt,
-            answer=str(target_count),
+            answer=majority,
             metadata={
                 "task": "aggregation",
-                "target": "TARGET_EVENT",
-                "count": target_count,
-                "distractor_count": distractor_count,
+                "majority": majority,
+                "majority_count": majority_count,
+                "minority_count": minority_count,
+                "margin": majority_count - minority_count,
                 "synthetic_difficulty": difficulty,
             },
         )
