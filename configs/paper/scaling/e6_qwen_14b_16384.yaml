@@ -37,8 +37,6 @@ cache:
   - stale_reuse
   - periodic_refresh
   - threshold_refresh
-  - delta_correction
-  - layerwise_recompute
   - adaptive
   refresh_period: 4
   update_norm_threshold: 0.01

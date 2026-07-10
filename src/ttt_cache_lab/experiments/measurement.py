@@ -60,12 +60,19 @@ def measure_backend_call(
         raise ValueError("timed_runs must be positive")
     for _ in range(warmup_runs):
         execute()
-    outputs = [execute() for _ in range(timed_runs)]
-    latencies = [output_strategy_latency(output, fallback=fallback_latency) for output in outputs]
-    decode_latencies = [output_decode_latency(output) for output in outputs]
-    maintenance_latencies = [output_cache_maintenance_latency(output) for output in outputs]
+    output: BackendOutput | None = None
+    latencies: list[float] = []
+    decode_latencies: list[float] = []
+    maintenance_latencies: list[float] = []
+    for _ in range(timed_runs):
+        output = execute()
+        latencies.append(output_strategy_latency(output, fallback=fallback_latency))
+        decode_latencies.append(output_decode_latency(output))
+        maintenance_latencies.append(output_cache_maintenance_latency(output))
+    if output is None:
+        raise RuntimeError("timed measurement produced no output")
     return StrategyMeasurement(
-        output=outputs[-1],
+        output=output,
         timed_runs=timed_runs,
         warmup_runs=warmup_runs,
         latency_mean=statistics.fmean(latencies),

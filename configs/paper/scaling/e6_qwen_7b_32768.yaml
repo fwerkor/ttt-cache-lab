@@ -9,7 +9,7 @@ model:
   torch_dtype: bfloat16
   max_length: 32768
   trust_remote_code: true
-  parallelism: single
+  parallelism: model_shard
   device_ids: []
 data:
   source: synthetic
@@ -37,8 +37,6 @@ cache:
   - stale_reuse
   - periodic_refresh
   - threshold_refresh
-  - delta_correction
-  - layerwise_recompute
   - adaptive
   refresh_period: 4
   update_norm_threshold: 0.01

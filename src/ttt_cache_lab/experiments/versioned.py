@@ -711,7 +711,7 @@ class VersionedExperimentRunner:
         full: BackendOutput,
         current: BackendOutput,
         target: UpdateTarget,
-        sample: object,
+        sample: TaskSample,
     ) -> tuple[StrategyDecision, BackendOutput]:
         candidates = [
             StrategyDecision(
@@ -751,8 +751,8 @@ class VersionedExperimentRunner:
             )
         )
 
-        full_score = backend.score_answer(sample, full)  # type: ignore[arg-type]
-        feasible: list[tuple[float, StrategyDecision, BackendOutput, float, float, float]] = []
+        full_score = backend.score_answer(sample, full)
+        best: tuple[float, StrategyDecision, BackendOutput, float, float, float] | None = None
         for candidate in candidates:
             try:
                 output = backend.apply_cache_strategy(
@@ -768,7 +768,7 @@ class VersionedExperimentRunner:
                 continue
             candidate_kl = kl_divergence(full.logits, output.logits)
             candidate_top1 = top1_agreement(full.logits, output.logits)
-            candidate_score = backend.score_answer(sample, output)  # type: ignore[arg-type]
+            candidate_score = backend.score_answer(sample, output)
             safe = (
                 candidate_kl <= self.config.cache.oracle_kl_threshold
                 and candidate_top1 >= self.config.cache.oracle_top1_threshold
@@ -780,14 +780,16 @@ class VersionedExperimentRunner:
                 continue
             fallback_cost = backend.estimate_latency(candidate, context_length=self.config.data.context_length)
             cost = output_strategy_latency(output, fallback=fallback_cost)
-            feasible.append((cost, candidate, output, candidate_kl, candidate_top1, candidate_score))
+            proposal = (cost, candidate, output, candidate_kl, candidate_top1, candidate_score)
+            if best is None or (cost, candidate.recompute_fraction) < (
+                best[0],
+                best[1].recompute_fraction,
+            ):
+                best = proposal
 
-        if not feasible:
+        if best is None:
             raise RuntimeError("Measured oracle found no feasible action, including full recompute")
-        cost, selected, output, selected_kl, selected_top1, selected_score = min(
-            feasible,
-            key=lambda item: (item[0], item[1].recompute_fraction),
-        )
+        cost, selected, output, selected_kl, selected_top1, selected_score = best
         decision = StrategyDecision(
             StrategyName.ORACLE_PLANNER,
             selected.action,
