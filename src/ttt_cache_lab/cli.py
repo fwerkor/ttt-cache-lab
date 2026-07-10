@@ -23,6 +23,7 @@ from ttt_cache_lab.experiments.summarize import (
     write_summary,
 )
 from ttt_cache_lab.experiments.sweep import run_sweep, run_versioned_sweep
+from ttt_cache_lab.experiments.task_probe import run_task_probe
 from ttt_cache_lab.experiments.versioned import VersionedExperimentRunner, write_version_summary
 from ttt_cache_lab.updates.targets import ModuleKind
 
@@ -52,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
     versioned = subparsers.add_parser("versioned-run", help="Run a multi-step versioned adapter experiment")
     versioned.add_argument("--config", required=True, type=Path)
     versioned.add_argument("--version-summary", action="store_true")
+
+    task_probe = subparsers.add_parser(
+        "task-probe",
+        help="Run baseline-only task viability checks before an expensive experiment",
+    )
+    task_probe.add_argument("--config", required=True, type=Path)
+    task_probe.add_argument("--output-dir", required=True, type=Path)
+    task_probe.add_argument("--max-samples", type=int, default=None)
+    task_probe.add_argument("--min-mean-score", type=float, default=None)
+    task_probe.add_argument("--max-mean-score", type=float, default=None)
 
     static_run = subparsers.add_parser("static-run", help="Run a fixed multi-adapter cache experiment")
     static_run.add_argument("--config", required=True, type=Path)
@@ -183,6 +194,23 @@ def main(argv: list[str] | None = None) -> None:
             output = versioned_config.output_dir / "version_summary.csv"
             write_version_summary(versioned_artifacts.csv_path, output)
             console.print(f"Wrote {output}")
+        return
+    if args.command == "task-probe":
+        probe_config = VersionedExperimentConfig.from_yaml(args.config)
+        probe_artifacts = run_task_probe(
+            probe_config,
+            output_dir=args.output_dir,
+            max_samples=args.max_samples,
+            min_mean_score=args.min_mean_score,
+            max_mean_score=args.max_mean_score,
+        )
+        console.print(f"Wrote {probe_artifacts.records_jsonl}")
+        console.print(f"Wrote {probe_artifacts.records_csv}")
+        console.print(f"Wrote {probe_artifacts.summary_json}")
+        console.print(
+            f"Mean score: {probe_artifacts.summary.mean_score:.6f} "
+            f"({probe_artifacts.summary.sample_count} samples)"
+        )
         return
     if args.command == "static-run":
         static_config = VersionedExperimentConfig.from_yaml(args.config)

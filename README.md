@@ -44,6 +44,7 @@ Implemented:
 - cluster-bootstrap confidence intervals, paired comparisons, Wilson false-safe bounds, warm-up/repeated timing, and p50/p95 latency reporting;
 - a shardable 72-configuration, 216-job manifest spanning 1.5B, 7B, 14B, and 32B models, Mistral cross-family transfer, and a 7B code model;
 - atomic per-target checkpoints, record-level resume, cross-run record merging, structured failure manifests, and run metadata with config/git/package provenance;
+- baseline-only task probes that preserve generated answers, score distributions, latency, memory, and explicit all-zero/all-one degeneracy flags before expensive runs;
 - CI for linting, strict type checking, unit tests, and offline tiny-Llama integration tests that execute real LoRA, KV delta correction, and native layer restart paths.
 
 Remaining work is paper-scale hardware validation rather than placeholder implementation: Qwen2.5-7B has passed real Ascend smoke, two-NPU feasibility, and four-NPU 8K stress runs, while the full long-context matrix and 14B/32B configurations still need complete measurements on the selected accelerator infrastructure. The aLoRA/LRAgent/ForkKV-style methods are explicitly labeled as paper reimplementations and should still be compared with official upstream implementations where licensing and environments permit.

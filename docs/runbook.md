@@ -360,6 +360,19 @@ The local aLoRA-, LRAgent-, and ForkKV-style methods are labeled `paper_reimplem
 
 The authoritative protocol is [`paper_experiment_protocol.md`](paper_experiment_protocol.md). Do not tune planner thresholds or regenerate the failure map after observing held-out test results.
 
+Before launching a costly condition, run a baseline-only task probe. It writes every generated answer and a degeneracy summary before any adapter update or cache strategy is executed:
+
+```bash
+python -m ttt_cache_lab.cli task-probe \
+  --config configs/paper/calibration/e3_qwen_7b_multi_needle.yaml \
+  --output-dir runs/preflight/qwen_7b_multi_needle \
+  --max-samples 8 \
+  --min-mean-score 0.1 \
+  --max-mean-score 0.9
+```
+
+The score bounds are optional. When a bound fails, the command still preserves `task_probe.jsonl`, `task_probe.csv`, and `task_probe_summary.json` so the prompt, answer, generated text, latency, and memory evidence can be inspected.
+
 Inspect the 216-job matrix without running models:
 
 ```bash
