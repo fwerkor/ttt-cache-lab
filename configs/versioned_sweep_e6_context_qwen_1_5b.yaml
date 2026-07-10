@@ -1,0 +1,44 @@
+name: e6-context-qwen-1-5b-sweep
+output_dir: runs/e6_context_qwen_1_5b_sweep
+base:
+  name: e6-context-qwen-1-5b-base
+  output_dir: runs/unused
+  experiment_id: e6_scaling
+  seed: 7
+  model:
+    backend: hf
+    model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+    device: auto
+    torch_dtype: auto
+    max_length: 32768
+    trust_remote_code: true
+  data:
+    task: variable_tracking
+    num_samples: 2
+    context_length: 4096
+    answer_length: 4
+  updates:
+    targets: [lora.q, lora.k, lora.v, lora.qv]
+    step_count: 1
+    update_norm: 0.0001
+  cache:
+    strategies:
+      - full_recompute
+      - stale_reuse
+      - periodic_refresh
+      - threshold_refresh
+      - adaptive
+      - oracle_planner
+    refresh_period: 4
+    update_norm_threshold: 0.05
+  adapter:
+    update_mode: lora_train
+    lora_rank: 8
+    lora_alpha: 16.0
+    learning_rate: 0.0002
+    train_steps_per_version: 1
+    freeze_base_model: true
+  version_steps: [0, 1, 2, 4]
+axes:
+  - path: data.context_length
+    values: [4096, 8192, 16384, 32768]

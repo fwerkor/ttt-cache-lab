@@ -157,3 +157,37 @@ class VersionedExperimentConfig(BaseModel):
         with path.open("r", encoding="utf-8") as handle:
             payload = yaml.safe_load(handle)
         return cls.model_validate(payload)
+
+
+class VersionedSweepConfig(BaseModel):
+    name: str
+    base: VersionedExperimentConfig
+    output_dir: Path = Path("runs/versioned-sweep")
+    axes: list[SweepAxis] = Field(default_factory=list)
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> VersionedSweepConfig:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle)
+        return cls.model_validate(payload)
+
+    def expand(self) -> list[VersionedExperimentConfig]:
+        configs: list[VersionedExperimentConfig] = []
+
+        def rec(index: int, payload: dict[str, Any], suffix: list[str]) -> None:
+            if index == len(self.axes):
+                item = VersionedExperimentConfig.model_validate(payload)
+                clean_suffix = "__".join(suffix) if suffix else "base"
+                item.name = f"{self.name}-{clean_suffix}"
+                item.output_dir = self.output_dir / clean_suffix
+                configs.append(item)
+                return
+            axis = self.axes[index]
+            for value in axis.values:
+                next_payload = deepcopy(payload)
+                _set_dotted(next_payload, axis.path, value)
+                safe_value = str(value).replace("/", "_").replace(".", "p").replace(" ", "_")
+                rec(index + 1, next_payload, [*suffix, f"{axis.path.replace('.', '_')}={safe_value}"])
+
+        rec(0, self.base.model_dump(mode="json"), [])
+        return configs

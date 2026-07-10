@@ -1,0 +1,52 @@
+name: e5-delta-qwen-0-5b-sweep
+output_dir: runs/e5_delta_qwen_0_5b_sweep
+base:
+  name: e5-delta-qwen-0-5b-base
+  output_dir: runs/unused
+  experiment_id: e5_delta_correction
+  seed: 7
+  model:
+    backend: hf
+    model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+    device: auto
+    torch_dtype: auto
+    max_length: 2048
+    trust_remote_code: true
+  data:
+    task: passkey
+    num_samples: 2
+    context_length: 2048
+    answer_length: 4
+  updates:
+    targets:
+      - lora.k_early
+      - lora.k_middle
+      - lora.k_late
+      - lora.v_early
+      - lora.v_middle
+      - lora.v_late
+      - lora.qv
+    step_count: 1
+    update_norm: 0.0001
+  cache:
+    strategies:
+      - full_recompute
+      - stale_reuse
+      - static_base_delta
+      - delta_correction
+      - adaptive
+    refresh_period: 4
+    update_norm_threshold: 0.05
+  adapter:
+    update_mode: lora_train
+    lora_rank: 8
+    lora_alpha: 16.0
+    learning_rate: 0.0005
+    train_steps_per_version: 1
+    freeze_base_model: true
+  version_steps: [0, 1, 2, 4]
+axes:
+  - path: adapter.lora_rank
+    values: [2, 4, 8, 16, 32]
+  - path: updates.update_norm
+    values: [0.00001, 0.0001, 0.001]

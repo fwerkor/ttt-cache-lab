@@ -5,9 +5,10 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from ttt_cache_lab.configs import SweepConfig
+from ttt_cache_lab.configs import SweepConfig, VersionedSweepConfig
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.summarize import summarize_csv, write_summary
+from ttt_cache_lab.experiments.versioned import VersionedExperimentRunner, write_version_summary
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,41 @@ def run_sweep(config: SweepConfig) -> SweepArtifacts:
     rows = summarize_csv(merged)
     write_summary(rows, grouped)
 
+    return SweepArtifacts(
+        output_dir=config.output_dir,
+        merged_records_csv=merged,
+        grouped_csv=grouped,
+        run_dirs=run_dirs,
+    )
+
+
+
+def run_versioned_sweep(config: VersionedSweepConfig) -> SweepArtifacts:
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    run_dirs: list[Path] = []
+    merged_rows: list[dict[str, str]] = []
+    fieldnames: list[str] | None = None
+
+    for experiment in config.expand():
+        if experiment.output_dir.exists():
+            shutil.rmtree(experiment.output_dir)
+        artifacts = VersionedExperimentRunner(experiment).run()
+        run_dirs.append(experiment.output_dir)
+        with artifacts.csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if fieldnames is None:
+                fieldnames = ["run_name", *list(reader.fieldnames or [])]
+            for row in reader:
+                merged_rows.append({"run_name": experiment.name, **row})
+
+    merged = config.output_dir / "merged_records.csv"
+    with merged.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames or [])
+        writer.writeheader()
+        writer.writerows(merged_rows)
+
+    grouped = config.output_dir / "version_summary.csv"
+    write_version_summary(merged, grouped)
     return SweepArtifacts(
         output_dir=config.output_dir,
         merged_records_csv=merged,

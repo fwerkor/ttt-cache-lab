@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig
+from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig, VersionedSweepConfig
 from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
 from ttt_cache_lab.experiments.pareto import generate_pareto
 from ttt_cache_lab.experiments.report import generate_report
@@ -17,7 +17,7 @@ from ttt_cache_lab.experiments.summarize import (
     to_markdown,
     write_summary,
 )
-from ttt_cache_lab.experiments.sweep import run_sweep
+from ttt_cache_lab.experiments.sweep import run_sweep, run_versioned_sweep
 from ttt_cache_lab.experiments.versioned import VersionedExperimentRunner, write_version_summary
 from ttt_cache_lab.updates.targets import ModuleKind
 
@@ -40,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sweep = subparsers.add_parser("sweep", help="Run a YAML-defined sweep")
     sweep.add_argument("--config", required=True, type=Path)
+
+    versioned_sweep = subparsers.add_parser("versioned-sweep", help="Run a YAML-defined versioned sweep")
+    versioned_sweep.add_argument("--config", required=True, type=Path)
 
     versioned = subparsers.add_parser("versioned-run", help="Run a multi-step versioned adapter experiment")
     versioned.add_argument("--config", required=True, type=Path)
@@ -96,6 +99,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "sweep":
         sweep_config = SweepConfig.from_yaml(args.config)
         artifacts = run_sweep(sweep_config)
+        console.print(f"Wrote {artifacts.merged_records_csv}")
+        console.print(f"Wrote {artifacts.grouped_csv}")
+        return
+    if args.command == "versioned-sweep":
+        versioned_sweep_config = VersionedSweepConfig.from_yaml(args.config)
+        artifacts = run_versioned_sweep(versioned_sweep_config)
         console.print(f"Wrote {artifacts.merged_records_csv}")
         console.print(f"Wrote {artifacts.grouped_csv}")
         return
