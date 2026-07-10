@@ -955,14 +955,14 @@ class HuggingFaceBackend:
                 self._set_lora_capture(False)
             synchronize(self.torch, self.devices)
             maintenance_s = time.perf_counter() - start
-            with self.torch.no_grad():
-                probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
-            latency = maintenance_s + decode_s
         finally:
             self._set_lora_capture(False)
             for layer_index, original in replacements:
                 layer_container[layer_index] = original
 
+        with self.torch.no_grad():
+            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+        latency = maintenance_s + decode_s
         recomputed_hidden_states = tuple(hidden.detach() for hidden in prefill.hidden_states)
         expected_suffix_states = len(layer_container) - split_layer + 1
         if len(recomputed_hidden_states) == len(layer_container) + 1:

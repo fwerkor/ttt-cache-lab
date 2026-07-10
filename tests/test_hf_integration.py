@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytestmark = pytest.mark.hf_integration
@@ -152,6 +153,7 @@ def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
     assert partial.extras["cache_bytes"] > 0
     assert len(partial.extras["hidden_states"]) == backend.num_layers + 1
     assert partial.logits.shape == full.logits.shape
+    np.testing.assert_allclose(partial.logits, full.logits, rtol=1e-5, atol=1e-5)
 
     repeated_partial = backend.apply_cache_strategy(
         baseline=partial,
