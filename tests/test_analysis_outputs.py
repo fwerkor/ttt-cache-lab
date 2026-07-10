@@ -100,6 +100,8 @@ def test_generate_failure_map(tmp_path: Path) -> None:
     heatmap = tmp_path / "failure" / "logits_kl_heatmap.svg"
     assert heatmap.exists()
     assert "stale_reuse / lora.k" in heatmap.read_text(encoding="utf-8")
+    attention_heatmap = tmp_path / "failure" / "attention_shift_heatmap.svg"
+    assert "N/A" in attention_heatmap.read_text(encoding="utf-8")
 
 
 def test_generate_pareto(tmp_path: Path) -> None:

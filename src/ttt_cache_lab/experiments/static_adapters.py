@@ -277,6 +277,11 @@ class StaticAdapterExperimentRunner:
                             if self.config.metrics.compute_flops_metrics
                             else 0.0
                         )
+                        attention_shift_value = (
+                            attention_distribution_shift(full, approx)
+                            if self.config.metrics.compute_attention_metrics
+                            else None
+                        )
                         planner_source, failure_map_path, failure_map_sha256 = planner_provenance(
                             decision.strategy,
                             self.config.cache.failure_map_path,
@@ -356,11 +361,8 @@ class StaticAdapterExperimentRunner:
                                 model_num_layers=backend.num_layers,
                                 model_hidden_size=self.config.model.hidden_size,
                                 configured_update_norm=self.config.updates.update_norm,
-                                attention_shift=(
-                                    attention_distribution_shift(full, approx)
-                                    if self.config.metrics.compute_attention_metrics
-                                    else 0.0
-                                ),
+                                attention_shift=attention_shift_value,
+                                attention_metric_available=attention_shift_value is not None,
                                 strategy_flops=strategy_flops,
                                 full_recompute_flops=full_recompute_flops,
                                 flops_fraction=(

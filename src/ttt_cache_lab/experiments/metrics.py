@@ -132,11 +132,11 @@ def output_baseline_fidelity(output: BackendOutput) -> str:
     return value if isinstance(value, str) else ""
 
 
-def attention_distribution_shift(full: BackendOutput, approx: BackendOutput) -> float:
+def attention_distribution_shift(full: BackendOutput, approx: BackendOutput) -> float | None:
     full_summary = _attention_summary(full)
     approx_summary = _attention_summary(approx)
     if full_summary is None or approx_summary is None or full_summary.shape != approx_summary.shape:
-        return 0.0
+        return None
     epsilon = 1e-12
     left = np.clip(full_summary.astype(np.float64), epsilon, None)
     right = np.clip(approx_summary.astype(np.float64), epsilon, None)

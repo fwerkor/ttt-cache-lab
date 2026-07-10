@@ -119,6 +119,7 @@ def _analyze_e2(
             "logits_kl",
             "top1_agreement",
             "attention_shift",
+            "attention_metric_available",
             "end_to_end_latency",
             "strategy_flops",
             "flops_fraction",
@@ -229,6 +230,9 @@ def _analyze_e4(
                 "logits_kl_mean": _mean(records, "logits_kl"),
                 "top1_agreement_mean": _mean(records, "top1_agreement"),
                 "attention_shift_mean": _mean(records, "attention_shift"),
+                "attention_metric_available_rate": _mean(
+                    records, "attention_metric_available"
+                ),
                 "end_to_end_latency_mean": latency,
                 "speedup_vs_full": _mean(records, "speedup_vs_full"),
                 "total_cache_bytes_mean": _mean(records, "total_cache_bytes"),
@@ -255,6 +259,7 @@ def _analyze_e4(
                 "logits_kl_mean",
                 "top1_agreement_mean",
                 "attention_shift_mean",
+                "attention_metric_available_rate",
                 "end_to_end_latency_mean",
                 "speedup_vs_full",
                 "total_cache_bytes_mean",
@@ -326,6 +331,9 @@ def _analyze_e5(
                 "logits_kl_mean": _mean(records, "logits_kl"),
                 "top1_agreement_mean": _mean(records, "top1_agreement"),
                 "attention_shift_mean": _mean(records, "attention_shift"),
+                "attention_metric_available_rate": _mean(
+                    records, "attention_metric_available"
+                ),
                 "flops_fraction_mean": _mean(records, "flops_fraction"),
             }
         )
@@ -343,6 +351,7 @@ def _analyze_e5(
                 "logits_kl_mean",
                 "top1_agreement_mean",
                 "attention_shift_mean",
+                "attention_metric_available_rate",
                 "flops_fraction_mean",
             ),
         ),
@@ -389,6 +398,7 @@ def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
             "relative_error",
             "logits_kl",
             "attention_shift",
+            "attention_metric_available",
             "end_to_end_latency",
             "throughput_tokens_per_s",
             "total_cache_bytes",
@@ -411,6 +421,7 @@ def _analyze_e6(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
                 "relative_error_mean",
                 "logits_kl_mean",
                 "attention_shift_mean",
+                "attention_metric_available_mean",
                 "end_to_end_latency_mean",
                 "throughput_tokens_per_s_mean",
                 "total_cache_bytes_mean",
@@ -468,7 +479,10 @@ def _analyze_e7(
                 "first_unsafe_update_norm": _number(first, "update_norm_since_cache") if first else 0.0,
                 "first_unsafe_kl": _number(first, "logits_kl") if first else 0.0,
                 "first_unsafe_task_drop": _number(first, "task_drop_vs_full") if first else 0.0,
-                "first_unsafe_attention_shift": _number(first, "attention_shift") if first else 0.0,
+                "first_unsafe_attention_shift": _optional_number(first, "attention_shift"),
+                "attention_metric_available_rate": _mean(
+                    points, "attention_metric_available"
+                ),
                 "first_unsafe_flops_fraction": _number(first, "flops_fraction") if first else 0.0,
                 "false_safe_rate": sum(_bool(row, "false_safe") for row in points) / len(points),
             }
@@ -489,6 +503,7 @@ def _analyze_e7(
                 "first_unsafe_kl",
                 "first_unsafe_task_drop",
                 "first_unsafe_attention_shift",
+                "attention_metric_available_rate",
                 "first_unsafe_flops_fraction",
                 "false_safe_rate",
             ),
@@ -589,10 +604,24 @@ def _number(row: dict[str, str] | None, field: str, *, default: float = 0.0) -> 
     raw = row.get(field)
     if raw is None or raw == "":
         return default
+    lowered = raw.lower()
+    if lowered in {"true", "yes"}:
+        return 1.0
+    if lowered in {"false", "no"}:
+        return 0.0
     try:
         return float(raw)
     except ValueError:
         return default
+
+
+def _optional_number(row: dict[str, str] | None, field: str) -> float | None:
+    if row is None:
+        return None
+    raw = row.get(field)
+    if raw is None or raw == "":
+        return None
+    return _number(row, field)
 
 
 def _bool(row: dict[str, str], field: str) -> bool:

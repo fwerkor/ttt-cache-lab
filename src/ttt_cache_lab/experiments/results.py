@@ -56,7 +56,8 @@ class ExperimentRecord:
     model_num_layers: int = 0
     model_hidden_size: int = 0
     configured_update_norm: float = 0.0
-    attention_shift: float = 0.0
+    attention_shift: float | None = None
+    attention_metric_available: bool = False
     strategy_flops: float = 0.0
     full_recompute_flops: float = 0.0
     flops_fraction: float = 0.0

@@ -24,6 +24,8 @@ def test_versioned_runner_writes_version_fields(tmp_path: Path) -> None:
     assert len(artifacts.records) == 9
     assert {record.adapter_version for record in artifacts.records} == {0, 1, 2}
     assert all(record.experiment_id == "unit_e2" for record in artifacts.records)
+    assert all(record.attention_shift is None for record in artifacts.records)
+    assert not any(record.attention_metric_available for record in artifacts.records)
     output = tmp_path / "version_summary.csv"
     write_version_summary(artifacts.csv_path, output)
     assert output.exists()
@@ -330,8 +332,11 @@ def test_versioned_runner_records_attention_shift_and_action_flops(tmp_path: Pat
     full = by_strategy["full_recompute"]
     stale = by_strategy["stale_reuse"]
     partial = by_strategy["layerwise_recompute"]
+    assert full.attention_metric_available
+    assert stale.attention_metric_available
+    assert partial.attention_metric_available
     assert full.attention_shift == 0.0
-    assert stale.attention_shift > 0.0
+    assert stale.attention_shift is not None and stale.attention_shift > 0.0
     assert full.strategy_flops == full.full_recompute_flops
     assert full.flops_fraction == 1.0
     assert stale.strategy_flops == 0.0

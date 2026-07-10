@@ -457,6 +457,11 @@ class VersionedExperimentRunner:
                 if self.config.metrics.compute_flops_metrics
                 else 0.0
             )
+            attention_shift_value = (
+                attention_distribution_shift(full, approx)
+                if self.config.metrics.compute_attention_metrics
+                else None
+            )
             planner_source, failure_map_path, failure_map_sha256 = planner_provenance(
                 decision.strategy,
                 self.config.cache.failure_map_path,
@@ -531,11 +536,8 @@ class VersionedExperimentRunner:
                     model_num_layers=backend.num_layers,
                     model_hidden_size=self.config.model.hidden_size,
                     configured_update_norm=self.config.updates.update_norm,
-                    attention_shift=(
-                        attention_distribution_shift(full, approx)
-                        if self.config.metrics.compute_attention_metrics
-                        else 0.0
-                    ),
+                    attention_shift=attention_shift_value,
+                    attention_metric_available=attention_shift_value is not None,
                     strategy_flops=strategy_flops,
                     full_recompute_flops=full_recompute_flops,
                     flops_fraction=(
@@ -763,6 +765,7 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "total_cache_bytes_mean",
         "evicted_cache_entries_mean",
         "attention_shift_mean",
+        "attention_metric_available_rate",
         "strategy_flops_mean",
         "full_recompute_flops_mean",
         "flops_fraction_mean",
@@ -799,6 +802,9 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "total_cache_bytes_mean": _mean(records, "total_cache_bytes"),
                     "evicted_cache_entries_mean": _mean(records, "evicted_cache_entries"),
                     "attention_shift_mean": _mean(records, "attention_shift"),
+                    "attention_metric_available_rate": _mean_bool(
+                        records, "attention_metric_available"
+                    ),
                     "strategy_flops_mean": _mean(records, "strategy_flops"),
                     "full_recompute_flops_mean": _mean(records, "full_recompute_flops"),
                     "flops_fraction_mean": _mean(records, "flops_fraction"),

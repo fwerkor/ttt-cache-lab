@@ -132,4 +132,12 @@ def test_attention_distribution_shift_uses_jensen_shannon_divergence() -> None:
         extras={"attention_summary": np.array([[0.1, 0.9]])},
     )
     assert attention_distribution_shift(full, same) == 0.0
-    assert attention_distribution_shift(full, shifted) > 0.0
+    shifted_value = attention_distribution_shift(full, shifted)
+    assert shifted_value is not None and shifted_value > 0.0
+    unavailable = BackendOutput(
+        logits=np.zeros((1, 2)),
+        cache_tensor=np.zeros((1, 1)),
+        hidden_tensor=np.zeros((1, 1)),
+        parameter_version=1,
+    )
+    assert attention_distribution_shift(full, unavailable) is None

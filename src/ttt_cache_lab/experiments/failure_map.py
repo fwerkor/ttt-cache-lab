@@ -29,6 +29,7 @@ class FailureCell:
     relative_error_mean: float
     false_safe_rate: float
     attention_shift_mean: float
+    attention_metric_available_rate: float
 
     def to_dict(self) -> dict[str, str | int | float]:
         return {
@@ -44,6 +45,7 @@ class FailureCell:
             "relative_error_mean": self.relative_error_mean,
             "false_safe_rate": self.false_safe_rate,
             "attention_shift_mean": self.attention_shift_mean,
+            "attention_metric_available_rate": self.attention_metric_available_rate,
         }
 
     def condition_label(self) -> str:
@@ -114,6 +116,9 @@ def _aggregate_cells(rows: list[dict[str, str]]) -> list[FailureCell]:
                 relative_error_mean=_mean(records, "relative_error"),
                 false_safe_rate=_mean_bool(records, "false_safe"),
                 attention_shift_mean=_mean(records, "attention_shift"),
+                attention_metric_available_rate=_mean_bool(
+                    records, "attention_metric_available"
+                ),
             )
         )
     return cells
@@ -183,13 +188,14 @@ def _heatmap_svg(cells: list[FailureCell], *, metric: str) -> str:
     gaps = sorted({cell.version_gap for cell in filtered})
     if not rows or not gaps:
         return "<svg xmlns='http://www.w3.org/2000/svg'></svg>"
-    values = {
-        (cell.condition_label(), cell.cache_strategy, cell.update_target, cell.version_gap): float(
-            getattr(cell, metric)
-        )
-        for cell in filtered
-    }
-    max_value = max(values.values() or [1.0]) or 1.0
+    values: dict[tuple[str, str, str, int], float | None] = {}
+    for cell in filtered:
+        value: float | None = float(getattr(cell, metric))
+        if metric == "attention_shift_mean" and cell.attention_metric_available_rate == 0.0:
+            value = None
+        values[(cell.condition_label(), cell.cache_strategy, cell.update_target, cell.version_gap)] = value
+    numeric_values = [value for value in values.values() if value is not None]
+    max_value = max(numeric_values or [1.0]) or 1.0
     cell_w, cell_h = 96, 32
     left, top = 520, 50
     width = left + cell_w * len(gaps) + 30
@@ -210,9 +216,19 @@ def _heatmap_svg(cells: list[FailureCell], *, metric: str) -> str:
         label = _escape(" / ".join(value for value in (condition, strategy, target) if value))
         lines.append(f"<text x='{left - 8}' y='{y + 21}' text-anchor='end' font-size='11'>{label}</text>")
         for col, gap in enumerate(gaps):
-            value = values.get((condition, strategy, target, gap), 0.0)
-            shade = int(255 - min(220, 220 * value / max_value))
+            value = values.get((condition, strategy, target, gap))
             x = left + col * cell_w
+            if value is None:
+                lines.append(
+                    f"<rect x='{x}' y='{y}' width='{cell_w}' height='{cell_h}' "
+                    "fill='#eeeeee' stroke='#ddd'/>"
+                )
+                lines.append(
+                    f"<text x='{x + cell_w / 2}' y='{y + 21}' text-anchor='middle' "
+                    "font-size='11'>N/A</text>"
+                )
+                continue
+            shade = int(255 - min(220, 220 * value / max_value))
             lines.append(
                 f"<rect x='{x}' y='{y}' width='{cell_w}' height='{cell_h}' "
                 f"fill='rgb(255,{shade},{shade})' stroke='#ddd'/>"
