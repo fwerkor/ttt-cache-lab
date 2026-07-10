@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-stage="${1:?Usage: $0 <validation|test|scaling|ablation|workload> [study-root] [output-root]}"
+stage="${1:?Usage: $0 <baseline|drift|validation|test|delta|scaling|ablation|workload> [study-root] [output-root]}"
 study_root="${2:-runs/paper/study}"
 output_root="${3:-runs/paper/results/$stage}"
 case "$stage" in
-  validation|test|scaling|ablation|workload) ;;
+  baseline|drift|validation|test|delta|scaling|ablation|workload) ;;
   *) echo "Unsupported stage: $stage" >&2; exit 2 ;;
 esac
 mkdir -p "$output_root"

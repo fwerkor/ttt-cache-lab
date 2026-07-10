@@ -1,0 +1,105 @@
+name: paper-e1-qwen-7b-longbench-v2-static
+output_dir: runs/paper/direct/baseline/qwen_7b
+experiment_id: e1_static_adapter_baseline
+seed: 7
+model:
+  backend: hf
+  model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  device: auto
+  torch_dtype: bfloat16
+  max_length: 16384
+  trust_remote_code: true
+  parallelism: single
+  device_ids: []
+data:
+  source: huggingface
+  task: longbench_v2
+  benchmark_name: LongBench-v2
+  task_family: realistic_long_context_reasoning
+  evaluation_partition: validation
+  selection_seed: 2027
+  shuffle: true
+  sample_offset: 0
+  num_samples: 64
+  context_length: 16384
+  dataset_name: THUDM/LongBench-v2
+  dataset_split: train
+  context_field: context
+  question_field: question
+  choice_fields:
+  - choice_A
+  - choice_B
+  - choice_C
+  - choice_D
+  answer_field: answer
+  id_field: _id
+  category_field: domain
+  metadata_fields:
+  - sub_domain
+  - difficulty
+  - length
+  prompt_template: '{context}
+
+
+    Question: {question}
+
+    {choices}
+
+    Return only A, B, C, or D.
+
+    Answer:'
+  scorer: multiple_choice
+  truncation_strategy: middle
+  answer_length: 2
+updates:
+  targets:
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  step_count: 1
+  update_norm: 0.001
+cache:
+  strategies:
+  - full_recompute
+  - base_cache_reuse
+  - adapter_specific_cache
+  - alora_prefix_reuse
+  - lragent_adapter_cache
+  - forkkv_base_delta
+  - static_base_delta
+  refresh_period: 4
+  update_norm_threshold: 0.01
+  version_gap_threshold: 8
+  oracle_kl_threshold: 0.05
+  oracle_top1_threshold: 0.99
+  oracle_task_drop_threshold: 0.01
+metrics:
+  compute_tensor_metrics: true
+  compute_task_metrics: true
+  compute_attention_metrics: false
+  compute_flops_metrics: true
+measurement:
+  warmup_runs: 0
+  timed_runs: 1
+  bootstrap_resamples: 5000
+  confidence_level: 0.95
+adapter:
+  update_mode: static_lora
+  norm_control: target_l2
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+  static_adapter_sequence:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 0
+  - 2
+  - 1
+  - 3
+version_steps:
+- 0

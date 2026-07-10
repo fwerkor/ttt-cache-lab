@@ -1,0 +1,76 @@
+name: paper-e5-qwen-7b-r8-n1e3
+output_dir: runs/paper/direct/delta/qwen_7b/r8_n1e3
+experiment_id: e5_delta_correction
+seed: 7
+model:
+  backend: hf
+  model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  device: auto
+  torch_dtype: bfloat16
+  max_length: 16384
+  trust_remote_code: true
+  parallelism: single
+  device_ids: []
+data:
+  source: synthetic
+  task: multi_hop_tracing
+  benchmark_name: controlled-long-context
+  task_family: multi_hop_reasoning
+  evaluation_partition: test
+  selection_seed: 2027
+  sample_offset: 160
+  num_samples: 16
+  context_length: 16384
+  answer_length: 4
+  scorer: contains
+updates:
+  targets:
+  - lora.k_early
+  - lora.k_middle
+  - lora.k_late
+  - lora.v_early
+  - lora.v_middle
+  - lora.v_late
+  - lora.qv
+  step_count: 1
+  update_norm: 0.001
+cache:
+  strategies:
+  - full_recompute
+  - stale_reuse
+  - static_base_delta
+  - delta_correction
+  - periodic_refresh
+  - adaptive
+  refresh_period: 4
+  update_norm_threshold: 0.01
+  version_gap_threshold: 8
+  oracle_kl_threshold: 0.05
+  oracle_top1_threshold: 0.99
+  oracle_task_drop_threshold: 0.01
+  failure_map_path: runs/paper/calibration/final/failure_map/failure_map.csv
+metrics:
+  compute_tensor_metrics: true
+  compute_task_metrics: true
+  compute_attention_metrics: false
+  compute_flops_metrics: true
+measurement:
+  warmup_runs: 0
+  timed_runs: 1
+  bootstrap_resamples: 2000
+  confidence_level: 0.95
+adapter:
+  update_mode: lora_train
+  norm_control: target_l2
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps:
+- 0
+- 1
+- 2
+- 4
+- 8
+- 16

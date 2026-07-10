@@ -1,6 +1,17 @@
 name: ttt-cache-fse-paper-study
 output_dir: runs/paper/study
 jobs:
+- name: baseline_e1_qwen_7b_longbench_v2
+  config: configs/paper/baseline/e1_qwen_7b_longbench_v2.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - baseline
+  - qwen_7b
+  - longbench_v2
+  runner: static
 - name: calibration_e3_qwen_14b_aggregation
   config: configs/paper/calibration/e3_qwen_14b_aggregation.yaml
   seeds:
@@ -181,6 +192,66 @@ jobs:
   - calibration
   - qwen_7b
   - controlled
+- name: drift_e2_qwen_14b_controlled
+  config: configs/paper/drift/e2_qwen_14b_controlled.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - drift
+  - qwen_14b
+  - controlled
+- name: drift_e2_qwen_14b_longbench_v2
+  config: configs/paper/drift/e2_qwen_14b_longbench_v2.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - drift
+  - qwen_14b
+  - longbench_v2
+- name: drift_e2_qwen_32b_controlled
+  config: configs/paper/drift/e2_qwen_32b_controlled.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - drift
+  - qwen_32b
+  - controlled
+- name: drift_e2_qwen_32b_longbench_v2
+  config: configs/paper/drift/e2_qwen_32b_longbench_v2.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - drift
+  - qwen_32b
+  - longbench_v2
+- name: drift_e2_qwen_7b_controlled
+  config: configs/paper/drift/e2_qwen_7b_controlled.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - drift
+  - qwen_7b
+  - controlled
+- name: drift_e2_qwen_7b_longbench_v2
+  config: configs/paper/drift/e2_qwen_7b_longbench_v2.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - drift
+  - qwen_7b
+  - longbench_v2
 - name: validation_e4_mistral_7b_longbench_v2_validation
   config: configs/paper/validation/e4_mistral_7b_longbench_v2_validation.yaml
   seeds:
@@ -359,6 +430,150 @@ jobs:
   - test
   - qwen_coder_7b
   - longbench
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_32b_r16_n1e3
+  config: configs/paper/delta/e5_qwen_32b_r16_n1e3.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_32b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_32b_r16_n1e4
+  config: configs/paper/delta/e5_qwen_32b_r16_n1e4.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_32b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_32b_r4_n1e3
+  config: configs/paper/delta/e5_qwen_32b_r4_n1e3.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_32b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_32b_r4_n1e4
+  config: configs/paper/delta/e5_qwen_32b_r4_n1e4.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_32b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_32b_r8_n1e3
+  config: configs/paper/delta/e5_qwen_32b_r8_n1e3.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_32b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_32b_r8_n1e4
+  config: configs/paper/delta/e5_qwen_32b_r8_n1e4.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_32b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_7b_r16_n1e3
+  config: configs/paper/delta/e5_qwen_7b_r16_n1e3.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_7b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_7b_r16_n1e4
+  config: configs/paper/delta/e5_qwen_7b_r16_n1e4.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_7b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_7b_r4_n1e3
+  config: configs/paper/delta/e5_qwen_7b_r4_n1e3.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_7b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_7b_r4_n1e4
+  config: configs/paper/delta/e5_qwen_7b_r4_n1e4.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_7b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_7b_r8_n1e3
+  config: configs/paper/delta/e5_qwen_7b_r8_n1e3.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_7b
+  - controlled
+  required_paths:
+  - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: delta_e5_qwen_7b_r8_n1e4
+  config: configs/paper/delta/e5_qwen_7b_r8_n1e4.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - delta
+  - qwen_7b
+  - controlled
   required_paths:
   - runs/paper/calibration/final/failure_map/failure_map.csv
 - name: scaling_e6_qwen_14b_16384

@@ -12,7 +12,10 @@ def test_all_paper_configs_parse_and_use_fixed_dataset_selection() -> None:
     configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
     assert all(config.data.evaluation_partition in {"calibration", "validation", "test"} for config in configs)
     assert all(config.data.selection_seed > 0 for config in configs)
-    assert all(config.adapter.update_mode == "lora_train" for config in configs)
+    assert all(config.adapter.update_mode in {"lora_train", "static_lora"} for config in configs)
+    assert any(config.experiment_id == "e1_static_adapter_baseline" for config in configs)
+    assert any(config.experiment_id == "e2_version_drift" for config in configs)
+    assert any(config.experiment_id == "e5_delta_correction" for config in configs)
     assert all(config.updates.update_norm > 0.0 for config in configs)
 
 
@@ -56,4 +59,6 @@ def test_study_manifest_expands_every_config_to_three_seeds() -> None:
     config_count = len(list(Path("configs/paper").glob("*/*.yaml")))
     assert len(jobs) == config_count * 3
     assert {job.seed for job in jobs} == {7, 17, 29}
-    assert all(job.required_paths for job in jobs if "calibration" not in job.tags)
+    dependent_stages = {"validation", "test", "delta", "scaling", "ablation", "workload"}
+    assert all(job.required_paths for job in jobs if dependent_stages.intersection(job.tags))
+    assert all(not job.required_paths for job in jobs if {"baseline", "calibration", "drift"}.intersection(job.tags))
