@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -100,6 +101,32 @@ def test_chat_template_prompt_preparation_preserves_context_and_format(tiny_llam
     output = backend.prefill(sample.prompt)
     assert output.extras is not None
     assert output.extras["token_length"] == 24
+
+
+def test_manual_decode_stops_at_eos_and_reports_actual_token_count(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 8},
+        ),
+        context_length=16,
+    )
+    state = backend._encode_prompt(sample.prompt)
+    eos = int(backend.tokenizer.eos_token_id)
+    assert eos in backend._stop_token_ids
+
+    class EosModel:
+        def __call__(self, **kwargs: object) -> SimpleNamespace:
+            logits = torch.zeros((1, 1, backend.tokenizer.vocab_size), dtype=torch.float32)
+            logits[0, 0, eos] = 1.0
+            return SimpleNamespace(logits=logits, past_key_values=kwargs["past_key_values"])
+
+    backend.model = EosModel()
+    _, generated_text, _, generated_tokens = backend._generate_answer(state, ())
+    assert generated_text == ""
+    assert generated_tokens == 1
 
 
 def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:

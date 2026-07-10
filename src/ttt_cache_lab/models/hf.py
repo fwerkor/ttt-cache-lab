@@ -93,9 +93,7 @@ class HuggingFaceBackend:
         )
         self.use_chat_template = use_chat_template
         if self.use_chat_template and not getattr(self.tokenizer, "chat_template", None):
-            raise ValueError(
-                "model.use_chat_template=true requires a tokenizer with a configured chat template"
-            )
+            raise ValueError("model.use_chat_template=true requires a tokenizer with a configured chat template")
         if parallelism == "model_shard":
             from ttt_cache_lab.models.sharding import build_model_shard_plan, resolve_shard_device_ids
 
@@ -139,6 +137,7 @@ class HuggingFaceBackend:
         else:
             raise ValueError(f"Unsupported parallelism mode: {parallelism}")
         self.model.eval()
+        self._stop_token_ids = self._resolve_stop_token_ids()
         self.num_layers = self._infer_num_layers()
         self._parameter_count = sum(int(parameter.numel()) for parameter in self.model.parameters())
         self.max_length = max_length
@@ -214,11 +213,7 @@ class HuggingFaceBackend:
                 if available < 1:
                     raise ValueError("Chat-template control tokens leave no room for prompt content")
                 content_length = int(content.shape[1])
-                activation_in_content = (
-                    activation_boundary - content_start
-                    if activation_boundary is not None
-                    else None
-                )
+                activation_in_content = activation_boundary - content_start if activation_boundary is not None else None
                 if strategy == "left":
                     removed = content_length - available
                     content = content[:, -available:]
@@ -344,6 +339,24 @@ class HuggingFaceBackend:
     def _resolve_device(self, device: str) -> str:
         return resolve_device(self.torch, device)
 
+    def _resolve_stop_token_ids(self) -> frozenset[int]:
+        stop_ids: set[int] = set()
+        for raw in (
+            getattr(self.tokenizer, "eos_token_id", None),
+            getattr(getattr(self.model, "generation_config", None), "eos_token_id", None),
+        ):
+            if isinstance(raw, int):
+                stop_ids.add(raw)
+            elif isinstance(raw, list | tuple | set):
+                stop_ids.update(int(value) for value in raw if isinstance(value, int))
+        convert = getattr(self.tokenizer, "convert_tokens_to_ids", None)
+        if callable(convert):
+            for token in ("<|im_end|>", "<|eot_id|>", "<|end_of_turn|>"):
+                token_id = convert(token)
+                if isinstance(token_id, int) and token_id >= 0:
+                    stop_ids.add(token_id)
+        return frozenset(stop_ids)
+
     def _resolve_dtype(self, dtype: str) -> Any | None:
         if dtype == "auto":
             return None
@@ -371,7 +384,9 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.devices)
         prefill_s = time.perf_counter() - start
         with self.torch.no_grad():
-            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+            probe_logits, generated_text, decode_s, generated_tokens = self._generate_answer(
+                state, prefill.past_key_values
+            )
         self._last_prefill_s = prefill_s
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
@@ -389,7 +404,7 @@ class HuggingFaceBackend:
                 "token_length": int(state.input_ids.shape[1]),
                 "attention_implementation": self._attention_implementation(),
                 "generated_text": generated_text,
-                "generated_tokens": self._sample_answer_token_counts.get(prompt, 1),
+                "generated_tokens": generated_tokens,
                 "prefill_latency": prefill_s,
                 "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
@@ -450,7 +465,9 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.devices)
         prefill_s = time.perf_counter() - start
         with self.torch.no_grad():
-            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+            probe_logits, generated_text, decode_s, generated_tokens = self._generate_answer(
+                state, prefill.past_key_values
+            )
         self._last_prefill_s = prefill_s
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
@@ -468,7 +485,7 @@ class HuggingFaceBackend:
                 "token_length": int(state.input_ids.shape[1]),
                 "attention_implementation": self._attention_implementation(),
                 "generated_text": generated_text,
-                "generated_tokens": self._sample_answer_token_counts.get(prompt, 1),
+                "generated_tokens": generated_tokens,
                 "prefill_latency": prefill_s,
                 "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
@@ -672,9 +689,7 @@ class HuggingFaceBackend:
         if prompt_ids is None:
             prompt_ids, _, _ = self._tokenize_prompt_ids(sample.prompt)
             if prompt_ids.shape[1] > self.max_length:
-                raise ValueError(
-                    "Unprepared training prompt exceeds model.max_length; call prepare_sample first"
-                )
+                raise ValueError("Unprepared training prompt exceeds model.max_length; call prepare_sample first")
         answer_ids = self.tokenizer(
             sample.answer,
             return_tensors="pt",
@@ -783,7 +798,7 @@ class HuggingFaceBackend:
             activation_boundary=self._sample_activation_boundaries.get(prompt),
         )
 
-    def _generate_answer(self, state: _PromptState, past: Any) -> tuple[Any, str, float]:
+    def _generate_answer(self, state: _PromptState, past: Any) -> tuple[Any, str, float, int]:
         max_new_tokens = self._sample_answer_token_counts.get(state.prompt, 1)
         current = state.probe_ids
         current_past = self._clone_past(past)
@@ -817,11 +832,12 @@ class HuggingFaceBackend:
             if first_logits is None:
                 first_logits = logits
             if capture_attention:
-                self._last_attention_summary = self._summarize_attentions(
-                    getattr(result, "attentions", None)
-                )
+                self._last_attention_summary = self._summarize_attentions(getattr(result, "attentions", None))
             next_token = self.torch.argmax(logits, dim=-1, keepdim=True)
             generated.append(next_token)
+            token_id = int(next_token[0, 0].item())
+            if token_id in self._stop_token_ids:
+                break
             current = next_token
             current_past = result.past_key_values
         synchronize(self.torch, self.devices)
@@ -830,7 +846,7 @@ class HuggingFaceBackend:
             raise RuntimeError("Answer generation produced no logits")
         generated_ids = self.torch.cat(generated, dim=1)[0].detach().cpu().tolist()
         generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-        return first_logits, generated_text, decode_s
+        return first_logits, generated_text, decode_s, len(generated)
 
     def _summarize_attentions(self, attentions: Any) -> np.ndarray | None:
         if not isinstance(attentions, tuple | list) or not attentions:
@@ -914,7 +930,7 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.devices)
         maintenance_s = time.perf_counter() - start
         with self.torch.no_grad():
-            probe_logits, generated_text, decode_s = self._generate_answer(state, past)
+            probe_logits, generated_text, decode_s, generated_tokens = self._generate_answer(state, past)
         latency = maintenance_s + decode_s
         self._last_alora_s = latency
         return BackendOutput(
@@ -934,7 +950,7 @@ class HuggingFaceBackend:
                 "strategy_latency": latency,
                 "cache_maintenance_latency": maintenance_s,
                 "decode_latency": decode_s,
-                "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
+                "generated_tokens": generated_tokens,
                 "generated_text": generated_text,
                 "cache_mode": "alora_base_prefix_suffix_recompute",
                 "strategy_flops": self._full_prefill_flops(int(suffix_ids.shape[1])),
@@ -1061,7 +1077,9 @@ class HuggingFaceBackend:
                 layer_container[layer_index] = original
 
         with self.torch.no_grad():
-            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+            probe_logits, generated_text, decode_s, generated_tokens = self._generate_answer(
+                state, prefill.past_key_values
+            )
         latency = maintenance_s + decode_s
         recomputed_hidden_states = tuple(hidden.detach() for hidden in prefill.hidden_states)
         expected_suffix_states = len(layer_container) - split_layer + 1
@@ -1096,7 +1114,7 @@ class HuggingFaceBackend:
                 "strategy_latency": latency,
                 "cache_maintenance_latency": maintenance_s,
                 "decode_latency": decode_s,
-                "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
+                "generated_tokens": generated_tokens,
                 "generated_text": generated_text,
                 "partial_mode": f"native_{family}_layer_restart",
                 "strategy_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1]))
@@ -1265,7 +1283,7 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.devices)
         start = time.perf_counter()
         with self.torch.no_grad():
-            probe_logits, generated_text, decode_s = self._generate_answer(state, past)
+            probe_logits, generated_text, decode_s, generated_tokens = self._generate_answer(state, past)
         synchronize(self.torch, self.devices)
         latency = time.perf_counter() - start
         extras = {
@@ -1281,7 +1299,7 @@ class HuggingFaceBackend:
             "strategy_latency": latency,
             "cache_maintenance_latency": max(0.0, latency - decode_s),
             "generated_text": generated_text,
-            "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
+            "generated_tokens": generated_tokens,
             "decode_latency": decode_s,
             "strategy_flops": 0.0,
             "full_recompute_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
