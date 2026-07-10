@@ -66,6 +66,9 @@ Edit the YAML config rather than the code.
 - `model.max_length`: truncation length for the prompt.
 - `data.source`: `synthetic`, `jsonl`, or `huggingface`.
 - `data.num_samples`: number of examples to run.
+- `data.selection_seed` and `data.sample_offset`: fixed dataset membership independent of the model/update seed.
+- `data.evaluation_partition`: explicit `calibration`, `validation`, or `test` provenance.
+- `data.choice_fields`, `filters`, and metadata fields: mapping for LongBench v2 and other structured benchmarks.
 - `data.context_length`: exact tokenizer-level prompt length after the configured truncation/padding policy.
 - `data.truncation_strategy`: `error`, `left`, or `middle` for overlength external data.
 - `data.adapter_activation_marker`: optional invocation marker for the aLoRA-style prefix-reuse baseline.
@@ -76,6 +79,7 @@ Edit the YAML config rather than the code.
 - `cache.manager_scope`: `condition` by default; use `sample` or `global_workload` only for workload-style capacity experiments.
 - `resume`: merge completed checkpoint records from an interrupted run.
 - `checkpoint_each_target`: atomically save after each sample × target condition.
+- `measurement.warmup_runs` and `measurement.timed_runs`: robust performance repetitions; use dedicated performance configs rather than repeating the whole quality matrix unnecessarily.
 
 List supported target names:
 
@@ -117,6 +121,9 @@ The main columns are:
 - `baseline_task_score`, `full_task_score`, `adaptation_gain_vs_base`
 - `adaptation_latency`, `cache_maintenance_latency`, `decode_latency`, `end_to_end_latency`
 - `throughput_tokens_per_s`, `cache_entry_count`
+- `dataset_sample_id`, `evaluation_partition`, `benchmark_name`, `task_family`
+- `model_parameter_count`, actual backend hidden size and layer count
+- `timing_runs`, `latency_mean`, `latency_p50`, `latency_p95`, `latency_std`
 
 ## 6. Analysis commands
 
@@ -132,6 +139,15 @@ python -m ttt_cache_lab.cli failure-map \
 python -m ttt_cache_lab.cli pareto \
   --input runs/e4_planner_main/summary.csv \
   --output-dir runs/e4_planner_main/pareto
+
+python -m ttt_cache_lab.cli statistics \
+  --input runs/e4_planner_main/summary.csv \
+  --output-dir runs/e4_planner_main/statistics \
+  --bootstrap-resamples 5000
+
+python -m ttt_cache_lab.cli study-analysis \
+  --input runs/e4_planner_main/summary.csv \
+  --output-dir runs/e4_planner_main/analysis
 ```
 
 Run E3 and E4 as one calibrated dependency chain:
@@ -336,3 +352,57 @@ When a CLI run raises an exception, inspect `run_failure.json`. OOM and unsuppor
 ## 16. Baseline fidelity
 
 The local aLoRA-, LRAgent-, and ForkKV-style methods are labeled `paper_reimplementation`. Simplified static controls are labeled `adapted_baseline`. These labels prevent local implementations from being presented as official upstream reproductions. Official-code comparisons remain a separate experimental validation step.
+
+
+## 13. Paper-scale E1-E8 campaign
+
+The authoritative protocol is [`paper_experiment_protocol.md`](paper_experiment_protocol.md). Do not tune planner thresholds or regenerate the failure map after observing held-out test results.
+
+Inspect the 198-job matrix without running models:
+
+```bash
+python -m ttt_cache_lab.cli study-plan --manifest configs/paper/study.yaml
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag qwen_32b --dry-run
+```
+
+Recommended stage order:
+
+```bash
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag baseline
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag drift
+
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag calibration
+scripts/finalize_paper_calibration.sh
+
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag validation
+scripts/finalize_paper_stage.sh validation
+
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag test
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag delta
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag scaling
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag ablation
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag workload
+```
+
+Finalize each stage independently so partial hardware failures remain visible:
+
+```bash
+scripts/finalize_paper_stage.sh baseline
+scripts/finalize_paper_stage.sh drift
+scripts/finalize_paper_stage.sh test
+scripts/finalize_paper_stage.sh delta
+scripts/finalize_paper_stage.sh scaling
+scripts/finalize_paper_stage.sh ablation
+scripts/finalize_paper_stage.sh workload
+```
+
+Distribute the full manifest over eight workers or accelerator groups:
+
+```bash
+for shard in $(seq 0 7); do
+  scripts/run_paper_shard.sh configs/paper/study.yaml "$shard" 8 &
+done
+wait
+```
+
+Each dependent job declares the finalized failure map as a required artifact. It exits before loading a model when calibration has not been finalized.

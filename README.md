@@ -27,7 +27,8 @@ The project is not just about Q-only qTTT. Existing work already covers parts of
 
 Implemented:
 
-- synthetic diagnostics plus local JSONL and Hugging Face dataset loaders, including LongBench-style field mapping;
+- controlled retrieval, rejection, multi-hop, aggregation, set-reasoning, and state-tracking diagnostics plus JSONL and Hugging Face loaders;
+- deterministic calibration/validation/test partitions, LongBench and LongBench v2 field mapping, multiple-choice, numeric, set, QA, summarization, and code scoring;
 - exact tokenizer-level context sizing with explicit `error`, `left`, and `middle` truncation policies;
 - Q/K/V/O/QV/attention/MLP/Norm/output-head update targets and layer-positioned LoRA variants;
 - answer-supervised online LoRA updates, global-L2 update-norm control, and multi-token exact-match generation scoring;
@@ -35,11 +36,13 @@ Implemented:
 - full recomputation, stale/frozen reuse, LoRA K/V delta correction, native Llama/GPT-2 layer restart, periodic/threshold policies, measured oracle selection, and adaptive planning;
 - fixed-adapter E1 baselines, including executable aLoRA-style invocation-prefix reuse, LRAgent-style per-adapter caches, and ForkKV-style base/delta decomposition;
 - real KV tensor byte counts, peak allocated memory, adaptation/cache/decode/end-to-end latency, throughput, cache-entry counts, and configurable tensor/task metrics;
-- E1-E7 toy and Hugging Face templates; E5 rank/update-norm sweeps; E6 exact 4K/8K/16K/32K context sweeps;
+- lightweight E1-E7 templates plus a frozen E1-E8 paper matrix with controlled, LongBench, LongBench v2, code, scaling, ablation, and cache-pressure workloads;
 - single-model layer sharding across multiple CUDA GPUs, including a 6×GPU Qwen2.5-32B template;
 - condition-preserving E1-E7 analyses that retain model, context, rank, update norm, seed, and sweep axes and pair every strategy with the exact full-recompute reference;
 - E3-calibrated E4 planning with failure-map artifact hashes, runtime action-latency budgets, explicit cache-manager scopes, and measured-oracle provenance;
-- E5 correction/fallback diagnostics, E6 latency/speedup/task-drop scaling plots, E7 paired ablation effects, and adaptation-gain/update-scale reports;
+- E5 correction/fallback diagnostics, E6 latency/speedup/task-drop scaling plots, E7 paired ablation effects, E8 tail-latency/cache-pressure reports, and adaptation-gain/update-scale reports;
+- cluster-bootstrap confidence intervals, paired comparisons, Wilson false-safe bounds, warm-up/repeated timing, and p50/p95 latency reporting;
+- a shardable 66-configuration, 198-job manifest spanning 1.5B, 7B, 14B, and 32B models, Mistral cross-family transfer, and a 7B code model;
 - atomic per-target checkpoints, record-level resume, cross-run record merging, structured failure manifests, and run metadata with config/git/package provenance;
 - CI for linting, strict type checking, unit tests, and offline tiny-Llama integration tests that execute real LoRA, KV delta correction, and native layer restart paths.
 
@@ -59,9 +62,11 @@ configs/
   feasibility_*.yaml          early single-step configs
   sweep_*.yaml                single-step sweep configs
   versioned_sweep_*.yaml      E5/E6 versioned sweep configs
-  experiments/                E1-E7 experiment configs
+  experiments/                lightweight E1-E7 templates
+  paper/                      frozen E1-E8, multi-model, multi-seed paper matrix
 docs/
   project_plan.md             full research and experiment roadmap
+  paper_experiment_protocol.md frozen tasks, partitions, statistics, and model roles
   runbook.md                  general run instructions
 scripts/
   run_toy_study.sh            run all E1-E7 toy templates
@@ -165,7 +170,8 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 | E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_qwen_0_5b.yaml` |
 | E5 | Delta correction and rank/update-norm sweep | `configs/versioned_sweep_e5_delta_qwen_0_5b.yaml` |
 | E6 | Exact 4K-32K context and model-scale scaling | `configs/versioned_sweep_e6_context_qwen_1_5b.yaml` |
-| E7 | Planner-component ablations and failure boundaries | `configs/experiments/e7_ablation_failure_qwen_0_5b.yaml` |
+| E7 | Planner-component ablations and failure boundaries | `configs/paper/ablation/e7_qwen_7b_longbench_v2.yaml` |
+| E8 | Sustained cache-capacity and tail-latency workload | `configs/paper/workload/e8_qwen_32b.yaml` |
 
 ## Output files
 
@@ -286,23 +292,26 @@ python -m ttt_cache_lab.cli version-report \
 - [`docs/design.md`](docs/design.md): cache semantics and strategy design notes.
 - [`docs/experiment_plan.md`](docs/experiment_plan.md): earlier feasibility experiment plan.
 
-## Current recommended next step
+## Paper-scale study
 
-Run the small-model Hugging Face experiment first, then execute the real E2/E3/E4/E7 configs and E5/E6 sweeps on the selected GPU environment:
+The frozen protocol is in [`docs/paper_experiment_protocol.md`](docs/paper_experiment_protocol.md). The checked-in matrix contains 66 configurations and expands to 198 jobs over seeds 7, 17, and 29. Qwen2.5-7B is the complete main evaluation; 14B and 32B are explicit primary scaling evidence.
 
-```bash
-python -m ttt_cache_lab.cli versioned-run \
-  --config configs/experiments/e2_version_drift_qwen_0_5b.yaml \
-  --version-summary
-```
-
-If that passes, run E2 on Qwen2.5-1.5B and generate the report:
+Generate the stable job matrix:
 
 ```bash
-python -m ttt_cache_lab.cli versioned-run \
-  --config configs/experiments/e2_version_drift_qwen_1_5b.yaml \
-  --version-summary
+python -m ttt_cache_lab.cli study-plan --manifest configs/paper/study.yaml
 ```
+
+Run calibration, finalize its immutable failure map, then run held-out stages:
+
+```bash
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag calibration
+scripts/finalize_paper_calibration.sh
+python -m ttt_cache_lab.cli study-run --manifest configs/paper/study.yaml --tag test
+scripts/finalize_paper_stage.sh test
+```
+
+Use `scripts/run_paper_shard.sh` to distribute the manifest over accelerator groups. Dependent stages fail early when the calibrated failure-map artifact is absent.
 
 ## License
 

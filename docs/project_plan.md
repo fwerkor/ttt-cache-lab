@@ -827,3 +827,23 @@ Still limited:
 - paper-quality final plots populated with real runs.
 
 The immediate next step is hardware execution: run the small-model smoke test, generate E3, run E4 against the exact calibrated map, then execute E5/E6/E7 and merge the model/context runs for the final analysis.
+
+
+## 21. Frozen paper-scale protocol
+
+The earlier minimal experiment set in this roadmap is superseded for the main submission by [`paper_experiment_protocol.md`](paper_experiment_protocol.md).
+
+The frozen study now includes:
+
+- deterministic and disjoint calibration, validation, main-test, and ablation partitions;
+- six controlled diagnostic task families plus LongBench, LongBench v2, and repository-code tasks;
+- three model/update seeds with fixed dataset membership;
+- Qwen2.5-7B as the complete primary evaluation;
+- Qwen2.5-14B and Qwen2.5-32B as required scale evidence rather than optional examples;
+- Mistral-7B cross-family transfer and Qwen2.5-Coder-7B code evaluation;
+- E1-E8, adding sustained cache-pressure and tail-latency evaluation;
+- conservative failure-map selection across all compatible calibration seeds and tasks;
+- paired cluster-bootstrap intervals, Wilson false-safe bounds, and repeated p50/p95 performance measurement;
+- a 66-configuration, 198-job shardable manifest under `configs/paper/`.
+
+The paper experiment order is now enforced by artifact dependencies: E4/E5/E6/E7/E8 jobs require the finalized E3 failure map. Test results must not be used to modify that artifact.
