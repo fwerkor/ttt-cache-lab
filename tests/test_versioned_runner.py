@@ -281,6 +281,34 @@ def test_related_work_baselines_use_distinct_cache_representations(tmp_path: Pat
 
 
 
+def test_versioned_runner_records_failure_map_provenance(tmp_path: Path) -> None:
+    failure_map = tmp_path / "failure_map.csv"
+    failure_map.write_text(
+        "update_target,version_gap,cache_strategy,task_drop_vs_full,logits_kl_mean,"
+        "top1_agreement_mean,false_safe_rate\n"
+        "lora.k:1,1,stale_reuse,0.0,0.001,1.0,0.0\n",
+        encoding="utf-8",
+    )
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-failure-map-provenance",
+            "experiment_id": "unit_failure_map",
+            "seed": 9,
+            "output_dir": tmp_path / "run",
+            "model": {"backend": "toy", "num_layers": 4, "hidden_size": 16, "vocab_size": 32},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k:1"], "update_norm": 0.01},
+            "cache": {"strategies": ["adaptive"], "failure_map_path": failure_map},
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [1],
+        }
+    )
+    record = VersionedExperimentRunner(config).run().records[0]
+    assert record.planner_source == "failure_map"
+    assert record.failure_map_path == str(failure_map.resolve())
+    assert len(record.failure_map_sha256) == 64
+
+
 def test_versioned_runner_records_attention_shift_and_action_flops(tmp_path: Path) -> None:
     config = VersionedExperimentConfig.model_validate(
         {

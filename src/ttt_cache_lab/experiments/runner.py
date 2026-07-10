@@ -25,6 +25,7 @@ from ttt_cache_lab.experiments.metrics import (
     output_strategy_mode,
     output_throughput,
 )
+from ttt_cache_lab.experiments.provenance import planner_provenance
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
@@ -100,6 +101,14 @@ class ExperimentRunner:
                                     context_length=self.config.data.context_length,
                                 ),
                             ),
+                            model_name=(
+                                self.config.model.model_name_or_path
+                                or self.config.model.modelscope_model_id
+                                or "toy"
+                            ),
+                            context_length=self.config.data.context_length,
+                            configured_update_norm=self.config.updates.update_norm,
+                            update_mode="random",
                         ),
                     )
                     approx = backend.apply_cache_strategy(
@@ -157,6 +166,10 @@ class ExperimentRunner:
                         )
                         if self.config.metrics.compute_flops_metrics
                         else 0.0
+                    )
+                    planner_source, failure_map_path, failure_map_sha256 = planner_provenance(
+                        decision.strategy,
+                        self.config.cache.failure_map_path,
                     )
                     records.append(
                         ExperimentRecord(
@@ -231,6 +244,9 @@ class ExperimentRunner:
                                 if full_recompute_flops > 0.0
                                 else 0.0
                             ),
+                            planner_source=planner_source,
+                            failure_map_path=failure_map_path,
+                            failure_map_sha256=failure_map_sha256,
                         )
                     )
                 backend.restore_after_update()

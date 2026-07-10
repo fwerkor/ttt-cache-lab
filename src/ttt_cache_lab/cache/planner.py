@@ -23,6 +23,11 @@ class PlannerRuntime:
     total_cache_bytes: int = 0
     candidate_cache_bytes: int = 0
     full_recompute_latency: float = 1.0
+    model_name: str = ""
+    context_length: int = 0
+    lora_rank: int = 0
+    configured_update_norm: float = 0.0
+    update_mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,11 @@ class FailureMapCell:
     update_target: str
     version_gap: int
     cache_strategy: str
+    model_name: str
+    context_length: int
+    lora_rank: int
+    configured_update_norm: float
+    update_mode: str
     task_drop_vs_full: float
     logits_kl_mean: float
     top1_agreement_mean: float
@@ -80,6 +90,13 @@ class FailureMapIndex:
                         update_target=row.get("update_target", ""),
                         version_gap=int(float(row.get("version_gap", "0") or 0)),
                         cache_strategy=row.get("cache_strategy", ""),
+                        model_name=row.get("model_name", ""),
+                        context_length=int(float(row.get("context_length", "0") or 0)),
+                        lora_rank=int(float(row.get("lora_rank", "0") or 0)),
+                        configured_update_norm=float(
+                            row.get("configured_update_norm", "0") or 0.0
+                        ),
+                        update_mode=row.get("update_mode", ""),
                         task_drop_vs_full=float(row.get("task_drop_vs_full", "0") or 0.0),
                         logits_kl_mean=float(row.get("logits_kl_mean", "0") or 0.0),
                         top1_agreement_mean=float(row.get("top1_agreement_mean", "0") or 0.0),
@@ -88,12 +105,21 @@ class FailureMapIndex:
                 )
         return cls(cells)
 
-    def nearest(self, target: UpdateTarget, version_gap: int) -> list[FailureMapCell]:
+    def nearest(
+        self,
+        target: UpdateTarget,
+        version_gap: int,
+        *,
+        runtime: PlannerRuntime,
+    ) -> list[FailureMapCell]:
         target_cells = [cell for cell in self.cells if cell.update_target == target.raw]
         if not target_cells:
             target_cells = [cell for cell in self.cells if cell.update_target == target.kind.value]
         if not target_cells:
             return []
+        compatible = [cell for cell in target_cells if _matches_runtime(cell, runtime)]
+        if compatible:
+            target_cells = compatible
         nearest_gap = min({cell.version_gap for cell in target_cells}, key=lambda gap: abs(gap - version_gap))
         return [cell for cell in target_cells if cell.version_gap == nearest_gap]
 
@@ -246,7 +272,7 @@ class CachePlanner:
     ) -> PlannerDecision | None:
         if self.failure_map is None:
             return None
-        cells = self.failure_map.nearest(target, version_gap)
+        cells = self.failure_map.nearest(target, version_gap, runtime=runtime)
         if not cells:
             return None
         safe = [cell for cell in cells if cell.safe(self.policy)]
@@ -343,6 +369,31 @@ class CachePlanner:
         if limit is None:
             return False
         return runtime.total_cache_bytes + runtime.candidate_cache_bytes > limit
+
+
+def _matches_runtime(cell: FailureMapCell, runtime: PlannerRuntime) -> bool:
+    if cell.model_name and runtime.model_name and cell.model_name != runtime.model_name:
+        return False
+    if cell.context_length and runtime.context_length and cell.context_length != runtime.context_length:
+        return False
+    if cell.lora_rank and runtime.lora_rank and cell.lora_rank != runtime.lora_rank:
+        return False
+    if (
+        cell.configured_update_norm
+        and runtime.configured_update_norm
+        and not _close(cell.configured_update_norm, runtime.configured_update_norm)
+    ):
+        return False
+    return not (
+        cell.update_mode
+        and runtime.update_mode
+        and cell.update_mode != runtime.update_mode
+    )
+
+
+def _close(left: float, right: float) -> bool:
+    scale = max(1.0, abs(left), abs(right))
+    return abs(left - right) <= 1e-9 * scale
 
 
 def _strategy_action(strategy: str, *, target: UpdateTarget) -> CacheAction | None:

@@ -60,6 +60,9 @@ class ExperimentRecord:
     strategy_flops: float = 0.0
     full_recompute_flops: float = 0.0
     flops_fraction: float = 0.0
+    planner_source: str = ""
+    failure_map_path: str = ""
+    failure_map_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -36,6 +36,7 @@ cache:
     - oracle_planner
   refresh_period: 4
   update_norm_threshold: 0.05
+  failure_map_path: runs/e3_failure_map/failure_map/failure_map.csv
 adapter:
   update_mode: random
   lora_rank: 8

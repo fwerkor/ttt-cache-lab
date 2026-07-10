@@ -187,6 +187,34 @@ def test_planner_failure_map_skips_unsafe_reuse(tmp_path: Path) -> None:
     assert decision.action is CacheAction.DELTA_CORRECT
 
 
+def test_failure_map_prefers_matching_runtime_condition(tmp_path: Path) -> None:
+    failure_map = tmp_path / "failure_map.csv"
+    failure_map.write_text(
+        "update_target,version_gap,cache_strategy,model_name,context_length,lora_rank,"
+        "configured_update_norm,update_mode,task_drop_vs_full,logits_kl_mean,"
+        "top1_agreement_mean,false_safe_rate\n"
+        "lora.k:2,2,stale_reuse,model-a,128,4,0.01,random,0.2,0.2,0.0,1.0\n"
+        "lora.k:2,2,delta_correction,model-a,128,4,0.01,random,0.0,0.01,1.0,0.0\n"
+        "lora.k:2,2,stale_reuse,model-b,256,8,0.02,lora_train,0.0,0.001,1.0,0.0\n",
+        encoding="utf-8",
+    )
+    planner = CachePlanner(PlannerPolicy(failure_map_path=failure_map))
+    decision = planner.plan(
+        parse_update_target("lora.k:2"),
+        update_norm=0.02,
+        version_gap=2,
+        runtime=PlannerRuntime(
+            model_name="model-b",
+            context_length=256,
+            lora_rank=8,
+            configured_update_norm=0.02,
+            update_mode="lora_train",
+        ),
+    )
+    assert decision.action is CacheAction.REUSE_STALE
+    assert "E3 failure map" in decision.reason
+
+
 def test_planner_version_gap_threshold_is_configurable() -> None:
     target = parse_update_target("lora.k:2")
     strict = CachePlanner(PlannerPolicy(version_gap_threshold=1)).plan(
