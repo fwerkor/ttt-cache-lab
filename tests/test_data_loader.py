@@ -169,3 +169,50 @@ def test_multiple_choice_loader_formats_choices_and_normalizes_answer(tmp_path: 
     assert "C. planner" in sample.prompt
     assert sample.answer == "C"
     assert sample.metadata["answers"] == ("C", "planner")
+
+
+def test_huggingface_indexed_dataset_selects_partition_without_full_iteration(monkeypatch: object) -> None:
+    class IndexedDataset:
+        def __init__(self, records: list[dict[str, object]]) -> None:
+            self.records = records
+            self.selected_indices: list[int] | None = None
+
+        def __len__(self) -> int:
+            return len(self.records)
+
+        def __getitem__(self, index: int) -> dict[str, object]:
+            return self.records[index]
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("The full dataset must not be materialized")
+
+        def shuffle(self, *, seed: int) -> IndexedDataset:
+            assert seed == 2027
+            return self
+
+        def select(self, indices: list[int]) -> IndexedDataset:
+            self.selected_indices = indices
+            return IndexedDataset([self.records[index] for index in indices])
+
+    dataset = IndexedDataset(
+        [{"prompt": f"prompt-{index}", "answer": f"answer-{index}"} for index in range(100)]
+    )
+
+    def load_dataset(*args: str, split: str) -> IndexedDataset:
+        assert args == ("example/large",)
+        assert split == "test"
+        return dataset
+
+    monkeypatch.setitem(sys.modules, "datasets", SimpleNamespace(load_dataset=load_dataset))  # type: ignore[attr-defined]
+    config = DataConfig(
+        source="huggingface",
+        task="large",
+        dataset_name="example/large",
+        dataset_split="test",
+        selection_seed=2027,
+        sample_offset=20,
+        num_samples=3,
+    )
+    samples = build_task_samples(config, seed=7)
+    assert dataset.selected_indices == [20, 21, 22]
+    assert [sample.answer for sample in samples] == ["answer-20", "answer-21", "answer-22"]

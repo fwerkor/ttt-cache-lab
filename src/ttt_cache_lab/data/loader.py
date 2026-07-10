@@ -88,6 +88,9 @@ def _select_records(
     *,
     config: DataConfig,
 ) -> list[tuple[int, Mapping[str, Any]]]:
+    indexed_selection = _select_indexed_dataset(records, config=config)
+    if indexed_selection is not None:
+        return indexed_selection
     indexed = [
         (index, record)
         for index, record in enumerate(records)
@@ -101,6 +104,42 @@ def _select_records(
         raise ValueError(
             "The configured dataset selection produced no samples; check filters, sample_offset, and num_samples"
         )
+    return selected
+
+
+def _select_indexed_dataset(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    config: DataConfig,
+) -> list[tuple[int, Mapping[str, Any]]] | None:
+    dataset: Any = records
+    select = getattr(dataset, "select", None)
+    if not callable(select) or not hasattr(dataset, "__len__"):
+        return None
+    if config.filters:
+        filter_records = getattr(dataset, "filter", None)
+        if not callable(filter_records):
+            return None
+        dataset = filter_records(lambda record: _matches_filters(record, config.filters))
+    if config.shuffle:
+        shuffle = getattr(dataset, "shuffle", None)
+        if not callable(shuffle):
+            return None
+        dataset = shuffle(seed=config.selection_seed)
+    total = int(len(dataset))
+    start = min(config.sample_offset, total)
+    stop = min(total, start + config.num_samples)
+    if start >= stop:
+        raise ValueError(
+            "The configured dataset selection produced no samples; check filters, sample_offset, and num_samples"
+        )
+    selected_dataset = dataset.select(list(range(start, stop)))
+    selected: list[tuple[int, Mapping[str, Any]]] = []
+    for selection_index in range(len(selected_dataset)):
+        record = selected_dataset[selection_index]
+        if not isinstance(record, Mapping):
+            raise TypeError("Indexed dataset selection returned a non-mapping record")
+        selected.append((start + selection_index, record))
     return selected
 
 
