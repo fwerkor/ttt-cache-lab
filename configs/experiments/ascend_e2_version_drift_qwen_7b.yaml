@@ -8,7 +8,7 @@ model:
   model_name_or_path: Qwen/Qwen2.5-7B-Instruct
   device: npu
   parallelism: model_shard
-  device_ids: [0, 1]
+  device_ids: [0, 1, 2, 3]
   torch_dtype: bfloat16
   max_length: 8192
   trust_remote_code: true
