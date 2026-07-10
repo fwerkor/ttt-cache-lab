@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -707,12 +708,26 @@ class HuggingFaceBackend:
         start = time.perf_counter()
         for generation_step in range(max_new_tokens):
             capture_attention = self._capture_attention_metrics and generation_step == 0
-            result = self.model(
-                input_ids=current,
-                past_key_values=current_past,
-                use_cache=True,
-                output_attentions=capture_attention,
+            previous_attention_implementation: str | None = None
+            setter_candidate = getattr(self.model, "set_attn_implementation", None)
+            set_attention_implementation: Callable[[str], Any] | None = (
+                cast(Callable[[str], Any], setter_candidate) if callable(setter_candidate) else None
             )
+            if capture_attention and set_attention_implementation is not None:
+                current_implementation = self._attention_implementation()
+                if current_implementation != "eager" and current_implementation != "transformers_default":
+                    set_attention_implementation("eager")
+                    previous_attention_implementation = current_implementation
+            try:
+                result = self.model(
+                    input_ids=current,
+                    past_key_values=current_past,
+                    use_cache=True,
+                    output_attentions=capture_attention,
+                )
+            finally:
+                if previous_attention_implementation is not None and set_attention_implementation is not None:
+                    set_attention_implementation(previous_attention_implementation)
             logits = result.logits[:, -1, :]
             if first_logits is None:
                 first_logits = logits

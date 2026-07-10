@@ -166,6 +166,20 @@ def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
     assert len(repeated_partial.extras["hidden_states"]) == backend.num_layers + 1
 
 
+def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    backend.configure_metrics(capture_attention=True)
+    original_implementation = backend._attention_implementation()
+
+    output = backend.prefill("key is alpha Answer :")
+
+    assert output.extras is not None
+    attention_summary = output.extras["attention_summary"]
+    assert attention_summary.shape[0] == backend.num_layers
+    assert attention_summary.shape[1] > 0
+    assert backend._attention_implementation() == original_implementation
+
+
 def test_layer_specific_updates_never_fall_back_to_other_layers(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     impossible_lora = UpdateTarget(kind=ModuleKind.LORA_K, layer=99, raw="lora.k:99")
