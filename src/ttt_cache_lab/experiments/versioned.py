@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.cache_managers import build_strategy_managers
+from ttt_cache_lab.experiments.measurement import execute_strategy, measure_backend_call
 from ttt_cache_lab.experiments.metrics import (
     attention_distribution_shift,
     estimate_recompute_fraction,
@@ -21,8 +23,6 @@ from ttt_cache_lab.experiments.metrics import (
     is_refresh_action,
     output_baseline_fidelity,
     output_cache_bytes,
-    output_cache_maintenance_latency,
-    output_decode_latency,
     output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
@@ -412,7 +412,7 @@ class VersionedExperimentRunner:
                     "Cache version matches adapter version; reuse is exact.",
                 )
             if strategy.name is StrategyName.ORACLE_PLANNER:
-                decision, approx = self._run_measured_oracle(
+                decision, _ = self._run_measured_oracle(
                     backend=backend,
                     baseline=baseline_output,
                     full=full,
@@ -420,13 +420,25 @@ class VersionedExperimentRunner:
                     target=target,
                     sample=sample,
                 )
-            else:
-                approx = backend.apply_cache_strategy(
+            fallback_latency = backend.estimate_latency(
+                decision,
+                context_length=self.config.data.context_length,
+            )
+            measurement = measure_backend_call(
+                partial(
+                    execute_strategy,
+                    backend,
+                    prompt=sample.prompt,
                     baseline=baseline_output,
                     full=full,
                     updated=current,
                     decision=decision,
-                )
+                ),
+                warmup_runs=self.config.measurement.warmup_runs,
+                timed_runs=self.config.measurement.timed_runs,
+                fallback_latency=fallback_latency,
+            )
+            approx = measurement.output
             new_refresh_count = cached.refresh_count + (1 if is_refresh_action(decision) else 0)
             block_state = (
                 CacheBlockState.VALID_EXACT
@@ -477,13 +489,9 @@ class VersionedExperimentRunner:
                 cached.refresh_count = new_refresh_count
                 cached.manager.put(adapter_id, adapter_version, VersionedCacheEntry(approx, new_blocks))
             top1 = top1_agreement(full.logits, approx.logits)
-            fallback_latency = backend.estimate_latency(
-                decision,
-                context_length=self.config.data.context_length,
-            )
-            strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
-            decode_latency = output_decode_latency(approx)
-            maintenance_latency = output_cache_maintenance_latency(approx)
+            strategy_latency = measurement.latency_p50
+            decode_latency = measurement.decode_latency_p50
+            maintenance_latency = measurement.cache_maintenance_latency_p50
             task_score = (
                 backend.score_answer(sample, approx)
                 if self.config.metrics.compute_task_metrics
@@ -551,6 +559,12 @@ class VersionedExperimentRunner:
                     ),
                     latency_units=strategy_latency,
                     reason=decision.reason,
+                    timing_warmup_runs=measurement.warmup_runs,
+                    timing_runs=measurement.timed_runs,
+                    latency_mean=measurement.latency_mean,
+                    latency_p50=measurement.latency_p50,
+                    latency_p95=measurement.latency_p95,
+                    latency_std=measurement.latency_std,
                     experiment_id=self.config.experiment_id,
                     adapter_id=adapter_id,
                     adapter_version=adapter_version,

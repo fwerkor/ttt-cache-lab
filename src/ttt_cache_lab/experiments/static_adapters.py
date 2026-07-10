@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from ttt_cache_lab.cache.blocks import VersionedCacheEntry
@@ -10,6 +11,7 @@ from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.cache_managers import build_strategy_managers
+from ttt_cache_lab.experiments.measurement import execute_strategy, measure_backend_call
 from ttt_cache_lab.experiments.metrics import (
     attention_distribution_shift,
     estimate_recompute_fraction,
@@ -18,8 +20,6 @@ from ttt_cache_lab.experiments.metrics import (
     is_refresh_action,
     output_baseline_fidelity,
     output_cache_bytes,
-    output_cache_maintenance_latency,
-    output_decode_latency,
     output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
@@ -27,7 +27,6 @@ from ttt_cache_lab.experiments.metrics import (
     output_strategy_available,
     output_strategy_fallback,
     output_strategy_flops,
-    output_strategy_latency,
     output_strategy_mode,
     output_throughput,
 )
@@ -238,12 +237,25 @@ class StaticAdapterExperimentRunner:
                         }:
                             baseline_output = cached_output
 
-                        approx = backend.apply_cache_strategy(
-                            baseline=baseline_output,
-                            full=full,
-                            updated=adapter.current,
-                            decision=decision,
+                        fallback_latency = backend.estimate_latency(
+                            decision,
+                            context_length=self.config.data.context_length,
                         )
+                        measurement = measure_backend_call(
+                            partial(
+                                execute_strategy,
+                                backend,
+                                prompt=sample.prompt,
+                                baseline=baseline_output,
+                                full=full,
+                                updated=adapter.current,
+                                decision=decision,
+                            ),
+                            warmup_runs=self.config.measurement.warmup_runs,
+                            timed_runs=self.config.measurement.timed_runs,
+                            fallback_latency=fallback_latency,
+                        )
+                        approx = measurement.output
                         stores_version = strategy.name is StrategyName.ADAPTER_SPECIFIC_CACHE or (
                             strategy.name not in {
                                 StrategyName.NO_ADAPTATION,
@@ -279,13 +291,9 @@ class StaticAdapterExperimentRunner:
                             refresh_counts[key] += 1
 
                         top1 = top1_agreement(full.logits, approx.logits)
-                        fallback_latency = backend.estimate_latency(
-                            decision,
-                            context_length=self.config.data.context_length,
-                        )
-                        strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
-                        decode_latency = output_decode_latency(approx)
-                        maintenance_latency = output_cache_maintenance_latency(approx)
+                        strategy_latency = measurement.latency_p50
+                        decode_latency = measurement.decode_latency_p50
+                        maintenance_latency = measurement.cache_maintenance_latency_p50
                         task_score = (
                             backend.score_answer(sample, approx)
                             if self.config.metrics.compute_task_metrics
@@ -348,6 +356,12 @@ class StaticAdapterExperimentRunner:
                                 ),
                                 latency_units=strategy_latency,
                                 reason=decision.reason,
+                                timing_warmup_runs=measurement.warmup_runs,
+                                timing_runs=measurement.timed_runs,
+                                latency_mean=measurement.latency_mean,
+                                latency_p50=measurement.latency_p50,
+                                latency_p95=measurement.latency_p95,
+                                latency_std=measurement.latency_std,
                                 experiment_id=self.config.experiment_id,
                                 adapter_id=f"static-{adapter_number}",
                                 adapter_version=adapter_number,

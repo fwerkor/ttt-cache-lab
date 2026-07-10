@@ -23,6 +23,12 @@ class ExperimentRecord:
     relative_error: float
     latency_units: float
     reason: str
+    timing_warmup_runs: int = 0
+    timing_runs: int = 1
+    latency_mean: float = 0.0
+    latency_p50: float = 0.0
+    latency_p95: float = 0.0
+    latency_std: float = 0.0
     experiment_id: str = "single_step"
     adapter_id: str = "adapter"
     adapter_version: int = 1
