@@ -46,6 +46,7 @@ class ExperimentRecord:
     rejected_reuse: bool = False
     false_safe: bool = False
     strategy_mode: str = ""
+    baseline_fidelity: str = ""
     cache_block_count: int = 0
     cache_entry_count: int = 0
     total_cache_bytes: int = 0

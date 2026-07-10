@@ -275,6 +275,8 @@ def test_related_work_baselines_use_distinct_cache_representations(tmp_path: Pat
     assert forkkv.action == "delta_correct"
     assert lragent.strategy_mode == "lragent_shared_base_plus_low_rank_component"
     assert forkkv.strategy_mode == "forkkv_copy_on_write_residual"
+    assert lragent.baseline_fidelity == "paper_reimplementation"
+    assert forkkv.baseline_fidelity == "paper_reimplementation"
     assert lragent.cache_bytes < forkkv.cache_bytes
 
 

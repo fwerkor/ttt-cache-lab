@@ -126,6 +126,12 @@ def output_strategy_mode(output: BackendOutput) -> str:
     return ""
 
 
+def output_baseline_fidelity(output: BackendOutput) -> str:
+    extras = output.extras or {}
+    value = extras.get("baseline_fidelity")
+    return value if isinstance(value, str) else ""
+
+
 def attention_distribution_shift(full: BackendOutput, approx: BackendOutput) -> float:
     full_summary = _attention_summary(full)
     approx_summary = _attention_summary(approx)
