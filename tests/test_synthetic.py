@@ -77,7 +77,7 @@ def test_key_value_target_key_has_one_definition() -> None:
 
 def test_multi_hop_sources_have_one_outgoing_edge() -> None:
     sample = SyntheticTaskFactory(7).multi_hop_tracing(context_length=4096, answer_length=4)
-    sources = re.findall(r"^(entity_\d+) points to ", sample.prompt, flags=re.MULTILINE)
+    sources = re.findall(r"^(entity_[a-z]+) points to ", sample.prompt, flags=re.MULTILINE)
     assert len(sources) == len(set(sources))
 
 

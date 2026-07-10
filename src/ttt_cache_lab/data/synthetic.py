@@ -182,9 +182,13 @@ class SyntheticTaskFactory:
         used_entities: set[str] = set()
 
         def next_entity() -> str:
-            candidate = f"entity_{self.rng.randrange(1_000_000)}"
+            candidate = "entity_" + "".join(
+                chr(ord("a") + self.rng.randrange(26)) for _ in range(6)
+            )
             while candidate in used_entities:
-                candidate = f"entity_{self.rng.randrange(1_000_000)}"
+                candidate = "entity_" + "".join(
+                    chr(ord("a") + self.rng.randrange(26)) for _ in range(6)
+                )
             used_entities.add(candidate)
             return candidate
 
@@ -197,8 +201,8 @@ class SyntheticTaskFactory:
             hard_distractor_count,
             _difficulty_value(
                 difficulty,
-                easy=16,
-                medium=64,
+                easy=4,
+                medium=32,
                 hard=hard_distractor_count,
             ),
         )
@@ -208,7 +212,9 @@ class SyntheticTaskFactory:
             destination = next_entity()
             distractors.append(f"{source} points to {destination}.")
         neutral = [
-            f"Background note doc_{self.rng.randrange(1_000_000)}."
+            "Background note "
+            + "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(8))
+            + "."
             for _ in range(hard_distractor_count - distractor_count)
         ]
         combined = distractors + neutral + facts
