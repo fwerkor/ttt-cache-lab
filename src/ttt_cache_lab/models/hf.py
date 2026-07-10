@@ -157,6 +157,7 @@ class HuggingFaceBackend:
             parameter_version=self.parameter_version,
             extras={
                 "past_key_values": prefill.past_key_values,
+                "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
@@ -205,6 +206,7 @@ class HuggingFaceBackend:
             parameter_version=self.parameter_version,
             extras={
                 "past_key_values": prefill.past_key_values,
+                "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
@@ -480,29 +482,17 @@ class HuggingFaceBackend:
         full: BackendOutput,
         decision: StrategyDecision,
     ) -> BackendOutput:
-        if not baseline.extras or not full.extras:
-            raise ValueError("Partial recompute requires cached HF states from baseline and full outputs")
+        if not baseline.extras:
+            raise ValueError("Partial recompute requires cached HF state from the baseline output")
+        del full
         native = self._native_partial_recompute_prefix_cache(baseline=baseline, decision=decision)
-        if native is not None:
-            self._last_partial_s = float(native.extras.get("strategy_latency", 0.0)) if native.extras else 0.0
-            return native
-        split_layer = decision.first_invalid_layer or 0
-        merged_past = self._splice_past(
-            baseline.extras["past_key_values"],
-            full.extras["past_key_values"],
-            split_layer=split_layer,
-        )
-        hidden = self._splice_summary(baseline.hidden_tensor, full.hidden_tensor, split_layer=split_layer)
-        result = self._probe_with_past(
-            baseline=baseline,
-            past=merged_past,
-            cache_tensor=self._summarize_past(merged_past),
-            hidden_tensor=hidden,
-            lora_cache=full.extras.get("lora_cache", {}),
-            extra_metadata={"partial_mode": "fallback_past_key_values_layer_splice"},
-        )
-        self._last_partial_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
-        return result
+        if native is None:
+            raise RuntimeError(
+                f"Native partial recompute is unsupported for {type(self.model).__name__}; "
+                "refusing to substitute a full-reference KV splice."
+            )
+        self._last_partial_s = float(native.extras.get("strategy_latency", 0.0)) if native.extras else 0.0
+        return native
 
     def _native_partial_recompute_prefix_cache(
         self,
@@ -510,8 +500,136 @@ class HuggingFaceBackend:
         baseline: BackendOutput,
         decision: StrategyDecision,
     ) -> BackendOutput | None:
-        del baseline, decision
-        return None
+        if not baseline.extras:
+            return None
+        state = baseline.extras.get("prompt_state")
+        hidden_states = baseline.extras.get("hidden_states")
+        old_past = baseline.extras.get("past_key_values")
+        if not isinstance(state, _PromptState) or not isinstance(hidden_states, tuple) or old_past is None:
+            return None
+        split_layer = decision.first_invalid_layer or 0
+        layer_container, family = self._decoder_layers()
+        if layer_container is None or split_layer < 0 or split_layer > len(layer_container):
+            return None
+        old_layers = self._past_as_layers(old_past)
+        if len(old_layers) != len(layer_container) or len(hidden_states) < len(layer_container) + 1:
+            return None
+
+        replacements: list[tuple[int, Any]] = []
+        try:
+            for layer_index in range(split_layer):
+                original = layer_container[layer_index]
+                cached_hidden = hidden_states[layer_index + 1]
+                cached_past = old_layers[layer_index]
+                wrapper = self._make_cached_decoder_layer(
+                    family=family,
+                    layer_index=layer_index,
+                    cached_hidden=cached_hidden,
+                    cached_past=cached_past,
+                )
+                replacements.append((layer_index, original))
+                layer_container[layer_index] = wrapper
+
+            reset_peak_memory(self.torch, self.device)
+            synchronize(self.torch, self.device)
+            start = time.perf_counter()
+            self._set_lora_capture(True)
+            with self.torch.no_grad():
+                prefill = self.model(
+                    input_ids=state.prefix_ids,
+                    attention_mask=self.torch.ones_like(state.prefix_ids, device=self.device),
+                    use_cache=True,
+                    output_hidden_states=True,
+                )
+                self._set_lora_capture(False)
+                probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+            synchronize(self.torch, self.device)
+            latency = time.perf_counter() - start
+        finally:
+            self._set_lora_capture(False)
+            for layer_index, original in replacements:
+                layer_container[layer_index] = original
+
+        lora_cache = dict(baseline.extras.get("lora_cache", {}))
+        lora_cache.update(self._snapshot_lora_cache())
+        return BackendOutput(
+            logits=self._to_numpy(probe_logits),
+            cache_tensor=self._summarize_past(prefill.past_key_values),
+            hidden_tensor=self._summarize_hidden(prefill.hidden_states),
+            parameter_version=self.parameter_version,
+            extras={
+                "past_key_values": prefill.past_key_values,
+                "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
+                "prompt_state": state,
+                "lora_cache": lora_cache,
+                "memory_allocated": memory_allocated(self.torch, self.device),
+                "strategy_latency": latency,
+                "decode_latency": decode_s,
+                "generated_text": generated_text,
+                "partial_mode": f"native_{family}_layer_restart",
+            },
+        )
+
+    def _decoder_layers(self) -> tuple[Any | None, str]:
+        backbone = getattr(self.model, "model", None)
+        layers = getattr(backbone, "layers", None)
+        if layers is not None:
+            return layers, "llama_like"
+        transformer = getattr(self.model, "transformer", None)
+        blocks = getattr(transformer, "h", None)
+        if blocks is not None:
+            return blocks, "gpt2"
+        return None, "unknown"
+
+    def _past_as_layers(self, past: Any) -> list[Any]:
+        if hasattr(past, "to_legacy_cache"):
+            return list(past.to_legacy_cache())
+        return list(past)
+
+    def _make_cached_decoder_layer(
+        self,
+        *,
+        family: str,
+        layer_index: int,
+        cached_hidden: Any,
+        cached_past: Any,
+    ) -> Any:
+        torch = self.torch
+
+        from types import MethodType
+
+        module = torch.nn.Module()
+        if family == "gpt2":
+            def gpt2_forward(_module: Any, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
+                del _module, args
+                output: tuple[Any, ...] = (cached_hidden,)
+                if bool(kwargs.get("use_cache", False)):
+                    output += (cached_past,)
+                if bool(kwargs.get("output_attentions", False)):
+                    output += (None,)
+                return output
+
+            module.forward = MethodType(gpt2_forward, module)
+            return module
+
+        def llama_forward(_module: Any, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
+            del _module, args
+            cache = kwargs.get("past_key_value")
+            if cache is not None and hasattr(cache, "update"):
+                key, value = cached_past[:2]
+                cache.update(key, value, layer_index, {})
+                present = cache
+            else:
+                present = cached_past
+            output: tuple[Any, ...] = (cached_hidden,)
+            if bool(kwargs.get("output_attentions", False)):
+                output += (None,)
+            if bool(kwargs.get("use_cache", False)):
+                output += (present,)
+            return output
+
+        module.forward = MethodType(llama_forward, module)
+        return module
 
     def _delta_correct_prefix_cache(
         self,
