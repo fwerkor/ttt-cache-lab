@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ttt_cache_lab.cache.blocks import VersionedCacheEntry, VersionedCacheManager
+from ttt_cache_lab.cache.blocks import VersionedCacheEntry
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName, build_strategy
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
+from ttt_cache_lab.experiments.cache_managers import build_strategy_managers
 from ttt_cache_lab.experiments.metrics import (
     attention_distribution_shift,
     estimate_recompute_fraction,
@@ -76,14 +77,16 @@ class StaticAdapterExperimentRunner:
             )
             for name in self.config.cache.strategies
         ]
-        strategy_managers = {
-            str(strategy.name): VersionedCacheManager(
+        global_managers = (
+            build_strategy_managers(
+                strategies,
                 max_cache_bytes=self.config.cache.max_cache_bytes,
                 max_cache_entries=self.config.cache.max_cache_entries,
                 eviction_policy=self.config.cache.eviction_policy,
             )
-            for strategy in strategies
-        }
+            if self.config.cache.manager_scope == "global_workload"
+            else None
+        )
         records: list[ExperimentRecord] = []
         full_decision = StrategyDecision(
             StrategyName.FULL_RECOMPUTE,
@@ -95,8 +98,29 @@ class StaticAdapterExperimentRunner:
         )
         for sample_id, sample in enumerate(data):
             sample = backend.prepare_sample(sample, context_length=self.config.data.context_length)
+            sample_managers = (
+                build_strategy_managers(
+                    strategies,
+                    max_cache_bytes=self.config.cache.max_cache_bytes,
+                    max_cache_entries=self.config.cache.max_cache_entries,
+                    eviction_policy=self.config.cache.eviction_policy,
+                )
+                if self.config.cache.manager_scope == "sample"
+                else global_managers
+            )
             for target_name in self.config.updates.targets:
                 target = parse_update_target(target_name, num_layers=backend.num_layers)
+                if self.config.cache.manager_scope == "condition":
+                    strategy_managers = build_strategy_managers(
+                        strategies,
+                        max_cache_bytes=self.config.cache.max_cache_bytes,
+                        max_cache_entries=self.config.cache.max_cache_entries,
+                        eviction_policy=self.config.cache.eviction_policy,
+                    )
+                else:
+                    if sample_managers is None:
+                        raise RuntimeError("cache manager scope did not initialize managers")
+                    strategy_managers = sample_managers
                 backend.restore_after_update()
                 self._prepare_backend(backend, target)
                 baseline = backend.prefill(sample.prompt)
@@ -374,6 +398,7 @@ class StaticAdapterExperimentRunner:
                                 planner_source=planner_source,
                                 failure_map_path=failure_map_path,
                                 failure_map_sha256=failure_map_sha256,
+                                cache_manager_scope=self.config.cache.manager_scope,
                             )
                         )
                 backend.restore_after_update()

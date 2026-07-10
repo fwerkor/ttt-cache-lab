@@ -64,6 +64,7 @@ class ExperimentRecord:
     planner_source: str = ""
     failure_map_path: str = ""
     failure_map_sha256: str = ""
+    cache_manager_scope: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -241,6 +241,7 @@ class ExperimentRunner:
                             planner_source=planner_source,
                             failure_map_path=failure_map_path,
                             failure_map_sha256=failure_map_sha256,
+                            cache_manager_scope="condition",
                         )
                     )
                 backend.restore_after_update()

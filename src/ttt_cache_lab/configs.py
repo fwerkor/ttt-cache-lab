@@ -63,6 +63,7 @@ class CacheConfig(BaseModel):
     max_cache_bytes: int | None = Field(default=None, gt=0)
     max_cache_entries: int | None = Field(default=None, gt=0)
     eviction_policy: Literal["lru", "fifo"] = "lru"
+    manager_scope: Literal["condition", "sample", "global_workload"] = "condition"
 
 
 class MetricsConfig(BaseModel):

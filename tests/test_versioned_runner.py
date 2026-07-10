@@ -242,7 +242,11 @@ def test_versioned_cache_capacity_is_global_across_samples_and_versions(tmp_path
             "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
             "data": {"task": "passkey", "num_samples": 2, "context_length": 64, "answer_length": 2},
             "updates": {"targets": ["lora.k"], "update_norm": 0.05},
-            "cache": {"strategies": ["adapter_specific_cache"], "max_cache_entries": 2},
+            "cache": {
+                "strategies": ["adapter_specific_cache"],
+                "max_cache_entries": 2,
+                "manager_scope": "global_workload",
+            },
             "adapter": {"update_mode": "random"},
             "version_steps": [0, 1, 2],
         }
@@ -251,7 +255,28 @@ def test_versioned_cache_capacity_is_global_across_samples_and_versions(tmp_path
     assert max(record.cache_entry_count for record in records) <= 2
     assert records[-1].evicted_cache_entries > 0
     assert all(record.total_cache_bytes >= record.cache_bytes for record in records)
+    assert {record.cache_manager_scope for record in records} == {"global_workload"}
 
+
+def test_default_cache_manager_scope_is_per_condition(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-condition-scope",
+            "experiment_id": "unit_condition_scope",
+            "seed": 3,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 2, "hidden_size": 8, "vocab_size": 16},
+            "data": {"task": "passkey", "num_samples": 2, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k"], "update_norm": 0.05},
+            "cache": {"strategies": ["adapter_specific_cache"]},
+            "adapter": {"update_mode": "random"},
+            "version_steps": [0, 1, 2],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    assert {record.cache_manager_scope for record in records} == {"condition"}
+    assert max(record.cache_entry_count for record in records) == 3
+    assert records[-1].cache_entry_count == 3
 
 
 def test_related_work_baselines_use_distinct_cache_representations(tmp_path: Path) -> None:
