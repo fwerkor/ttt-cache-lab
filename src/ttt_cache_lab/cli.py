@@ -13,6 +13,7 @@ from ttt_cache_lab.experiments.report import generate_report
 from ttt_cache_lab.experiments.results import merge_record_files
 from ttt_cache_lab.experiments.runner import ExperimentRunner
 from ttt_cache_lab.experiments.static_adapters import StaticAdapterExperimentRunner
+from ttt_cache_lab.experiments.statistics import generate_statistical_report
 from ttt_cache_lab.experiments.summarize import (
     first_table_markdown,
     summarize_csv,
@@ -80,6 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
     pareto = subparsers.add_parser("pareto", help="Generate E4 quality-cost Pareto table")
     pareto.add_argument("--input", required=True, type=Path)
     pareto.add_argument("--output-dir", required=True, type=Path)
+
+    statistics = subparsers.add_parser(
+        "statistics",
+        help="Generate cluster-bootstrap confidence intervals and paired comparisons",
+    )
+    statistics.add_argument("--input", required=True, type=Path)
+    statistics.add_argument("--output-dir", required=True, type=Path)
+    statistics.add_argument("--reference-strategy", default="full_recompute")
+    statistics.add_argument("--bootstrap-resamples", type=int, default=2000)
+    statistics.add_argument("--confidence-level", type=float, default=0.95)
+    statistics.add_argument("--seed", type=int, default=2027)
 
     subparsers.add_parser("list-targets", help="List supported update target names")
     return parser
@@ -184,6 +196,18 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "pareto":
         pareto_csv = generate_pareto(args.input, args.output_dir)
         console.print(f"Wrote {pareto_csv}")
+        return
+    if args.command == "statistics":
+        outputs = generate_statistical_report(
+            args.input,
+            args.output_dir,
+            reference_strategy=args.reference_strategy,
+            bootstrap_resamples=args.bootstrap_resamples,
+            confidence_level=args.confidence_level,
+            seed=args.seed,
+        )
+        for output in outputs:
+            console.print(f"Wrote {output}")
         return
     if args.command == "list-targets":
         for item in ModuleKind:
