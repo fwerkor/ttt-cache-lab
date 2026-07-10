@@ -108,11 +108,25 @@ class HuggingFaceBackend:
         input_ids = encoded["input_ids"]
         current = int(input_ids.shape[1])
         if current > context_length:
-            raise ValueError(
-                "Synthetic prompt tokenization exceeded the requested context length; "
-                f"generated={current}, requested={context_length}. "
-                "Reduce filler density instead of silently truncating."
-            )
+            strategy = str(sample.metadata.get("truncation_strategy", "error"))
+            if strategy == "left":
+                input_ids = input_ids[:, -context_length:]
+            elif strategy == "middle":
+                left = (context_length + 1) // 2
+                right = context_length - left
+                input_ids = self.torch.cat(
+                    [input_ids[:, :left], input_ids[:, -right:] if right else input_ids[:, :0]],
+                    dim=1,
+                )
+            elif strategy == "error":
+                raise ValueError(
+                    "Prompt tokenization exceeded the requested context length; "
+                    f"generated={current}, requested={context_length}. "
+                    "Set data.truncation_strategy to left or middle for external datasets."
+                )
+            else:
+                raise ValueError(f"Unsupported truncation strategy: {strategy}")
+            current = int(input_ids.shape[1])
         if current < context_length:
             filler = self.tokenizer(" filler", add_special_tokens=False).get("input_ids", [])
             filler_id = int(filler[0]) if filler else int(self.tokenizer.eos_token_id or 0)

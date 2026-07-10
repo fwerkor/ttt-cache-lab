@@ -5,7 +5,7 @@ import random
 from ttt_cache_lab.cache.semantics import CacheAction
 from ttt_cache_lab.cache.strategies import build_strategy
 from ttt_cache_lab.configs import ExperimentConfig
-from ttt_cache_lab.data.synthetic import SyntheticTaskFactory
+from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.experiments.metrics import (
     estimate_recompute_fraction,
     is_cache_hit,
@@ -32,12 +32,7 @@ class ExperimentRunner:
         self.rng = random.Random(config.seed)
 
     def run(self) -> ExperimentArtifacts:
-        data = SyntheticTaskFactory(self.config.seed).build(
-            self.config.data.task,
-            num_samples=self.config.data.num_samples,
-            context_length=self.config.data.context_length,
-            answer_length=self.config.data.answer_length,
-        )
+        data = build_task_samples(self.config.data, seed=self.config.seed)
         backend = build_backend(self.config.model, seed=self.config.seed)
         strategies = [
             build_strategy(

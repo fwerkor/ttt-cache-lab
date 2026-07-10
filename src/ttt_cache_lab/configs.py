@@ -22,10 +22,21 @@ class ModelConfig(BaseModel):
 
 
 class DataConfig(BaseModel):
-    task: Literal["passkey", "key_value", "multi_needle", "variable_tracking"] = "passkey"
+    source: Literal["synthetic", "jsonl", "huggingface"] = "synthetic"
+    task: str = "passkey"
     num_samples: int = 16
     context_length: int = 512
     answer_length: int = 4
+    dataset_path: Path | None = None
+    dataset_name: str | None = None
+    dataset_config: str | None = None
+    dataset_split: str = "test"
+    prompt_field: str = "prompt"
+    answer_field: str = "answer"
+    context_field: str | None = None
+    question_field: str | None = None
+    prompt_template: str = "{context}\n\nQuestion: {question}\nAnswer:"
+    truncation_strategy: Literal["error", "left", "middle"] = "error"
 
 
 class UpdateConfig(BaseModel):
