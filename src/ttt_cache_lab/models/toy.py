@@ -130,6 +130,9 @@ class ToyBackend:
             return 2.0 * base
         return 1.0 * base
 
+    def last_adaptation_latency(self) -> float:
+        return 0.0
+
     def restore_after_update(self) -> None:
         return None
 

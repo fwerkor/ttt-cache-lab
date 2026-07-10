@@ -11,6 +11,10 @@ from ttt_cache_lab.models.interface import BackendOutput
 
 
 def output_cache_bytes(output: BackendOutput) -> int:
+    extras = output.extras or {}
+    value = extras.get("cache_bytes")
+    if isinstance(value, int | float):
+        return int(value)
     return int(output.cache_tensor.nbytes + output.hidden_tensor.nbytes)
 
 
@@ -19,6 +23,37 @@ def output_memory_allocated(output: BackendOutput) -> int:
     value = extras.get("memory_allocated", 0)
     return int(value) if isinstance(value, int | float) else 0
 
+
+
+def output_peak_memory_allocated(output: BackendOutput) -> int:
+    extras = output.extras or {}
+    value = extras.get("peak_memory_allocated", 0)
+    return int(value) if isinstance(value, int | float) else 0
+
+
+def output_strategy_latency(output: BackendOutput, *, fallback: float) -> float:
+    extras = output.extras or {}
+    value = extras.get("strategy_latency")
+    return float(value) if isinstance(value, int | float) else float(fallback)
+
+
+def output_decode_latency(output: BackendOutput) -> float:
+    extras = output.extras or {}
+    value = extras.get("decode_latency", 0.0)
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
+def output_cache_maintenance_latency(output: BackendOutput) -> float:
+    extras = output.extras or {}
+    value = extras.get("cache_maintenance_latency", 0.0)
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
+def output_throughput(output: BackendOutput, *, latency: float) -> float:
+    extras = output.extras or {}
+    value = extras.get("generated_tokens", 0)
+    tokens = float(value) if isinstance(value, int | float) else 0.0
+    return tokens / latency if tokens > 0.0 and latency > 0.0 else 0.0
 
 def estimate_recompute_fraction(decision: StrategyDecision, *, num_layers: int) -> float:
     if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:

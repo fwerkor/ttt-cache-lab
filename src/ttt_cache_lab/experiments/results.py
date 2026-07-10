@@ -34,6 +34,12 @@ class ExperimentRecord:
     hidden_relative_error: float = 0.0
     cache_bytes: int = 0
     memory_allocated: int = 0
+    peak_memory_allocated: int = 0
+    adaptation_latency: float = 0.0
+    cache_maintenance_latency: float = 0.0
+    decode_latency: float = 0.0
+    end_to_end_latency: float = 0.0
+    throughput_tokens_per_s: float = 0.0
     recompute_fraction: float = 0.0
     cache_hit: bool = False
     refresh_count: int = 0
@@ -41,6 +47,7 @@ class ExperimentRecord:
     false_safe: bool = False
     strategy_mode: str = ""
     cache_block_count: int = 0
+    cache_entry_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

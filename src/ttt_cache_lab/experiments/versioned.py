@@ -16,8 +16,13 @@ from ttt_cache_lab.experiments.metrics import (
     is_false_safe,
     is_refresh_action,
     output_cache_bytes,
+    output_cache_maintenance_latency,
+    output_decode_latency,
     output_memory_allocated,
+    output_peak_memory_allocated,
+    output_strategy_latency,
     output_strategy_mode,
+    output_throughput,
 )
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
@@ -40,6 +45,7 @@ class _StrategyCache:
 class _VersionUpdate:
     output: BackendOutput
     update_norm: float
+    adaptation_latency: float
 
 
 class VersionedExperimentRunner:
@@ -101,6 +107,7 @@ class VersionedExperimentRunner:
                         manager=manager,
                     )
                 accumulated_update_norm = 0.0
+                accumulated_adaptation_latency = 0.0
                 current = cached_v0
 
                 if 0 in target_steps:
@@ -119,11 +126,13 @@ class VersionedExperimentRunner:
                         full=full,
                         adapter_version=0,
                         accumulated_update_norm=0.0,
+                        accumulated_adaptation_latency=0.0,
                     )
 
                 for step in range(1, max_version + 1):
                     version_update = self._update_one_version(backend, sample, target, current)
                     accumulated_update_norm += version_update.update_norm
+                    accumulated_adaptation_latency += version_update.adaptation_latency
                     current = version_update.output
                     if step not in target_steps:
                         continue
@@ -142,6 +151,7 @@ class VersionedExperimentRunner:
                         full=full,
                         adapter_version=step,
                         accumulated_update_norm=accumulated_update_norm,
+                        accumulated_adaptation_latency=accumulated_adaptation_latency,
                     )
                 backend.restore_after_update()
 
@@ -169,6 +179,7 @@ class VersionedExperimentRunner:
     ) -> _VersionUpdate:
         if self.config.adapter.update_mode == "lora_train" and hasattr(backend, "train_lora_step"):
             norms = []
+            adaptation_latencies = []
             for _ in range(self.config.adapter.train_steps_per_version):
                 norm = backend.train_lora_step(
                     sample,
@@ -179,6 +190,7 @@ class VersionedExperimentRunner:
                     freeze_base_model=self.config.adapter.freeze_base_model,
                 )
                 norms.append(float(norm))
+                adaptation_latencies.append(float(backend.last_adaptation_latency()))
             next_version = int(getattr(backend, "parameter_version", current.parameter_version + 1))
             return _VersionUpdate(
                 output=BackendOutput(
@@ -189,9 +201,14 @@ class VersionedExperimentRunner:
                     extras=current.extras,
                 ),
                 update_norm=sum(norms),
+                adaptation_latency=sum(adaptation_latencies),
             )
         updated = backend.simulate_update(current, target, update_norm=self.config.updates.update_norm)
-        return _VersionUpdate(output=updated, update_norm=self.config.updates.update_norm)
+        return _VersionUpdate(
+            output=updated,
+            update_norm=self.config.updates.update_norm,
+            adaptation_latency=float(backend.last_adaptation_latency()),
+        )
 
     def _record_step(
         self,
@@ -209,6 +226,7 @@ class VersionedExperimentRunner:
         full: BackendOutput,
         adapter_version: int,
         accumulated_update_norm: float,
+        accumulated_adaptation_latency: float,
     ) -> None:
         for strategy in strategies:
             cache_key = str(strategy.name)
@@ -324,6 +342,13 @@ class VersionedExperimentRunner:
                 cached.refresh_count = new_refresh_count
                 cached.manager.put(adapter_id, adapter_version, VersionedCacheEntry(approx, new_blocks))
             top1 = top1_agreement(full.logits, approx.logits)
+            fallback_latency = backend.estimate_latency(
+                decision,
+                context_length=self.config.data.context_length,
+            )
+            strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
+            decode_latency = output_decode_latency(approx)
+            maintenance_latency = output_cache_maintenance_latency(approx)
             records.append(
                 ExperimentRecord(
                     sample_id=sample_id,
@@ -348,7 +373,7 @@ class VersionedExperimentRunner:
                         if self.config.metrics.compute_tensor_metrics
                         else 0.0
                     ),
-                    latency_units=backend.estimate_latency(decision, context_length=self.config.data.context_length),
+                    latency_units=strategy_latency,
                     reason=decision.reason,
                     experiment_id=self.config.experiment_id,
                     adapter_id=adapter_id,
@@ -367,6 +392,12 @@ class VersionedExperimentRunner:
                     ),
                     cache_bytes=output_cache_bytes(approx),
                     memory_allocated=output_memory_allocated(approx),
+                    peak_memory_allocated=output_peak_memory_allocated(approx),
+                    adaptation_latency=accumulated_adaptation_latency,
+                    cache_maintenance_latency=maintenance_latency,
+                    decode_latency=decode_latency,
+                    end_to_end_latency=accumulated_adaptation_latency + strategy_latency,
+                    throughput_tokens_per_s=output_throughput(approx, latency=strategy_latency),
                     recompute_fraction=estimate_recompute_fraction(decision, num_layers=backend.num_layers),
                     cache_hit=is_cache_hit(decision),
                     refresh_count=new_refresh_count,
@@ -374,6 +405,7 @@ class VersionedExperimentRunner:
                     false_safe=is_false_safe(decision, full=full, approx=approx),
                     strategy_mode=output_strategy_mode(approx),
                     cache_block_count=len(new_blocks),
+                    cache_entry_count=len(cached.manager.versions(adapter_id)),
                 )
             )
 
@@ -504,7 +536,8 @@ class VersionedExperimentRunner:
                 safe = True
             if not safe:
                 continue
-            cost = backend.estimate_latency(candidate, context_length=self.config.data.context_length)
+            fallback_cost = backend.estimate_latency(candidate, context_length=self.config.data.context_length)
+            cost = output_strategy_latency(output, fallback=fallback_cost)
             feasible.append((cost, candidate, output, candidate_kl, candidate_top1, candidate_score))
 
         if not feasible:
@@ -555,6 +588,13 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "accumulated_update_norm_mean",
         "update_norm_since_cache_mean",
         "cache_block_count_mean",
+        "adaptation_latency_mean",
+        "cache_maintenance_latency_mean",
+        "decode_latency_mean",
+        "end_to_end_latency_mean",
+        "throughput_tokens_per_s_mean",
+        "peak_memory_allocated_mean",
+        "cache_entry_count_mean",
     ]
     with output_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -581,6 +621,13 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "accumulated_update_norm_mean": _mean(records, "accumulated_update_norm"),
                     "update_norm_since_cache_mean": _mean(records, "update_norm_since_cache"),
                     "cache_block_count_mean": _mean(records, "cache_block_count"),
+                    "adaptation_latency_mean": _mean(records, "adaptation_latency"),
+                    "cache_maintenance_latency_mean": _mean(records, "cache_maintenance_latency"),
+                    "decode_latency_mean": _mean(records, "decode_latency"),
+                    "end_to_end_latency_mean": _mean(records, "end_to_end_latency"),
+                    "throughput_tokens_per_s_mean": _mean(records, "throughput_tokens_per_s"),
+                    "peak_memory_allocated_mean": _mean(records, "peak_memory_allocated"),
+                    "cache_entry_count_mean": _mean(records, "cache_entry_count"),
                 }
             )
 

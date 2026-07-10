@@ -12,8 +12,13 @@ from ttt_cache_lab.experiments.metrics import (
     is_false_safe,
     is_refresh_action,
     output_cache_bytes,
+    output_cache_maintenance_latency,
+    output_decode_latency,
     output_memory_allocated,
+    output_peak_memory_allocated,
+    output_strategy_latency,
     output_strategy_mode,
+    output_throughput,
 )
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
@@ -65,6 +70,14 @@ class ExperimentRunner:
                         decision=decision,
                     )
                     top1 = top1_agreement(full.logits, approx.logits)
+                    fallback_latency = backend.estimate_latency(
+                        decision,
+                        context_length=self.config.data.context_length,
+                    )
+                    strategy_latency = output_strategy_latency(approx, fallback=fallback_latency)
+                    decode_latency = output_decode_latency(approx)
+                    maintenance_latency = output_cache_maintenance_latency(approx)
+                    adaptation_latency = float(backend.last_adaptation_latency())
                     records.append(
                         ExperimentRecord(
                             sample_id=sample_id,
@@ -89,9 +102,7 @@ class ExperimentRunner:
                                 if self.config.metrics.compute_tensor_metrics
                                 else 0.0
                             ),
-                            latency_units=backend.estimate_latency(
-                                decision, context_length=self.config.data.context_length
-                            ),
+                            latency_units=strategy_latency,
                             reason=decision.reason,
                             hidden_relative_error=(
                                 relative_error(full.hidden_tensor, approx.hidden_tensor)
@@ -100,6 +111,12 @@ class ExperimentRunner:
                             ),
                             cache_bytes=output_cache_bytes(approx),
                             memory_allocated=output_memory_allocated(approx),
+                            peak_memory_allocated=output_peak_memory_allocated(approx),
+                            adaptation_latency=adaptation_latency,
+                            cache_maintenance_latency=maintenance_latency,
+                            decode_latency=decode_latency,
+                            end_to_end_latency=adaptation_latency + strategy_latency,
+                            throughput_tokens_per_s=output_throughput(approx, latency=strategy_latency),
                             recompute_fraction=estimate_recompute_fraction(
                                 decision, num_layers=backend.num_layers
                             ),
@@ -108,6 +125,8 @@ class ExperimentRunner:
                             rejected_reuse=(decision.reject_reuse or decision.action is CacheAction.REJECT_UPDATE),
                             false_safe=is_false_safe(decision, full=full, approx=approx),
                             strategy_mode=output_strategy_mode(approx),
+                            cache_block_count=backend.num_layers,
+                            cache_entry_count=1,
                         )
                     )
                 backend.restore_after_update()

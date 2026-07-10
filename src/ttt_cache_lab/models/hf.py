@@ -7,9 +7,15 @@ from typing import Any, cast
 import numpy as np
 
 from ttt_cache_lab.cache.semantics import CacheAction
-from ttt_cache_lab.cache.strategies import StrategyDecision
+from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName
 from ttt_cache_lab.data.synthetic import TaskSample
-from ttt_cache_lab.models.accelerator import memory_allocated, reset_peak_memory, resolve_device, synchronize
+from ttt_cache_lab.models.accelerator import (
+    max_memory_allocated,
+    memory_allocated,
+    reset_peak_memory,
+    resolve_device,
+    synchronize,
+)
 from ttt_cache_lab.models.interface import BackendOutput
 from ttt_cache_lab.updates.targets import ModuleKind, UpdateTarget
 
@@ -75,6 +81,7 @@ class HuggingFaceBackend:
         self._last_stale_s = 0.0
         self._last_partial_s = 0.0
         self._last_delta_s = 0.0
+        self._last_adaptation_s = 0.0
         self._lora_modules: list[Any] = []
         self._active_lora_modules: list[Any] = []
         self._lora_target_key: str | None = None
@@ -147,9 +154,11 @@ class HuggingFaceBackend:
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             self._set_lora_capture(False)
-            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
         synchronize(self.torch, self.device)
-        self._last_prefill_s = time.perf_counter() - start
+        prefill_s = time.perf_counter() - start
+        with self.torch.no_grad():
+            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+        self._last_prefill_s = prefill_s
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
@@ -161,8 +170,16 @@ class HuggingFaceBackend:
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
+                "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+                "cache_bytes": self._past_nbytes(prefill.past_key_values),
+                "token_length": int(state.input_ids.shape[1]),
+                "attention_implementation": self._attention_implementation(),
                 "generated_text": generated_text,
+                "generated_tokens": self._sample_answer_token_counts.get(prompt, 1),
+                "prefill_latency": prefill_s,
+                "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
+                "strategy_latency": prefill_s + decode_s,
             },
         )
 
@@ -171,6 +188,8 @@ class HuggingFaceBackend:
         if not selected:
             raise ValueError(f"No HF parameters matched update target {target.raw!r}")
         self.torch.manual_seed(self.seed + self.parameter_version + 1)
+        synchronize(self.torch, self.device)
+        start = time.perf_counter()
         for param in selected:
             if not param.requires_grad or not param.is_floating_point():
                 continue
@@ -178,6 +197,8 @@ class HuggingFaceBackend:
             with self.torch.no_grad():
                 param.add_(noise)
             self._deltas.append((param, noise))
+        synchronize(self.torch, self.device)
+        self._last_adaptation_s = time.perf_counter() - start
         self.parameter_version += 1
         return BackendOutput(
             logits=baseline.logits,
@@ -196,9 +217,11 @@ class HuggingFaceBackend:
         with self.torch.no_grad():
             prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
             self._set_lora_capture(False)
-            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
         synchronize(self.torch, self.device)
-        self._last_prefill_s = time.perf_counter() - start
+        prefill_s = time.perf_counter() - start
+        with self.torch.no_grad():
+            probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+        self._last_prefill_s = prefill_s
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
@@ -210,8 +233,16 @@ class HuggingFaceBackend:
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.device),
+                "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+                "cache_bytes": self._past_nbytes(prefill.past_key_values),
+                "token_length": int(state.input_ids.shape[1]),
+                "attention_implementation": self._attention_implementation(),
                 "generated_text": generated_text,
+                "generated_tokens": self._sample_answer_token_counts.get(prompt, 1),
+                "prefill_latency": prefill_s,
+                "cache_maintenance_latency": prefill_s,
                 "decode_latency": decode_s,
+                "strategy_latency": prefill_s + decode_s,
             },
         )
 
@@ -226,7 +257,9 @@ class HuggingFaceBackend:
         if decision.action in {CacheAction.FULL_RECOMPUTE, CacheAction.REJECT_UPDATE}:
             return full
         if decision.action is CacheAction.REUSE_EXACT:
-            return baseline
+            if decision.strategy is StrategyName.NO_ADAPTATION:
+                return self._cached_output_with_runtime(baseline, cache_mode="no_adaptation")
+            return self._reuse_old_prefix_cache(baseline, cache_mode="exact_reuse")
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             return self._partial_recompute_prefix_cache(baseline=baseline, full=full, decision=decision)
         if decision.action is CacheAction.DELTA_CORRECT:
@@ -256,6 +289,9 @@ class HuggingFaceBackend:
             return getattr(self, "_last_delta_s", 0.0) or max(1e-6, (self._last_prefill_s or 1.0) * 0.15)
         return max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
 
+    def last_adaptation_latency(self) -> float:
+        return self._last_adaptation_s
+
     def restore_after_update(self) -> None:
         for param, delta in reversed(self._deltas):
             with self.torch.no_grad():
@@ -263,6 +299,7 @@ class HuggingFaceBackend:
         self._deltas.clear()
         self.reset_lora_adapters()
         self.parameter_version = 0
+        self._last_adaptation_s = 0.0
 
     def setup_lora(self, target: UpdateTarget, *, rank: int, alpha: float, freeze_base_model: bool = True) -> int:
         from torch import nn
@@ -345,6 +382,8 @@ class HuggingFaceBackend:
         if count == 0:
             raise ValueError(f"No Linear modules matched LoRA target {target.raw!r}")
         self.model.train()
+        synchronize(self.torch, self.device)
+        adaptation_start = time.perf_counter()
         prompt_ids = self._prepared_input_ids.get(sample.prompt)
         if prompt_ids is None:
             prompt_ids = self.tokenizer(
@@ -386,6 +425,8 @@ class HuggingFaceBackend:
                     param.grad = None
         self.model.zero_grad(set_to_none=True)
         self.model.eval()
+        synchronize(self.torch, self.device)
+        self._last_adaptation_s = time.perf_counter() - adaptation_start
         self.parameter_version += 1
         return total_norm
 
@@ -477,7 +518,31 @@ class HuggingFaceBackend:
         generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         return first_logits, generated_text, decode_s
 
-    def _reuse_old_prefix_cache(self, baseline: BackendOutput) -> BackendOutput:
+    def _cached_output_with_runtime(self, baseline: BackendOutput, *, cache_mode: str) -> BackendOutput:
+        extras = dict(baseline.extras or {})
+        decode_s = float(extras.get("decode_latency", 0.0))
+        extras.update(
+            {
+                "cache_mode": cache_mode,
+                "cache_maintenance_latency": 0.0,
+                "strategy_latency": decode_s,
+            }
+        )
+        return BackendOutput(
+            logits=baseline.logits,
+            cache_tensor=baseline.cache_tensor,
+            hidden_tensor=baseline.hidden_tensor,
+            parameter_version=baseline.parameter_version,
+            extras=extras,
+        )
+
+    def _reuse_old_prefix_cache(
+        self,
+        baseline: BackendOutput,
+        *,
+        cache_mode: str = "stale_reuse",
+        reset_memory_stats: bool = True,
+    ) -> BackendOutput:
         if not baseline.extras:
             raise ValueError("Baseline output does not contain cached HF state")
         past = baseline.extras["past_key_values"]
@@ -486,6 +551,8 @@ class HuggingFaceBackend:
             past=past,
             cache_tensor=baseline.cache_tensor,
             hidden_tensor=baseline.hidden_tensor,
+            extra_metadata={"cache_mode": cache_mode},
+            reset_memory_stats=reset_memory_stats,
         )
         self._last_stale_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
         return result
@@ -557,9 +624,11 @@ class HuggingFaceBackend:
                     output_hidden_states=True,
                 )
                 self._set_lora_capture(False)
-                probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
             synchronize(self.torch, self.device)
-            latency = time.perf_counter() - start
+            maintenance_s = time.perf_counter() - start
+            with self.torch.no_grad():
+                probe_logits, generated_text, decode_s = self._generate_answer(state, prefill.past_key_values)
+            latency = maintenance_s + decode_s
         finally:
             self._set_lora_capture(False)
             for layer_index, original in replacements:
@@ -578,8 +647,14 @@ class HuggingFaceBackend:
                 "prompt_state": state,
                 "lora_cache": lora_cache,
                 "memory_allocated": memory_allocated(self.torch, self.device),
+                "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+                "cache_bytes": self._past_nbytes(prefill.past_key_values),
+                "token_length": int(state.input_ids.shape[1]),
+                "attention_implementation": self._attention_implementation(),
                 "strategy_latency": latency,
+                "cache_maintenance_latency": maintenance_s,
                 "decode_latency": decode_s,
+                "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
                 "generated_text": generated_text,
                 "partial_mode": f"native_{family}_layer_restart",
             },
@@ -657,16 +732,25 @@ class HuggingFaceBackend:
         if not baseline.extras:
             raise ValueError("Delta correction requires cached HF state from the baseline output")
         split_layer = decision.first_invalid_layer or 0
+        reset_peak_memory(self.torch, self.device)
+        synchronize(self.torch, self.device)
+        start = time.perf_counter()
         corrected_past, corrected_lora_cache = self._apply_lora_weight_delta_to_past(
             baseline.extras["past_key_values"],
             baseline.extras.get("lora_cache", {}),
             split_layer=split_layer,
         )
         if corrected_past is None:
-            result = self._reuse_old_prefix_cache(baseline)
+            result = self._reuse_old_prefix_cache(baseline, reset_memory_stats=False)
             if result.extras is not None:
                 result.extras["delta_mode"] = "unavailable_weight_delta_fallback_to_stale"
-            self._last_delta_s = self._last_stale_s
+            synchronize(self.torch, self.device)
+            total_s = time.perf_counter() - start
+            if result.extras is not None:
+                decode_s = float(result.extras.get("decode_latency", 0.0))
+                result.extras["cache_maintenance_latency"] = max(0.0, total_s - decode_s)
+                result.extras["strategy_latency"] = total_s
+            self._last_delta_s = total_s
             return result
         result = self._probe_with_past(
             baseline=baseline,
@@ -676,7 +760,14 @@ class HuggingFaceBackend:
             lora_cache=corrected_lora_cache,
             extra_metadata={"delta_mode": "lora_weight_delta"},
         )
-        self._last_delta_s = float(result.extras.get("strategy_latency", 0.0)) if result.extras else 0.0
+        synchronize(self.torch, self.device)
+        total_s = time.perf_counter() - start
+        if result.extras is not None:
+            decode_s = float(result.extras.get("decode_latency", 0.0))
+            result.extras["cache_maintenance_latency"] = max(0.0, total_s - decode_s)
+            result.extras["strategy_latency"] = total_s
+            result.extras["peak_memory_allocated"] = max_memory_allocated(self.torch, self.device)
+        self._last_delta_s = total_s
         return result
 
     def _probe_with_past(
@@ -688,10 +779,13 @@ class HuggingFaceBackend:
         hidden_tensor: np.ndarray,
         lora_cache: dict[str, Any] | None = None,
         extra_metadata: dict[str, Any] | None = None,
+        reset_memory_stats: bool = True,
     ) -> BackendOutput:
         if not baseline.extras:
             raise ValueError("Baseline output does not contain prompt state")
         state = baseline.extras["prompt_state"]
+        if reset_memory_stats:
+            reset_peak_memory(self.torch, self.device)
         synchronize(self.torch, self.device)
         start = time.perf_counter()
         with self.torch.no_grad():
@@ -703,8 +797,14 @@ class HuggingFaceBackend:
             "prompt_state": state,
             "lora_cache": lora_cache if lora_cache is not None else baseline.extras.get("lora_cache", {}),
             "memory_allocated": memory_allocated(self.torch, self.device),
+            "peak_memory_allocated": max_memory_allocated(self.torch, self.device),
+            "cache_bytes": self._past_nbytes(past),
+            "token_length": int(state.input_ids.shape[1]),
+            "attention_implementation": self._attention_implementation(),
             "strategy_latency": latency,
+            "cache_maintenance_latency": max(0.0, latency - decode_s),
             "generated_text": generated_text,
+            "generated_tokens": self._sample_answer_token_counts.get(state.prompt, 1),
             "decode_latency": decode_s,
         }
         if extra_metadata:
@@ -974,6 +1074,18 @@ class HuggingFaceBackend:
         blended = old.copy()
         blended[split_layer:] = old[split_layer:] + (new[split_layer:] - old[split_layer:]) * alpha
         return blended
+
+    def _past_nbytes(self, past_key_values: Any) -> int:
+        total = 0
+        for layer in self._past_as_layers(past_key_values):
+            for tensor in layer[:2]:
+                if hasattr(tensor, "numel") and hasattr(tensor, "element_size"):
+                    total += int(tensor.numel()) * int(tensor.element_size())
+        return total
+
+    def _attention_implementation(self) -> str:
+        value = getattr(self.model.config, "_attn_implementation", None)
+        return str(value or "transformers_default")
 
     def _summarize_past(self, past_key_values: Any) -> np.ndarray:
         rows = []
