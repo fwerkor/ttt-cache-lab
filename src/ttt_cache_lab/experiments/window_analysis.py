@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from ttt_cache_lab.experiments.conditions import with_full_reference_metrics
+from ttt_cache_lab.experiments.conditions import reference_key, with_full_reference_metrics
 
 
 @dataclass(frozen=True)
@@ -26,9 +26,10 @@ def generate_window_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = _read_rows(input_csv)
     enriched = with_full_reference_metrics(rows)
+    paired = _with_stale_reference_metrics(enriched)
     window_rows = [
         row
-        for row in enriched
+        for row in paired
         if row.get("cache_strategy", "").startswith("windowed_recompute")
         and _number(row, "version_gap") > 0.0
         and _window_size(row) > 0
@@ -42,6 +43,37 @@ def generate_window_analysis(
     markdown_path = output_dir / "minimal_safe_windows.md"
     markdown_path.write_text(_to_markdown(minima), encoding="utf-8")
     return cells_path, minima_path
+
+
+def _with_stale_reference_metrics(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    stale_rows: dict[tuple[tuple[str, str], ...], dict[str, str]] = {}
+    for row in rows:
+        if row.get("cache_strategy") != "stale_reuse":
+            continue
+        key = reference_key(row)
+        if key in stale_rows:
+            raise ValueError(f"Duplicate stale_reuse reference for condition {key!r}")
+        stale_rows[key] = row
+
+    paired: list[dict[str, str]] = []
+    for row in rows:
+        item = dict(row)
+        stale = stale_rows.get(reference_key(row))
+        if stale is not None:
+            stale_kl = _number(stale, "logits_kl")
+            stale_top1 = _number(stale, "top1_agreement")
+            stale_task_drop = _number(stale, "task_drop_vs_full")
+            item["stale_logits_kl"] = str(stale_kl)
+            item["stale_top1_agreement"] = str(stale_top1)
+            item["stale_task_drop_vs_full"] = str(stale_task_drop)
+            item["kl_gain_vs_stale"] = str(stale_kl - _number(row, "logits_kl"))
+            item["beneficial_vs_stale"] = str(
+                _number(row, "logits_kl") <= stale_kl
+                and _number(row, "top1_agreement") >= stale_top1
+                and _number(row, "task_drop_vs_full") <= stale_task_drop
+            )
+        paired.append(item)
+    return paired
 
 
 def _aggregate(
@@ -87,9 +119,14 @@ def _aggregate(
                 "recompute_window_size": int(values["recompute_window_size"]),
                 "count": count,
                 "safe_rate": sum(safe_flags) / count if count else 0.0,
+                "beneficial_vs_stale_rate": _mean_bool(group, "beneficial_vs_stale"),
                 "logits_kl_mean": _mean(group, "logits_kl"),
+                "stale_logits_kl_mean": _mean(group, "stale_logits_kl"),
+                "kl_gain_vs_stale_mean": _mean(group, "kl_gain_vs_stale"),
                 "top1_agreement_mean": _mean(group, "top1_agreement"),
+                "stale_top1_agreement_mean": _mean(group, "stale_top1_agreement"),
                 "task_drop_vs_full_mean": _mean(group, "task_drop_vs_full"),
+                "stale_task_drop_vs_full_mean": _mean(group, "stale_task_drop_vs_full"),
                 "false_safe_rate": _mean_bool(group, "false_safe"),
                 "recompute_fraction_mean": _mean(group, "recompute_fraction"),
                 "flops_fraction_mean": _mean(group, "flops_fraction"),
@@ -111,9 +148,14 @@ def _select_minima(
         "recompute_window_size",
         "count",
         "safe_rate",
+        "beneficial_vs_stale_rate",
         "logits_kl_mean",
+        "stale_logits_kl_mean",
+        "kl_gain_vs_stale_mean",
         "top1_agreement_mean",
+        "stale_top1_agreement_mean",
         "task_drop_vs_full_mean",
+        "stale_task_drop_vs_full_mean",
         "false_safe_rate",
         "recompute_fraction_mean",
         "flops_fraction_mean",
@@ -135,15 +177,43 @@ def _select_minima(
             and float(item["task_drop_vs_full_mean"]) <= thresholds.safe_task_drop
             and float(item["false_safe_rate"]) == 0.0
         ]
+        beneficial = [
+            item
+            for item in safe
+            if float(item["beneficial_vs_stale_rate"]) >= thresholds.min_safe_rate
+        ]
         chosen = safe[0] if safe else ordered[-1]
+        chosen_beneficial = beneficial[0] if beneficial else ordered[-1]
+        kl_values = [float(item["logits_kl_mean"]) for item in ordered]
+        monotonicity_violations = sum(
+            later > earlier + 1e-12
+            for earlier, later in zip(kl_values, kl_values[1:], strict=False)
+        )
+        best_kl = min(
+            ordered,
+            key=lambda item: (
+                float(item["logits_kl_mean"]),
+                int(item["recompute_window_size"]),
+            ),
+        )
         minima.append(
             {
                 **dict(key),
                 "minimum_safe_window": int(chosen["recompute_window_size"]) if safe else -1,
                 "safe_window_found": bool(safe),
+                "minimum_beneficial_window": (
+                    int(chosen_beneficial["recompute_window_size"]) if beneficial else -1
+                ),
+                "beneficial_window_found": bool(beneficial),
+                "best_kl_window": int(best_kl["recompute_window_size"]),
+                "kl_nonincreasing_with_window": monotonicity_violations == 0,
+                "kl_monotonicity_violations": monotonicity_violations,
                 "tested_max_window": int(ordered[-1]["recompute_window_size"]),
                 "safe_rate": float(chosen["safe_rate"]),
+                "beneficial_vs_stale_rate": float(chosen["beneficial_vs_stale_rate"]),
                 "logits_kl_mean": float(chosen["logits_kl_mean"]),
+                "stale_logits_kl_mean": float(chosen["stale_logits_kl_mean"]),
+                "kl_gain_vs_stale_mean": float(chosen["kl_gain_vs_stale_mean"]),
                 "top1_agreement_mean": float(chosen["top1_agreement_mean"]),
                 "task_drop_vs_full_mean": float(chosen["task_drop_vs_full_mean"]),
                 "recompute_fraction_mean": float(chosen["recompute_fraction_mean"]),
@@ -212,8 +282,15 @@ def _to_markdown(rows: list[dict[str, str | int | float | bool]]) -> str:
             "version_gap",
             "minimum_safe_window",
             "safe_window_found",
+            "minimum_beneficial_window",
+            "beneficial_window_found",
+            "best_kl_window",
+            "kl_nonincreasing_with_window",
+            "kl_monotonicity_violations",
             "safe_rate",
+            "beneficial_vs_stale_rate",
             "logits_kl_mean",
+            "stale_logits_kl_mean",
             "task_drop_vs_full_mean",
             "recompute_fraction_mean",
         )

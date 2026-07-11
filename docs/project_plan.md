@@ -310,8 +310,10 @@ Primary outputs:
 
 - safe-window rate across samples;
 - minimum window satisfying KL, top-1, task-drop, and false-safe thresholds;
-- latency/FLOP fraction of that window;
-- frequency with which no tested finite window is safe.
+- minimum beneficial window that also improves or preserves KL, top-1, and task drop relative to paired stale reuse;
+- best-KL window and the number of KL monotonicity violations as the window grows;
+- latency/FLOP fraction of the selected window;
+- frequency with which no tested finite window is safe or no finite window improves on stale reuse.
 
 Run:
 

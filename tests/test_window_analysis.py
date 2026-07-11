@@ -76,7 +76,21 @@ def test_window_analysis_selects_smallest_safe_window(tmp_path: Path) -> None:
         rows.append(
             {
                 **common,
-                "cache_strategy": "windowed_recompute",
+                "cache_strategy": "stale_reuse",
+                "recompute_window_size": 0,
+                "task_score": 0.5,
+                "logits_kl": 0.1,
+                "top1_agreement": 0.0,
+                "false_safe": True,
+                "recompute_fraction": 0.0,
+                "flops_fraction": 0.0,
+                "end_to_end_latency": 1.0,
+            }
+        )
+        rows.append(
+            {
+                **common,
+                "cache_strategy": "windowed_recompute_1",
                 "recompute_window_size": 1,
                 "task_score": 0.5,
                 "logits_kl": 0.2,
@@ -90,7 +104,7 @@ def test_window_analysis_selects_smallest_safe_window(tmp_path: Path) -> None:
         rows.append(
             {
                 **common,
-                "cache_strategy": "windowed_recompute",
+                "cache_strategy": "windowed_recompute_2",
                 "recompute_window_size": 2,
                 "task_score": 1.0,
                 "logits_kl": 0.01,
@@ -99,6 +113,20 @@ def test_window_analysis_selects_smallest_safe_window(tmp_path: Path) -> None:
                 "recompute_fraction": 0.5,
                 "flops_fraction": 0.5,
                 "end_to_end_latency": 5.0,
+            }
+        )
+        rows.append(
+            {
+                **common,
+                "cache_strategy": "windowed_recompute_3",
+                "recompute_window_size": 3,
+                "task_score": 1.0,
+                "logits_kl": 0.02,
+                "top1_agreement": 1.0,
+                "false_safe": False,
+                "recompute_fraction": 0.75,
+                "flops_fraction": 0.75,
+                "end_to_end_latency": 7.0,
             }
         )
     zero_gap = {
@@ -144,4 +172,10 @@ def test_window_analysis_selects_smallest_safe_window(tmp_path: Path) -> None:
     assert len(minima) == 1
     assert minima[0]["minimum_safe_window"] == "2"
     assert minima[0]["safe_window_found"] == "True"
+    assert minima[0]["minimum_beneficial_window"] == "2"
+    assert minima[0]["beneficial_window_found"] == "True"
+    assert minima[0]["best_kl_window"] == "2"
+    assert minima[0]["kl_nonincreasing_with_window"] == "False"
+    assert minima[0]["kl_monotonicity_violations"] == "1"
     assert float(minima[0]["safe_rate"]) == 1.0
+    assert float(minima[0]["beneficial_vs_stale_rate"]) == 1.0
