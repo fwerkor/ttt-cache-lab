@@ -54,6 +54,32 @@ CONFIDENCE_PROBE_MARGINS = (
     5e-2,
     1e-1,
 )
+REFERENCE_POOL_SIZE = 4
+REFERENCE_POOL_MIN_STALE_KL = 1e-2
+REFERENCE_ROUTER_RIDGE_VALUES = (
+    1e-4,
+    1e-3,
+    1e-2,
+    1e-1,
+    1.0,
+    10.0,
+    100.0,
+    1_000.0,
+    10_000.0,
+)
+REFERENCE_ROUTER_OBJECTIVES = (
+    "relative_gain",
+    "absolute_gain",
+    "reference_nll_gain",
+    "best_candidate",
+)
+ROUTER_BLOCK_FEATURE_NAMES = (
+    "stale_attention_mass",
+    "input_weight_bound",
+    "attention_input_bound",
+    "predicted_delta_norm",
+    "attention_predicted_delta",
+)
 
 
 def fit_block_ranker(
@@ -96,6 +122,18 @@ def fit_block_ranker(
     default_budgets = _default_budgets(record_rows)
     one_probe_policies = _one_probe_policies(record_rows)
     confidence_probe_policies = _confidence_probe_policies(record_rows)
+    reference_candidate_pool_policies = _reference_candidate_pool_policies(
+        record_rows,
+        pool_size=REFERENCE_POOL_SIZE,
+        min_stale_kl=REFERENCE_POOL_MIN_STALE_KL,
+    )
+    reference_candidate_router_policies = _reference_candidate_router_policies(
+        feature_rows,
+        record_rows,
+        reference_candidate_pool_policies,
+        ridge_values=REFERENCE_ROUTER_RIDGE_VALUES,
+        min_stale_kl=REFERENCE_POOL_MIN_STALE_KL,
+    )
     models: dict[str, Any] = {}
     for target, items in sorted(grouped.items()):
         x = np.stack([item["x"] for item in items], axis=0)
@@ -135,6 +173,12 @@ def fit_block_ranker(
             "default_count": int(default_budgets.get(target, 0)),
             "one_probe_policy": one_probe_policies.get(target),
             "confidence_probe_policy": confidence_probe_policies.get(target),
+            "reference_candidate_pool_policy": reference_candidate_pool_policies.get(
+                target
+            ),
+            "reference_candidate_router_policy": (
+                reference_candidate_router_policies.get(target)
+            ),
         }
 
     payload = {
@@ -202,6 +246,41 @@ def score_block_features(
     else:
         raise ValueError(f"Unsupported block ranker mode {selected_mode!r}")
     return np.asarray(scores, dtype=np.float64), int(model.get("default_count", 0))
+
+
+
+def route_reference_candidate(
+    ranker: dict[str, Any],
+    *,
+    update_target: str,
+    feature_rows: list[dict[str, Any]],
+) -> tuple[dict[str, Any], np.ndarray]:
+    """Route one condition to a single distilled sparse-repair candidate."""
+    model = ranker.get("models", {}).get(update_target)
+    if not isinstance(model, dict):
+        raise ValueError(f"Block ranker has no model for update target {update_target!r}")
+    policy = model.get("reference_candidate_router_policy")
+    if not isinstance(policy, dict):
+        raise ValueError(f"Block ranker has no reference router for {update_target!r}")
+    expected_cells = int(policy.get("expected_direct_cells", 0))
+    vector = _reference_router_feature_vector(
+        feature_rows,
+        expected_cells=expected_cells,
+    )
+    mean = np.asarray(policy["mean"], dtype=np.float64)
+    scale = np.asarray(policy["scale"], dtype=np.float64)
+    intercept = np.asarray(policy["intercept"], dtype=np.float64)
+    weights = np.asarray(policy["weights"], dtype=np.float64)
+    if vector.shape != mean.shape or scale.shape != mean.shape:
+        raise ValueError("Reference router feature schema does not match fitted model")
+    scores = intercept + ((vector - mean) / scale) @ weights
+    candidates = policy.get("candidates", [])
+    if not isinstance(candidates, list) or len(candidates) != len(scores):
+        raise ValueError("Reference router candidate schema is invalid")
+    selected = candidates[int(np.argmax(scores))]
+    if not isinstance(selected, dict):
+        raise ValueError("Reference router selected an invalid candidate")
+    return cast(dict[str, Any], selected), np.asarray(scores, dtype=np.float64)
 
 
 def _feature_vector(row: dict[str, Any]) -> np.ndarray:
@@ -715,6 +794,585 @@ def _confidence_probe_policies(
         if candidates:
             policies[target] = max(candidates, key=lambda item: item[0])[1]
     return policies
+
+
+
+
+def _reference_candidate_pool_policies(
+    rows: list[dict[str, str]],
+    *,
+    pool_size: int = REFERENCE_POOL_SIZE,
+    min_stale_kl: float = REFERENCE_POOL_MIN_STALE_KL,
+) -> dict[str, dict[str, Any]]:
+    """Distill a small static candidate set for reference-guided selection."""
+    if pool_size < 1:
+        raise ValueError("reference candidate pool size must be positive")
+    if min_stale_kl < 0.0:
+        raise ValueError("minimum stale KL must be nonnegative")
+
+    grouped: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row.get("selector") == "stale" or row.get("selector") in STATIC_SELECTOR_NAMES:
+            grouped[_condition_key(row)].append(row)
+
+    policies: dict[str, dict[str, Any]] = {}
+    targets = sorted({condition[1] for condition in grouped})
+    for target in targets:
+        conditions: list[tuple[str, ...]] = []
+        for condition, candidates in grouped.items():
+            if condition[1] != target:
+                continue
+            stale_rows = [row for row in candidates if row.get("selector") == "stale"]
+            if not stale_rows:
+                continue
+            stale_kl = float(stale_rows[0].get("logits_kl", "nan"))
+            stale_nll = float(stale_rows[0].get("reference_token_nll", "nan"))
+            if (
+                not np.isfinite(stale_kl)
+                or not np.isfinite(stale_nll)
+                or stale_kl < min_stale_kl
+            ):
+                continue
+            conditions.append(condition)
+        if not conditions:
+            continue
+
+        available: set[tuple[str, int]] | None = None
+        rows_by_condition: dict[
+            tuple[str, ...], dict[tuple[str, int], dict[str, str]]
+        ] = {}
+        stale_by_condition: dict[tuple[str, ...], dict[str, str]] = {}
+        for condition in conditions:
+            candidates = grouped[condition]
+            stale_by_condition[condition] = next(
+                row for row in candidates if row.get("selector") == "stale"
+            )
+            keyed = {
+                (str(row["selector"]), int(row.get("selected_cells", 0))): row
+                for row in candidates
+                if row.get("selector") in STATIC_SELECTOR_NAMES
+                and int(row.get("selected_cells", 0)) > 0
+                and np.isfinite(float(row.get("reference_token_nll", "nan")))
+            }
+            rows_by_condition[condition] = keyed
+            keys = set(keyed)
+            available = keys if available is None else available & keys
+        if not available:
+            continue
+
+        def evaluate_pool(
+            pool: list[tuple[str, int]],
+            *,
+            condition_list: tuple[tuple[str, ...], ...] = tuple(conditions),
+            stale_rows: dict[tuple[str, ...], dict[str, str]] = stale_by_condition,
+            candidate_rows: dict[
+                tuple[str, ...], dict[tuple[str, int], dict[str, str]]
+            ] = rows_by_condition,
+        ) -> dict[str, float | int]:
+            gain_sum = 0.0
+            stale_sum = 0.0
+            harmful = 0
+            beneficial = 0
+            worst_relative_gain = math.inf
+            for condition in condition_list:
+                stale = stale_rows[condition]
+                stale_kl = float(stale["logits_kl"])
+                best_kl = stale_kl
+                best_nll = float(stale["reference_token_nll"])
+                for key in pool:
+                    candidate = candidate_rows[condition][key]
+                    candidate_nll = float(candidate["reference_token_nll"])
+                    if candidate_nll < best_nll - 1e-15:
+                        best_nll = candidate_nll
+                        best_kl = float(candidate["logits_kl"])
+                gain = stale_kl - best_kl
+                relative_gain = gain / max(abs(stale_kl), 1e-12)
+                gain_sum += gain
+                stale_sum += stale_kl
+                harmful += int(gain < -1e-15)
+                beneficial += int(gain > 1e-15)
+                worst_relative_gain = min(worst_relative_gain, relative_gain)
+            return {
+                "weighted_recovery": gain_sum / max(stale_sum, 1e-12),
+                "harmful": harmful,
+                "beneficial": beneficial,
+                "worst_relative_gain": worst_relative_gain,
+            }
+
+        selected: list[tuple[str, int]] = []
+        calibration: dict[str, float | int] = {}
+        for _ in range(min(pool_size, len(available))):
+            best: tuple[
+                tuple[Any, ...], tuple[str, int], dict[str, float | int]
+            ] | None = None
+            for candidate in sorted(available - set(selected)):
+                metrics = evaluate_pool([*selected, candidate])
+                key = (
+                    -int(metrics["harmful"]),
+                    float(metrics["weighted_recovery"]),
+                    float(metrics["worst_relative_gain"]),
+                    int(metrics["beneficial"]),
+                    -candidate[1],
+                    candidate[0],
+                )
+                if best is None or key > best[0]:
+                    best = (key, candidate, metrics)
+            if best is None:
+                break
+            selected.append(best[1])
+            calibration = best[2]
+
+        if selected:
+            policies[target] = {
+                "candidates": [
+                    {"candidate_selector": selector, "candidate_count": count}
+                    for selector, count in selected
+                ],
+                "reference_nll_margin": 0.0,
+                "calibration_conditions": len(conditions),
+                "calibration_min_stale_kl": float(min_stale_kl),
+                "calibration_harmful": int(calibration.get("harmful", 0)),
+                "calibration_beneficial": int(calibration.get("beneficial", 0)),
+                "calibration_weighted_recovery": float(
+                    calibration.get("weighted_recovery", 0.0)
+                ),
+                "calibration_worst_relative_gain": float(
+                    calibration.get("worst_relative_gain", 0.0)
+                ),
+            }
+    return policies
+
+
+
+def _reference_candidate_router_policies(
+    feature_rows: list[dict[str, str]],
+    record_rows: list[dict[str, str]],
+    pool_policies: dict[str, dict[str, Any]],
+    *,
+    ridge_values: tuple[float, ...] = REFERENCE_ROUTER_RIDGE_VALUES,
+    min_stale_kl: float = REFERENCE_POOL_MIN_STALE_KL,
+) -> dict[str, dict[str, Any]]:
+    """Fit a one-probe router over the distilled candidate pool."""
+    if not ridge_values or any(value < 0.0 for value in ridge_values):
+        raise ValueError("reference router ridge values must be nonnegative")
+    features_by_condition: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    records_by_condition: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    for row in feature_rows:
+        features_by_condition[_condition_key(row)].append(row)
+    for row in record_rows:
+        records_by_condition[_condition_key(row)].append(row)
+
+    policies: dict[str, dict[str, Any]] = {}
+    for target, pool_policy in sorted(pool_policies.items()):
+        raw_candidates = pool_policy.get("candidates", [])
+        candidates = [
+            {
+                "candidate_selector": str(item["candidate_selector"]),
+                "candidate_count": int(item["candidate_count"]),
+            }
+            for item in raw_candidates
+            if isinstance(item, dict)
+        ]
+        if not candidates:
+            continue
+        items: list[dict[str, Any]] = []
+        direct_counts: list[int] = []
+        for condition, rows in features_by_condition.items():
+            if condition[1] != target:
+                continue
+            records = records_by_condition.get(condition, [])
+            stale_rows = [row for row in records if row.get("selector") == "stale"]
+            if not stale_rows:
+                continue
+            stale = stale_rows[0]
+            stale_kl = float(stale.get("logits_kl", "nan"))
+            stale_nll = float(stale.get("reference_token_nll", "nan"))
+            if not np.isfinite(stale_kl) or not np.isfinite(stale_nll):
+                continue
+            candidate_rows: list[dict[str, str]] = []
+            complete = True
+            for candidate in candidates:
+                matches = [
+                    row
+                    for row in records
+                    if row.get("selector") == candidate["candidate_selector"]
+                    and int(row.get("selected_cells", 0))
+                    == candidate["candidate_count"]
+                ]
+                if not matches:
+                    complete = False
+                    break
+                row = matches[0]
+                if not np.isfinite(float(row.get("reference_token_nll", "nan"))):
+                    complete = False
+                    break
+                candidate_rows.append(row)
+            if not complete:
+                continue
+            expected_cells = len(rows)
+            direct_counts.append(expected_cells)
+            items.append(
+                {
+                    "condition": condition,
+                    "sample_group": str(rows[0].get("sample_id", condition[0])),
+                    "feature_rows": rows,
+                    "expected_cells": expected_cells,
+                    "stale_kl": stale_kl,
+                    "stale_nll": stale_nll,
+                    "candidate_kl": np.asarray(
+                        [float(row["logits_kl"]) for row in candidate_rows],
+                        dtype=np.float64,
+                    ),
+                    "candidate_nll": np.asarray(
+                        [float(row["reference_token_nll"]) for row in candidate_rows],
+                        dtype=np.float64,
+                    ),
+                }
+            )
+        if not items:
+            continue
+        expected_cells = max(set(direct_counts), key=direct_counts.count)
+        items = [item for item in items if item["expected_cells"] == expected_cells]
+        if len(items) < 2:
+            continue
+        x = np.stack(
+            [
+                _reference_router_feature_vector(
+                    item["feature_rows"], expected_cells=expected_cells
+                )
+                for item in items
+            ],
+            axis=0,
+        )
+        groups = np.asarray([item["sample_group"] for item in items])
+        objectives = {
+            objective: _reference_router_targets(items, objective=objective)
+            for objective in REFERENCE_ROUTER_OBJECTIVES
+        }
+        best: tuple[tuple[Any, ...], str, float, np.ndarray] | None = None
+        for objective, y in objectives.items():
+            for ridge in ridge_values:
+                predictions = np.zeros_like(y)
+                unique_groups = sorted(set(groups.tolist()))
+                if len(unique_groups) < 2:
+                    mean, scale, intercept, weights = (
+                        _fit_standardized_multioutput_ridge(x, y, float(ridge))
+                    )
+                    predictions = intercept + ((x - mean) / scale) @ weights
+                else:
+                    for held_out in unique_groups:
+                        train = groups != held_out
+                        test = ~train
+                        mean, scale, intercept, weights = (
+                            _fit_standardized_multioutput_ridge(
+                                x[train], y[train], float(ridge)
+                            )
+                        )
+                        predictions[test] = (
+                            intercept + ((x[test] - mean) / scale) @ weights
+                        )
+                choices = np.argmax(predictions, axis=1)
+                metrics = _reference_router_metrics(
+                    items,
+                    choices,
+                    min_stale_kl=min_stale_kl,
+                )
+                key = (
+                    int(metrics["material_harmful"]),
+                    -float(metrics["material_weighted_recovery"]),
+                    int(metrics["all_harmful"]),
+                    -float(metrics["all_weighted_recovery"]),
+                    REFERENCE_ROUTER_OBJECTIVES.index(objective),
+                    float(ridge),
+                )
+                if best is None or key < best[0]:
+                    best = (key, objective, float(ridge), predictions.copy())
+        if best is None:
+            continue
+        _, objective, ridge, cv_predictions = best
+        cv_choices = np.argmax(cv_predictions, axis=1)
+        y = objectives[objective]
+        mean, scale, intercept, weights = _fit_standardized_multioutput_ridge(
+            x, y, ridge
+        )
+        metrics = _reference_router_metrics(
+            items,
+            cv_choices,
+            min_stale_kl=min_stale_kl,
+        )
+        second_probe_margin, second_probe_metrics = (
+            _choose_reference_router_second_probe_margin(
+                items,
+                cv_predictions,
+                min_stale_kl=min_stale_kl,
+                max_average_probes=1.5,
+            )
+        )
+        policies[target] = {
+            "candidates": candidates,
+            "objective": objective,
+            "ridge": ridge,
+            "expected_direct_cells": expected_cells,
+            "feature_dimension": int(x.shape[1]),
+            "mean": mean.tolist(),
+            "scale": scale.tolist(),
+            "intercept": intercept.tolist(),
+            "weights": weights.tolist(),
+            "second_probe_score_margin": second_probe_margin,
+            "second_probe_max_average_probes": 1.5,
+            **second_probe_metrics,
+            "calibration_conditions": len(items),
+            "calibration_min_stale_kl": float(min_stale_kl),
+            **metrics,
+        }
+    return policies
+
+
+def _reference_router_targets(
+    items: list[dict[str, Any]],
+    *,
+    objective: str,
+) -> np.ndarray:
+    rows: list[np.ndarray] = []
+    for item in items:
+        stale_kl = float(item["stale_kl"])
+        candidate_kl = np.asarray(item["candidate_kl"], dtype=np.float64)
+        candidate_nll = np.asarray(item["candidate_nll"], dtype=np.float64)
+        relative_gain = (stale_kl - candidate_kl) / max(stale_kl, 1e-6)
+        if objective == "relative_gain":
+            rows.append(relative_gain)
+        elif objective == "absolute_gain":
+            rows.append(stale_kl - candidate_kl)
+        elif objective == "reference_nll_gain":
+            rows.append(float(item["stale_nll"]) - candidate_nll)
+        elif objective == "best_candidate":
+            target = np.zeros(len(candidate_kl), dtype=np.float64)
+            target[int(np.argmax(relative_gain))] = 1.0
+            rows.append(target)
+        else:
+            raise ValueError(f"Unsupported reference router objective {objective!r}")
+    return np.stack(rows, axis=0)
+
+
+def _reference_router_metrics(
+    items: list[dict[str, Any]],
+    choices: np.ndarray,
+    *,
+    min_stale_kl: float,
+) -> dict[str, float | int]:
+    stale_values: list[float] = []
+    gains: list[float] = []
+    for item, choice in zip(items, choices, strict=True):
+        index = int(choice)
+        stale_kl = float(item["stale_kl"])
+        stale_nll = float(item["stale_nll"])
+        candidate_nll = float(item["candidate_nll"][index])
+        selected_kl = (
+            float(item["candidate_kl"][index])
+            if candidate_nll < stale_nll - 1e-15
+            else stale_kl
+        )
+        stale_values.append(stale_kl)
+        gains.append(stale_kl - selected_kl)
+    stale = np.asarray(stale_values, dtype=np.float64)
+    gain = np.asarray(gains, dtype=np.float64)
+    material = stale >= min_stale_kl
+
+    def weighted(mask: np.ndarray) -> float:
+        return float(gain[mask].sum() / max(stale[mask].sum(), 1e-12))
+
+    return {
+        "all_harmful": int(np.sum(gain < -1e-15)),
+        "all_beneficial": int(np.sum(gain > 1e-15)),
+        "all_weighted_recovery": weighted(np.ones(len(stale), dtype=bool)),
+        "material_conditions": int(np.sum(material)),
+        "material_harmful": int(np.sum((gain < -1e-15) & material)),
+        "material_beneficial": int(np.sum((gain > 1e-15) & material)),
+        "material_weighted_recovery": weighted(material) if np.any(material) else 0.0,
+    }
+
+
+
+def _choose_reference_router_second_probe_margin(
+    items: list[dict[str, Any]],
+    predictions: np.ndarray,
+    *,
+    min_stale_kl: float,
+    max_average_probes: float,
+) -> tuple[float, dict[str, float | int]]:
+    """Choose a safety-first confidence threshold for an optional second probe."""
+    if predictions.ndim != 2 or predictions.shape[0] != len(items):
+        raise ValueError("Reference router predictions have an invalid shape")
+    order = np.argsort(-predictions, axis=1)
+    margins = predictions[np.arange(len(items)), order[:, 0]] - predictions[
+        np.arange(len(items)), order[:, 1]
+    ]
+    thresholds = sorted(
+        {
+            0.0,
+            *np.quantile(margins, np.linspace(0.05, 0.95, 19)).tolist(),
+            float(np.max(margins) + 1e-12),
+        }
+    )
+    best: tuple[tuple[Any, ...], float, dict[str, float | int]] | None = None
+    for threshold in thresholds:
+        metrics = _reference_router_second_probe_metrics(
+            items,
+            predictions,
+            score_margin=threshold,
+            min_stale_kl=min_stale_kl,
+        )
+        if float(metrics["second_probe_average_probes"]) > max_average_probes + 1e-12:
+            continue
+        key = (
+            int(metrics["second_probe_material_harmful"]),
+            -float(metrics["second_probe_material_weighted_recovery"]),
+            float(metrics["second_probe_average_probes"]),
+            int(metrics["second_probe_all_harmful"]),
+            -float(metrics["second_probe_all_weighted_recovery"]),
+            threshold,
+        )
+        if best is None or key < best[0]:
+            best = (key, threshold, metrics)
+    if best is None:
+        metrics = _reference_router_second_probe_metrics(
+            items,
+            predictions,
+            score_margin=0.0,
+            min_stale_kl=min_stale_kl,
+        )
+        return 0.0, metrics
+    return float(best[1]), best[2]
+
+
+def _reference_router_second_probe_metrics(
+    items: list[dict[str, Any]],
+    predictions: np.ndarray,
+    *,
+    score_margin: float,
+    min_stale_kl: float,
+) -> dict[str, float | int]:
+    order = np.argsort(-predictions, axis=1)
+    stale_values: list[float] = []
+    gains: list[float] = []
+    probe_counts: list[int] = []
+    for row_index, item in enumerate(items):
+        first = int(order[row_index, 0])
+        second = int(order[row_index, 1])
+        margin = float(predictions[row_index, first] - predictions[row_index, second])
+        trigger_second = margin < score_margin
+        stale_kl = float(item["stale_kl"])
+        best_kl = stale_kl
+        best_nll = float(item["stale_nll"])
+        candidate_nll = np.asarray(item["candidate_nll"], dtype=np.float64)
+        candidate_kl = np.asarray(item["candidate_kl"], dtype=np.float64)
+        for candidate_index in (first, second) if trigger_second else (first,):
+            if candidate_nll[candidate_index] < best_nll - 1e-15:
+                best_nll = float(candidate_nll[candidate_index])
+                best_kl = float(candidate_kl[candidate_index])
+        stale_values.append(stale_kl)
+        gains.append(stale_kl - best_kl)
+        probe_counts.append(2 if trigger_second else 1)
+    stale = np.asarray(stale_values, dtype=np.float64)
+    gain = np.asarray(gains, dtype=np.float64)
+    material = stale >= min_stale_kl
+
+    def weighted(mask: np.ndarray) -> float:
+        return float(gain[mask].sum() / max(stale[mask].sum(), 1e-12))
+
+    return {
+        "second_probe_average_probes": float(np.mean(probe_counts)),
+        "second_probe_trigger_rate": float(np.mean(np.asarray(probe_counts) == 2)),
+        "second_probe_all_harmful": int(np.sum(gain < -1e-15)),
+        "second_probe_all_beneficial": int(np.sum(gain > 1e-15)),
+        "second_probe_all_weighted_recovery": weighted(
+            np.ones(len(stale), dtype=bool)
+        ),
+        "second_probe_material_conditions": int(np.sum(material)),
+        "second_probe_material_harmful": int(
+            np.sum((gain < -1e-15) & material)
+        ),
+        "second_probe_material_beneficial": int(
+            np.sum((gain > 1e-15) & material)
+        ),
+        "second_probe_material_weighted_recovery": (
+            weighted(material) if np.any(material) else 0.0
+        ),
+    }
+
+
+def _fit_standardized_multioutput_ridge(
+    x: np.ndarray,
+    y: np.ndarray,
+    ridge: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    mean = np.mean(x, axis=0)
+    scale = np.std(x, axis=0)
+    scale = np.where(scale > 1e-12, scale, 1.0)
+    z = (x - mean) / scale
+    design = np.concatenate([np.ones((len(z), 1), dtype=np.float64), z], axis=1)
+    penalty = np.eye(design.shape[1], dtype=np.float64) * ridge
+    penalty[0, 0] = 0.0
+    coefficients = np.linalg.pinv(design.T @ design + penalty) @ design.T @ y
+    return mean, scale, coefficients[0], coefficients[1:]
+
+
+def _reference_router_feature_vector(
+    feature_rows: list[dict[str, Any]],
+    *,
+    expected_cells: int,
+) -> np.ndarray:
+    if expected_cells <= 0 or len(feature_rows) != expected_cells:
+        raise ValueError(
+            "Reference router requires exactly "
+            f"{expected_cells} direct cells, received {len(feature_rows)}"
+        )
+    ordered = sorted(
+        feature_rows,
+        key=lambda row: (int(row.get("layer", 0)), int(row.get("token_block", 0))),
+    )
+    raw = np.stack(
+        [
+            np.asarray(
+                [
+                    math.log1p(max(float(row.get(name, 0.0)), 0.0))
+                    for name in ROUTER_BLOCK_FEATURE_NAMES
+                ],
+                dtype=np.float64,
+            )
+            for row in ordered
+        ],
+        axis=0,
+    )
+    ranks = np.empty_like(raw)
+    denominator = max(expected_cells - 1, 1)
+    for feature_index in range(raw.shape[1]):
+        order = np.argsort(-raw[:, feature_index], kind="mergesort")
+        feature_ranks = np.empty(expected_cells, dtype=np.float64)
+        feature_ranks[order] = np.arange(expected_cells, dtype=np.float64)
+        ranks[:, feature_index] = 1.0 - feature_ranks / denominator
+    aggregates: list[float] = []
+    for feature_index in range(raw.shape[1]):
+        values = raw[:, feature_index]
+        aggregates.extend(
+            [
+                float(np.mean(values)),
+                float(np.std(values)),
+                float(np.max(values)),
+                float(np.median(values)),
+                float(np.mean(np.sort(values)[-min(2, len(values)) :])),
+                float(np.max(values) - np.median(values)),
+            ]
+        )
+    context_length = max(float(ordered[0].get("context_length", 1.0)), 1.0)
+    return np.concatenate(
+        [
+            raw.reshape(-1),
+            ranks.reshape(-1),
+            np.asarray(aggregates, dtype=np.float64),
+            np.asarray([math.log2(context_length)], dtype=np.float64),
+        ]
+    )
 
 
 def _condition_key(row: dict[str, Any]) -> tuple[str, ...]:

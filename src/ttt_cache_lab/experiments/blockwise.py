@@ -14,7 +14,11 @@ import numpy as np
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
-from ttt_cache_lab.experiments.block_ranker import load_block_ranker, score_block_features
+from ttt_cache_lab.experiments.block_ranker import (
+    load_block_ranker,
+    route_reference_candidate,
+    score_block_features,
+)
 from ttt_cache_lab.metrics.tensor import kl_divergence, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
@@ -63,6 +67,7 @@ def run_blockwise_exploration(
     sparse_stale_margins: tuple[float, ...] = (0.0,),
     compute_cache_surgery_oracles: bool = True,
     compute_structured_sparse_search: bool = True,
+    sparse_policy_only: bool = False,
     sparse_ranker_path: Path | None = None,
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
@@ -101,6 +106,8 @@ def run_blockwise_exploration(
     sparse_ranker = (
         load_block_ranker(sparse_ranker_path) if sparse_ranker_path is not None else None
     )
+    if sparse_policy_only and sparse_ranker is None:
+        raise ValueError("sparse_policy_only requires a fitted sparse ranker")
     backend = build_backend(config.model, seed=config.seed)
     backend.configure_metrics(capture_attention=True)
     splice = getattr(backend, "probe_blockwise_cache_splice", None)
@@ -222,6 +229,7 @@ def run_blockwise_exploration(
                         sparse_stale_margins=sparse_stale_margins,
                         compute_cache_surgery_oracles=compute_cache_surgery_oracles,
                         compute_structured_sparse_search=compute_structured_sparse_search,
+                        sparse_policy_only=sparse_policy_only,
                         sparse_ranker=sparse_ranker,
                         sparse_ranker_path=sparse_ranker_path,
                     )
@@ -269,6 +277,7 @@ def _explore_condition(
     sparse_stale_margins: tuple[float, ...],
     compute_cache_surgery_oracles: bool,
     compute_structured_sparse_search: bool,
+    sparse_policy_only: bool,
     sparse_ranker: dict[str, Any] | None,
     sparse_ranker_path: Path | None,
 ) -> tuple[
@@ -514,27 +523,28 @@ def _explore_condition(
             "sparse_attention_predicted_delta": "attention_predicted_delta",
         }
         if direct_total > 0:
-            for selector, score_name in sparse_selectors.items():
-                scores = np.asarray(sparse_scores[score_name], dtype=np.float64)
-                for count in desired_counts:
-                    direct_count = min(count, direct_total)
-                    mask = _top_mask(scores, direct_available, direct_count)
-                    evaluation = evaluate_sparse(mask)
-                    records.append(
-                        _record(
-                            condition,
-                            selector=selector,
-                            requested_budget_fraction=count / total_eligible,
-                            mask=mask,
-                            eligible=eligible,
-                            evaluation=evaluation,
-                            stale_kl=stale.logits_kl,
+            if not sparse_policy_only:
+                for selector, score_name in sparse_selectors.items():
+                    scores = np.asarray(sparse_scores[score_name], dtype=np.float64)
+                    for count in desired_counts:
+                        direct_count = min(count, direct_total)
+                        mask = _top_mask(scores, direct_available, direct_count)
+                        evaluation = evaluate_sparse(mask)
+                        records.append(
+                            _record(
+                                condition,
+                                selector=selector,
+                                requested_budget_fraction=count / total_eligible,
+                                mask=mask,
+                                eligible=eligible,
+                                evaluation=evaluation,
+                                stale_kl=stale.logits_kl,
+                            )
                         )
-                    )
-                    mask_rows.extend(
-                        _mask_rows(condition, selector, count / total_eligible, mask)
-                    )
-            if sparse_ranker is not None:
+                        mask_rows.extend(
+                            _mask_rows(condition, selector, count / total_eligible, mask)
+                        )
+            if sparse_ranker is not None and not sparse_policy_only:
                 learned_vector, learned_default_count = score_block_features(
                     sparse_ranker,
                     update_target=str(condition["update_target"]),
@@ -908,28 +918,438 @@ def _explore_condition(
                             )
                         )
 
-            all_direct = direct_available.copy()
-            all_direct_evaluation = evaluate_sparse(all_direct)
-            records.append(
-                _record(
-                    condition,
-                    selector="sparse_all_direct",
-                    requested_budget_fraction=direct_total / total_eligible,
-                    mask=all_direct,
-                    eligible=eligible,
-                    evaluation=all_direct_evaluation,
-                    stale_kl=stale.logits_kl,
+            if sparse_ranker is not None:
+                target_model = sparse_ranker.get("models", {}).get(
+                    str(condition["update_target"])
                 )
-            )
-            mask_rows.extend(
-                _mask_rows(
-                    condition,
-                    "sparse_all_direct",
-                    direct_total / total_eligible,
-                    all_direct,
+                if isinstance(target_model, dict) and not sparse_policy_only:
+                    reference_pool_policy = target_model.get(
+                        "reference_candidate_pool_policy"
+                    )
+                    if isinstance(reference_pool_policy, dict):
+                        raw_candidates = reference_pool_policy.get("candidates", [])
+                        reference_margin = float(
+                            reference_pool_policy.get("reference_nll_margin", 0.0)
+                        )
+                        reference_token_id = int(
+                            condition.get("reference_token_id", -1)
+                        )
+                        stale_nll, stale_entropy, stale_max_probability = (
+                            _logit_selection_metrics(
+                                stale.output.logits,
+                                reference_token_id=reference_token_id,
+                            )
+                        )
+                        selected_mask = np.zeros_like(direct_available)
+                        selected_evaluation = stale
+                        selected_nll = stale_nll
+                        selected_count = 0
+                        evaluated_masks: set[bytes] = set()
+                        candidate_metadata: list[dict[str, Any]] = []
+                        planner_probe_latency = 0.0
+                        planner_probe_flops = 0.0
+                        for candidate in raw_candidates:
+                            if not isinstance(candidate, dict):
+                                continue
+                            candidate_selector = str(
+                                candidate.get("candidate_selector", "")
+                            )
+                            candidate_score_name = sparse_selectors.get(
+                                candidate_selector
+                            )
+                            candidate_count = max(
+                                0,
+                                min(
+                                    int(candidate.get("candidate_count", 0)),
+                                    direct_total,
+                                ),
+                            )
+                            if candidate_score_name is None or candidate_count <= 0:
+                                continue
+                            candidate_scores = np.asarray(
+                                sparse_scores[candidate_score_name], dtype=np.float64
+                            )
+                            candidate_mask = _top_mask(
+                                candidate_scores,
+                                direct_available,
+                                candidate_count,
+                            )
+                            mask_key = np.ascontiguousarray(
+                                candidate_mask, dtype=np.uint8
+                            ).tobytes()
+                            if mask_key in evaluated_masks:
+                                continue
+                            evaluated_masks.add(mask_key)
+                            candidate_evaluation = evaluate_sparse(candidate_mask)
+                            (
+                                candidate_nll,
+                                candidate_entropy,
+                                candidate_max_probability,
+                            ) = _logit_selection_metrics(
+                                candidate_evaluation.output.logits,
+                                reference_token_id=reference_token_id,
+                            )
+                            candidate_extras = candidate_evaluation.output.extras or {}
+                            candidate_latency = float(
+                                candidate_extras.get("cache_maintenance_latency", 0.0)
+                            ) + float(candidate_extras.get("decode_latency", 0.0))
+                            candidate_flops = float(
+                                candidate_extras.get("strategy_flops", 0.0)
+                            )
+                            planner_probe_latency += candidate_latency
+                            planner_probe_flops += candidate_flops
+                            candidate_metadata.append(
+                                {
+                                    "selector": candidate_selector,
+                                    "selected_cells": candidate_count,
+                                    "reference_token_nll": candidate_nll,
+                                    "output_entropy": candidate_entropy,
+                                    "output_max_probability": candidate_max_probability,
+                                    "logits_kl": candidate_evaluation.logits_kl,
+                                    "latency": candidate_latency,
+                                    "strategy_flops": candidate_flops,
+                                }
+                            )
+                            if candidate_nll < selected_nll - reference_margin - 1e-15:
+                                selected_mask = candidate_mask
+                                selected_evaluation = candidate_evaluation
+                                selected_nll = candidate_nll
+                                selected_count = candidate_count
+                        selected_budget = selected_count / total_eligible
+                        stale_extras = stale.output.extras or {}
+                        records.append(
+                            _record(
+                                condition,
+                                selector="sparse_reference_pool_policy",
+                                requested_budget_fraction=selected_budget,
+                                mask=selected_mask,
+                                eligible=eligible,
+                                evaluation=selected_evaluation,
+                                stale_kl=stale.logits_kl,
+                                selection_metadata={
+                                    "selection_objective": (
+                                        "distilled_reference_candidate_pool"
+                                    ),
+                                    "search_probe_count": len(evaluated_masks),
+                                    "search_reference_token_evaluations": len(
+                                        evaluated_masks
+                                    ),
+                                    "joint_budget_selection": True,
+                                    "selected_stale_action": selected_count == 0,
+                                    "safety_gate_passed": selected_count > 0,
+                                    "selection_stale_margin": reference_margin,
+                                    "selection_stale_score": stale_nll,
+                                    "selection_raw_score": selected_nll,
+                                    "selection_objective_improvement_vs_stale": (
+                                        stale_nll - selected_nll
+                                    ),
+                                    "stale_output_entropy": stale_entropy,
+                                    "stale_output_max_probability": (
+                                        stale_max_probability
+                                    ),
+                                    "sparse_ranker_path": str(sparse_ranker_path),
+                                    "reference_candidate_pool": json.dumps(
+                                        candidate_metadata, sort_keys=True
+                                    ),
+                                    "planner_probe_latency": planner_probe_latency,
+                                    "end_to_end_planner_latency": (
+                                        float(
+                                            stale_extras.get("decode_latency", 0.0)
+                                        )
+                                        + planner_probe_latency
+                                    ),
+                                    "planner_probe_flops": planner_probe_flops,
+                                    "reference_pool_calibration_harmful": int(
+                                        reference_pool_policy.get(
+                                            "calibration_harmful", 0
+                                        )
+                                    ),
+                                    "reference_pool_calibration_weighted_recovery": (
+                                        float(
+                                            reference_pool_policy.get(
+                                                "calibration_weighted_recovery", 0.0
+                                            )
+                                        )
+                                    ),
+                                },
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(
+                                condition,
+                                "sparse_reference_pool_policy",
+                                selected_budget,
+                                selected_mask,
+                            )
+                        )
+
+                if isinstance(target_model, dict):
+                    router_policy = target_model.get(
+                        "reference_candidate_router_policy"
+                    )
+                    if isinstance(router_policy, dict):
+                        _, router_scores = route_reference_candidate(
+                            sparse_ranker,
+                            update_target=str(condition["update_target"]),
+                            feature_rows=condition_feature_rows,
+                        )
+                        raw_candidates = router_policy.get("candidates", [])
+                        candidate_order = np.argsort(-router_scores)
+                        first_index = int(candidate_order[0])
+                        second_index = int(candidate_order[1])
+                        score_margin = float(
+                            router_scores[first_index] - router_scores[second_index]
+                        )
+                        second_probe_margin = float(
+                            router_policy.get("second_probe_score_margin", 0.0)
+                        )
+                        probe_indices = [first_index]
+                        if score_margin < second_probe_margin:
+                            probe_indices.append(second_index)
+                        reference_token_id = int(
+                            condition.get("reference_token_id", -1)
+                        )
+                        stale_nll, stale_entropy, stale_max_probability = (
+                            _logit_selection_metrics(
+                                stale.output.logits,
+                                reference_token_id=reference_token_id,
+                            )
+                        )
+                        reference_margin = float(
+                            router_policy.get("reference_nll_margin", 0.0)
+                        )
+                        selected_mask = np.zeros_like(direct_available)
+                        selected_evaluation = stale
+                        selected_nll = stale_nll
+                        selected_count = 0
+                        selected_selector = "stale"
+                        selected_entropy = stale_entropy
+                        selected_max_probability = stale_max_probability
+                        planner_probe_latency = 0.0
+                        planner_probe_flops = 0.0
+                        evaluated_masks: set[bytes] = set()
+                        probe_metadata: list[dict[str, Any]] = []
+                        for candidate_index in probe_indices:
+                            candidate = raw_candidates[candidate_index]
+                            if not isinstance(candidate, dict):
+                                continue
+                            candidate_selector = str(
+                                candidate.get("candidate_selector", "")
+                            )
+                            candidate_score_name = sparse_selectors.get(
+                                candidate_selector
+                            )
+                            candidate_count = max(
+                                0,
+                                min(
+                                    int(candidate.get("candidate_count", 0)),
+                                    direct_total,
+                                ),
+                            )
+                            if candidate_score_name is None or candidate_count <= 0:
+                                continue
+                            candidate_scores = np.asarray(
+                                sparse_scores[candidate_score_name], dtype=np.float64
+                            )
+                            candidate_mask = _top_mask(
+                                candidate_scores,
+                                direct_available,
+                                candidate_count,
+                            )
+                            mask_key = np.ascontiguousarray(
+                                candidate_mask, dtype=np.uint8
+                            ).tobytes()
+                            if mask_key in evaluated_masks:
+                                continue
+                            evaluated_masks.add(mask_key)
+                            candidate_evaluation = evaluate_sparse(candidate_mask)
+                            (
+                                candidate_nll,
+                                candidate_entropy,
+                                candidate_max_probability,
+                            ) = _logit_selection_metrics(
+                                candidate_evaluation.output.logits,
+                                reference_token_id=reference_token_id,
+                            )
+                            candidate_extras = candidate_evaluation.output.extras or {}
+                            candidate_maintenance = float(
+                                candidate_extras.get(
+                                    "cache_maintenance_latency", 0.0
+                                )
+                            )
+                            candidate_decode = float(
+                                candidate_extras.get("decode_latency", 0.0)
+                            )
+                            candidate_latency = (
+                                candidate_maintenance + candidate_decode
+                            )
+                            candidate_flops = float(
+                                candidate_extras.get("strategy_flops", 0.0)
+                            )
+                            planner_probe_latency += candidate_latency
+                            planner_probe_flops += candidate_flops
+                            probe_metadata.append(
+                                {
+                                    "candidate_index": candidate_index,
+                                    "selector": candidate_selector,
+                                    "selected_cells": candidate_count,
+                                    "router_score": float(
+                                        router_scores[candidate_index]
+                                    ),
+                                    "reference_token_nll": candidate_nll,
+                                    "output_entropy": candidate_entropy,
+                                    "output_max_probability": (
+                                        candidate_max_probability
+                                    ),
+                                    "logits_kl": candidate_evaluation.logits_kl,
+                                    "latency": candidate_latency,
+                                    "strategy_flops": candidate_flops,
+                                }
+                            )
+                            if (
+                                candidate_nll
+                                < selected_nll - reference_margin - 1e-15
+                            ):
+                                selected_mask = candidate_mask
+                                selected_evaluation = candidate_evaluation
+                                selected_nll = candidate_nll
+                                selected_count = candidate_count
+                                selected_selector = candidate_selector
+                                selected_entropy = candidate_entropy
+                                selected_max_probability = (
+                                    candidate_max_probability
+                                )
+                        accepted = selected_count > 0
+                        nll_improvement = stale_nll - selected_nll
+                        stale_extras = stale.output.extras or {}
+                        selected_budget = selected_count / total_eligible
+                        records.append(
+                            _record(
+                                condition,
+                                selector="sparse_reference_router_policy",
+                                requested_budget_fraction=selected_budget,
+                                mask=selected_mask,
+                                eligible=eligible,
+                                evaluation=selected_evaluation,
+                                stale_kl=stale.logits_kl,
+                                selection_metadata={
+                                    "selection_objective": (
+                                        "distilled_adaptive_reference_router"
+                                    ),
+                                    "search_probe_count": len(evaluated_masks),
+                                    "search_reference_token_evaluations": len(
+                                        evaluated_masks
+                                    ),
+                                    "joint_budget_selection": True,
+                                    "selected_stale_action": not accepted,
+                                    "safety_gate_passed": accepted,
+                                    "selection_stale_margin": reference_margin,
+                                    "selection_stale_score": stale_nll,
+                                    "selection_raw_score": selected_nll,
+                                    "selection_objective_improvement_vs_stale": (
+                                        nll_improvement
+                                    ),
+                                    "candidate_selector": selected_selector,
+                                    "candidate_selected_cells": selected_count,
+                                    "candidate_reference_token_nll": selected_nll,
+                                    "candidate_output_entropy": selected_entropy,
+                                    "candidate_output_max_probability": (
+                                        selected_max_probability
+                                    ),
+                                    "stale_output_entropy": stale_entropy,
+                                    "stale_output_max_probability": (
+                                        stale_max_probability
+                                    ),
+                                    "candidate_logits_kl": (
+                                        selected_evaluation.logits_kl
+                                    ),
+                                    "planner_probe_latency": planner_probe_latency,
+                                    "end_to_end_planner_latency": (
+                                        float(
+                                            stale_extras.get("decode_latency", 0.0)
+                                        )
+                                        + planner_probe_latency
+                                    ),
+                                    "planner_probe_flops": planner_probe_flops,
+                                    "router_scores": json.dumps(
+                                        router_scores.tolist()
+                                    ),
+                                    "router_score_margin": score_margin,
+                                    "router_second_probe_score_margin": (
+                                        second_probe_margin
+                                    ),
+                                    "router_second_probe_triggered": (
+                                        len(probe_indices) > 1
+                                    ),
+                                    "router_probe_candidates": json.dumps(
+                                        probe_metadata, sort_keys=True
+                                    ),
+                                    "router_objective": str(
+                                        router_policy.get("objective", "")
+                                    ),
+                                    "router_ridge": float(
+                                        router_policy.get("ridge", 0.0)
+                                    ),
+                                    "router_calibration_material_harmful": int(
+                                        router_policy.get("material_harmful", 0)
+                                    ),
+                                    "router_calibration_material_recovery": float(
+                                        router_policy.get(
+                                            "material_weighted_recovery", 0.0
+                                        )
+                                    ),
+                                    "router_second_probe_calibration_harmful": int(
+                                        router_policy.get(
+                                            "second_probe_material_harmful", 0
+                                        )
+                                    ),
+                                    "router_second_probe_calibration_recovery": float(
+                                        router_policy.get(
+                                            "second_probe_material_weighted_recovery",
+                                            0.0,
+                                        )
+                                    ),
+                                    "router_second_probe_calibration_average_probes": float(
+                                        router_policy.get(
+                                            "second_probe_average_probes", 1.0
+                                        )
+                                    ),
+                                    "sparse_ranker_path": str(sparse_ranker_path),
+                                },
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(
+                                condition,
+                                "sparse_reference_router_policy",
+                                selected_budget,
+                                selected_mask,
+                            )
+                        )
+
+            if not sparse_policy_only:
+                all_direct = direct_available.copy()
+                all_direct_evaluation = evaluate_sparse(all_direct)
+                records.append(
+                    _record(
+                        condition,
+                        selector="sparse_all_direct",
+                        requested_budget_fraction=direct_total / total_eligible,
+                        mask=all_direct,
+                        eligible=eligible,
+                        evaluation=all_direct_evaluation,
+                        stale_kl=stale.logits_kl,
+                    )
                 )
-            )
-            if compute_structured_sparse_search:
+                mask_rows.extend(
+                    _mask_rows(
+                        condition,
+                        "sparse_all_direct",
+                        direct_total / total_eligible,
+                        all_direct,
+                    )
+                )
+            if compute_structured_sparse_search and not sparse_policy_only:
                 direct_indices = [tuple(index) for index in np.argwhere(direct_available)]
                 search_counts = sorted({min(count, direct_total) for count in desired_counts})
                 reference_token_id = int(condition.get("reference_token_id", -1))

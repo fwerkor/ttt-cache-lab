@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep static sparse selectors but skip exhaustive, greedy, beam, swap, and joint searches",
     )
+    blockwise.add_argument(
+        "--sparse-policy-only",
+        action="store_true",
+        help="Run only the fitted one-probe reference router, without sparse baselines",
+    )
 
     block_ranker = subparsers.add_parser(
         "block-ranker-fit",
@@ -396,6 +401,7 @@ def main(argv: list[str] | None = None) -> None:
             sparse_stale_margins=tuple(args.sparse_stale_margins),
             compute_cache_surgery_oracles=not args.skip_cache_surgery_oracles,
             compute_structured_sparse_search=not args.skip_structured_sparse_search,
+            sparse_policy_only=args.sparse_policy_only,
             sparse_ranker_path=args.sparse_ranker_path,
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")

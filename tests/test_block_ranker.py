@@ -11,8 +11,11 @@ from ttt_cache_lab.experiments.block_ranker import (
     FEATURE_NAMES,
     _confidence_probe_policies,
     _one_probe_policies,
+    _reference_candidate_pool_policies,
+    _reference_candidate_router_policies,
     fit_block_ranker,
     load_block_ranker,
+    route_reference_candidate,
     score_block_features,
 )
 
@@ -167,6 +170,136 @@ def test_one_probe_policy_prefers_safe_candidate_and_conservative_margin() -> No
     assert policy["reference_nll_margin"] == 0.2
     assert policy["calibration_harmful"] == 0
     assert policy["calibration_accepted"] == 2
+
+
+
+
+def test_reference_candidate_pool_prefers_safe_high_recovery_candidate() -> None:
+    rows: list[dict[str, str]] = []
+    for sample, candidate_kl in ((0, 0.04), (1, 0.05)):
+        condition = {
+            key: str(value)
+            for key, value in _condition("lora.k_middle", sample).items()
+        }
+        rows.extend(
+            [
+                {
+                    **condition,
+                    "selector": "stale",
+                    "selected_cells": "0",
+                    "logits_kl": "0.10",
+                    "reference_token_nll": "1.0",
+                },
+                {
+                    **condition,
+                    "selector": "sparse_input_bound",
+                    "selected_cells": "2",
+                    "logits_kl": str(candidate_kl),
+                    "reference_token_nll": "0.7",
+                },
+                {
+                    **condition,
+                    "selector": "sparse_attention_mass",
+                    "selected_cells": "1",
+                    "logits_kl": "0.12",
+                    "reference_token_nll": "0.8",
+                },
+            ]
+        )
+
+    policy = _reference_candidate_pool_policies(
+        rows,
+        pool_size=1,
+        min_stale_kl=0.01,
+    )["lora.k_middle"]
+
+    assert policy["candidates"] == [
+        {"candidate_selector": "sparse_input_bound", "candidate_count": 2}
+    ]
+    assert policy["calibration_harmful"] == 0
+    assert policy["calibration_beneficial"] == 2
+    assert policy["calibration_weighted_recovery"] == pytest.approx(0.55)
+
+
+
+def test_reference_candidate_router_learns_one_probe_choice() -> None:
+    feature_rows: list[dict[str, Any]] = []
+    record_rows: list[dict[str, str]] = []
+    for sample in range(4):
+        target = "lora.k_middle"
+        feature_rows.extend(_feature_row(target, sample, block) for block in range(4))
+        condition = {
+            key: str(value)
+            for key, value in _condition(target, sample).items()
+        }
+        record_rows.extend(
+            [
+                {
+                    **condition,
+                    "selector": "stale",
+                    "selected_cells": "0",
+                    "logits_kl": "0.10",
+                    "reference_token_nll": "1.0",
+                },
+                {
+                    **condition,
+                    "selector": "sparse_input_bound",
+                    "selected_cells": "2",
+                    "logits_kl": "0.03",
+                    "reference_token_nll": "0.6",
+                },
+                {
+                    **condition,
+                    "selector": "sparse_attention_mass",
+                    "selected_cells": "1",
+                    "logits_kl": "0.12",
+                    "reference_token_nll": "0.9",
+                },
+            ]
+        )
+    pool = {
+        "lora.k_middle": {
+            "candidates": [
+                {
+                    "candidate_selector": "sparse_input_bound",
+                    "candidate_count": 2,
+                },
+                {
+                    "candidate_selector": "sparse_attention_mass",
+                    "candidate_count": 1,
+                },
+            ]
+        }
+    }
+    policies = _reference_candidate_router_policies(
+        feature_rows,
+        record_rows,
+        pool,
+        ridge_values=(1.0, 100.0),
+        min_stale_kl=0.01,
+    )
+    policy = policies["lora.k_middle"]
+    ranker = {
+        "models": {
+            "lora.k_middle": {
+                "reference_candidate_router_policy": policy,
+            }
+        }
+    }
+
+    selected, scores = route_reference_candidate(
+        ranker,
+        update_target="lora.k_middle",
+        feature_rows=[_feature_row("lora.k_middle", 9, block) for block in range(4)],
+    )
+
+    assert selected == {
+        "candidate_selector": "sparse_input_bound",
+        "candidate_count": 2,
+    }
+    assert scores.shape == (2,)
+    assert policy["material_harmful"] == 0
+    assert policy["material_weighted_recovery"] == pytest.approx(0.7)
 
 
 def test_confidence_probe_policy_rejects_low_confidence_harm() -> None:
