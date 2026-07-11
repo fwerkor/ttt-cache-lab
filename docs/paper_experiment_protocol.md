@@ -46,7 +46,7 @@ E3 uses model-calibrated contexts and semantic difficulty rather than forcing th
 | Model | Context | Multi-needle | Needle absent | Multi-hop | Aggregation | Common words | Variable tracking |
 |---|---:|---|---|---|---|---|---|
 | Qwen2.5-1.5B-Instruct | 4K | medium | hard | easy | easy | easy | easy |
-| Qwen2.5-7B-Instruct | 8K | hard | hard | medium | medium | hard | medium |
+| Qwen2.5-7B-Instruct | 8K | hard | hard | medium | medium | hard | easy |
 | Qwen2.5-14B-Instruct | 16K | hard | hard | medium | hard | hard | hard |
 | Qwen2.5-32B-Instruct | 16K | hard | hard | hard | hard | hard | hard |
 

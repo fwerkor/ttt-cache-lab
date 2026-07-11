@@ -23,7 +23,7 @@ data:
   num_samples: 24
   context_length: 8192
   answer_length: 4
-  synthetic_difficulty: medium
+  synthetic_difficulty: easy
   scorer: contains
   max_generation_tokens: 32
 updates:

@@ -88,7 +88,7 @@ def test_controlled_calibration_uses_frozen_model_specific_viability_cells() -> 
                 "multi_hop_tracing": "medium",
                 "aggregation": "medium",
                 "common_words": "hard",
-                "variable_tracking": "medium",
+                "variable_tracking": "easy",
             },
         },
         "qwen_14b": {
