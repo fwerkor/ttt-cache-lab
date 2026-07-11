@@ -14,6 +14,7 @@ import numpy as np
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
+from ttt_cache_lab.experiments.block_ranker import load_block_ranker, score_block_features
 from ttt_cache_lab.metrics.tensor import kl_divergence, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
@@ -62,6 +63,7 @@ def run_blockwise_exploration(
     sparse_stale_margins: tuple[float, ...] = (0.0,),
     compute_cache_surgery_oracles: bool = True,
     compute_structured_sparse_search: bool = True,
+    sparse_ranker_path: Path | None = None,
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
         raise ValueError("block sizes must be positive")
@@ -96,6 +98,9 @@ def run_blockwise_exploration(
 
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    sparse_ranker = (
+        load_block_ranker(sparse_ranker_path) if sparse_ranker_path is not None else None
+    )
     backend = build_backend(config.model, seed=config.seed)
     backend.configure_metrics(capture_attention=True)
     splice = getattr(backend, "probe_blockwise_cache_splice", None)
@@ -217,6 +222,8 @@ def run_blockwise_exploration(
                         sparse_stale_margins=sparse_stale_margins,
                         compute_cache_surgery_oracles=compute_cache_surgery_oracles,
                         compute_structured_sparse_search=compute_structured_sparse_search,
+                        sparse_ranker=sparse_ranker,
+                        sparse_ranker_path=sparse_ranker_path,
                     )
                     records.extend(condition_records)
                     frontier_rows.extend(condition_frontier)
@@ -262,6 +269,8 @@ def _explore_condition(
     sparse_stale_margins: tuple[float, ...],
     compute_cache_surgery_oracles: bool,
     compute_structured_sparse_search: bool,
+    sparse_ranker: dict[str, Any] | None,
+    sparse_ranker_path: Path | None,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -460,39 +469,40 @@ def _explore_condition(
     if sparse_scores is not None:
         direct_available = np.asarray(sparse_scores["available"], dtype=bool) & eligible
         direct_total = int(np.count_nonzero(direct_available))
+        condition_feature_rows: list[dict[str, Any]] = []
         for layer_index, block_index in np.argwhere(direct_available):
             token_start = int(block_index) * block_size
             token_end = min(token_count, token_start + block_size)
-            feature_rows.append(
-                {
-                    **condition,
-                    "layer": int(layer_index),
-                    "token_block": int(block_index),
-                    "token_start": token_start,
-                    "token_end": token_end,
-                    "token_center_fraction": (
-                        (token_start + token_end) / 2.0 / max(token_count, 1)
-                    ),
-                    "token_length_fraction": (token_end - token_start) / max(token_count, 1),
-                    "layer_fraction": int(layer_index) / max(layer_count - 1, 1),
-                    "direct_available_cells": direct_total,
-                    "stale_attention_mass": float(
-                        sparse_scores["stale_attention_mass"][layer_index, block_index]
-                    ),
-                    "input_weight_bound": float(
-                        sparse_scores["input_weight_bound"][layer_index, block_index]
-                    ),
-                    "attention_input_bound": float(
-                        sparse_scores["attention_input_bound"][layer_index, block_index]
-                    ),
-                    "predicted_delta_norm": float(
-                        sparse_scores["predicted_delta_norm"][layer_index, block_index]
-                    ),
-                    "attention_predicted_delta": float(
-                        sparse_scores["attention_predicted_delta"][layer_index, block_index]
-                    ),
-                }
-            )
+            feature_row = {
+                **condition,
+                "layer": int(layer_index),
+                "token_block": int(block_index),
+                "token_start": token_start,
+                "token_end": token_end,
+                "token_center_fraction": (
+                    (token_start + token_end) / 2.0 / max(token_count, 1)
+                ),
+                "token_length_fraction": (token_end - token_start) / max(token_count, 1),
+                "layer_fraction": int(layer_index) / max(layer_count - 1, 1),
+                "direct_available_cells": direct_total,
+                "stale_attention_mass": float(
+                    sparse_scores["stale_attention_mass"][layer_index, block_index]
+                ),
+                "input_weight_bound": float(
+                    sparse_scores["input_weight_bound"][layer_index, block_index]
+                ),
+                "attention_input_bound": float(
+                    sparse_scores["attention_input_bound"][layer_index, block_index]
+                ),
+                "predicted_delta_norm": float(
+                    sparse_scores["predicted_delta_norm"][layer_index, block_index]
+                ),
+                "attention_predicted_delta": float(
+                    sparse_scores["attention_predicted_delta"][layer_index, block_index]
+                ),
+            }
+            condition_feature_rows.append(feature_row)
+            feature_rows.append(feature_row)
         sparse_selectors = {
             "sparse_attention_mass": "stale_attention_mass",
             "sparse_input_bound": "input_weight_bound",
@@ -521,6 +531,95 @@ def _explore_condition(
                     mask_rows.extend(
                         _mask_rows(condition, selector, count / total_eligible, mask)
                     )
+            if sparse_ranker is not None:
+                learned_vector, learned_default_count = score_block_features(
+                    sparse_ranker,
+                    update_target=str(condition["update_target"]),
+                    feature_rows=condition_feature_rows,
+                )
+                learned_scores = np.full(eligible.shape, -math.inf, dtype=np.float64)
+                for feature_row, score in zip(
+                    condition_feature_rows, learned_vector, strict=True
+                ):
+                    learned_scores[
+                        int(feature_row["layer"]), int(feature_row["token_block"])
+                    ] = float(score)
+                learned_counts = sorted(
+                    {min(count, direct_total) for count in desired_counts}
+                )
+                for direct_count in learned_counts:
+                    learned_mask = _top_mask(
+                        learned_scores, direct_available, direct_count
+                    )
+                    learned_evaluation = evaluate_sparse(learned_mask)
+                    learned_budget = direct_count / total_eligible
+                    records.append(
+                        _record(
+                            condition,
+                            selector="sparse_learned_ranker",
+                            requested_budget_fraction=learned_budget,
+                            mask=learned_mask,
+                            eligible=eligible,
+                            evaluation=learned_evaluation,
+                            stale_kl=stale.logits_kl,
+                            selection_metadata={
+                                "selection_objective": "static_learned_ranker",
+                                "search_probe_count": 0,
+                                "search_reference_token_evaluations": 0,
+                                "joint_budget_selection": False,
+                                "sparse_ranker_path": str(sparse_ranker_path),
+                                "ranker_default_count": learned_default_count,
+                            },
+                        )
+                    )
+                    mask_rows.extend(
+                        _mask_rows(
+                            condition,
+                            "sparse_learned_ranker",
+                            learned_budget,
+                            learned_mask,
+                        )
+                    )
+
+                default_count = max(0, min(learned_default_count, direct_total))
+                if default_count == 0:
+                    default_mask = np.zeros_like(direct_available)
+                    default_evaluation = stale
+                else:
+                    default_mask = _top_mask(
+                        learned_scores, direct_available, default_count
+                    )
+                    default_evaluation = evaluate_sparse(default_mask)
+                default_budget = default_count / total_eligible
+                records.append(
+                    _record(
+                        condition,
+                        selector="sparse_learned_default_budget",
+                        requested_budget_fraction=default_budget,
+                        mask=default_mask,
+                        eligible=eligible,
+                        evaluation=default_evaluation,
+                        stale_kl=stale.logits_kl,
+                        selection_metadata={
+                            "selection_objective": "static_learned_ranker",
+                            "search_probe_count": 0,
+                            "search_reference_token_evaluations": 0,
+                            "joint_budget_selection": True,
+                            "selected_stale_action": default_count == 0,
+                            "sparse_ranker_path": str(sparse_ranker_path),
+                            "ranker_default_count": learned_default_count,
+                        },
+                    )
+                )
+                mask_rows.extend(
+                    _mask_rows(
+                        condition,
+                        "sparse_learned_default_budget",
+                        default_budget,
+                        default_mask,
+                    )
+                )
+
             all_direct = direct_available.copy()
             all_direct_evaluation = evaluate_sparse(all_direct)
             records.append(

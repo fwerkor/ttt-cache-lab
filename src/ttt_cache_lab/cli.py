@@ -6,6 +6,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig, VersionedSweepConfig
+from ttt_cache_lab.experiments.block_ranker import fit_block_ranker
 from ttt_cache_lab.experiments.blockwise import run_blockwise_exploration
 from ttt_cache_lab.experiments.boundary_analysis import generate_boundary_analysis
 from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
@@ -132,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explore oracle layer-token cache splices and token-block frontiers",
     )
     blockwise.add_argument("--config", required=True, type=Path)
+    blockwise.add_argument("--sparse-ranker-path", type=Path, default=None)
     blockwise.add_argument("--block-sizes", type=int, nargs="+", default=[64])
     blockwise.add_argument("--version-gap", type=int, default=4)
     blockwise.add_argument(
@@ -167,6 +169,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-structured-sparse-search",
         action="store_true",
         help="Keep static sparse selectors but skip exhaustive, greedy, beam, swap, and joint searches",
+    )
+
+    block_ranker = subparsers.add_parser(
+        "block-ranker-fit",
+        help="Fit a zero-probe sparse block ranker from calibration artifacts",
+    )
+    block_ranker.add_argument("--input-dir", required=True, type=Path, nargs="+")
+    block_ranker.add_argument("--output", required=True, type=Path)
+    block_ranker.add_argument(
+        "--ridge-values",
+        type=float,
+        nargs="+",
+        default=[1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0],
     )
 
     statistics = subparsers.add_parser(
@@ -381,12 +396,21 @@ def main(argv: list[str] | None = None) -> None:
             sparse_stale_margins=tuple(args.sparse_stale_margins),
             compute_cache_surgery_oracles=not args.skip_cache_surgery_oracles,
             compute_structured_sparse_search=not args.skip_structured_sparse_search,
+            sparse_ranker_path=args.sparse_ranker_path,
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
         console.print(f"Wrote {blockwise_artifacts.masks_csv}")
         console.print(f"Wrote {blockwise_artifacts.features_csv}")
         console.print(f"Wrote {blockwise_artifacts.report_markdown}")
+        return
+    if args.command == "block-ranker-fit":
+        ranker_path = fit_block_ranker(
+            list(args.input_dir),
+            output_path=args.output,
+            ridge_values=tuple(args.ridge_values),
+        )
+        console.print(f"Wrote {ranker_path}")
         return
     if args.command == "statistics":
         outputs = generate_statistical_report(
