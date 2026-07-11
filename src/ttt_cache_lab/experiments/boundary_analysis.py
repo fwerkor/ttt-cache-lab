@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-METRIC_FIELDS = (
+DIAGNOSTIC_METRIC_FIELDS = (
     "attention_kl",
     "attention_js",
     "attention_l1",
@@ -33,6 +33,9 @@ METRIC_FIELDS = (
     "suffix_attention_input_relative_error_max",
     "suffix_attention_input_relative_error_last",
     "suffix_amplification_ratio",
+)
+
+ONLINE_METRIC_FIELDS = (
     "online_stale_probe_logits_kl",
     "online_stale_probe_top1_disagreement",
     "online_stale_attention_output_boundary_relative_error",
@@ -45,6 +48,8 @@ METRIC_FIELDS = (
     "online_stale_suffix_attention_input_relative_error_max",
     "online_stale_suffix_attention_input_relative_error_last",
 )
+
+METRIC_FIELDS = (*DIAGNOSTIC_METRIC_FIELDS, *ONLINE_METRIC_FIELDS)
 
 PREDICTOR_FEATURES = (
     "attention_js",
@@ -127,6 +132,26 @@ def generate_boundary_analysis(
             feature_fields=ONLINE_PREDICTOR_FEATURES,
             predictor_name="ridge_log_kl_leave_one_sample_out_online",
         ),
+        _leave_one_sample_out_lookup(
+            enriched,
+            condition_fields=("update_target", "version_gap"),
+            predictor_name="lookup_target_gap_leave_one_sample_out",
+        ),
+        _leave_one_sample_out_lookup(
+            enriched,
+            condition_fields=("update_target",),
+            predictor_name="lookup_target_leave_one_sample_out",
+        ),
+        _leave_one_sample_out_lookup(
+            enriched,
+            condition_fields=("version_gap",),
+            predictor_name="lookup_gap_leave_one_sample_out",
+        ),
+        _leave_one_sample_out_lookup(
+            enriched,
+            condition_fields=(),
+            predictor_name="lookup_global_leave_one_sample_out",
+        ),
     ]
     predictor_summary_path = output_dir / "boundary_predictor_summary.csv"
     _write_rows(predictor_summary_path, predictor_rows)
@@ -203,8 +228,16 @@ def _evaluate_metrics(
 ]:
     groups = _groups(rows)
     selectors: dict[str, Callable[[dict[str, str | int | float | bool]], float]] = {
-        field: _metric_selector(field) for field in METRIC_FIELDS
+        field: _metric_selector(field) for field in DIAGNOSTIC_METRIC_FIELDS
     }
+    selector_fields = {field: field for field in DIAGNOSTIC_METRIC_FIELDS}
+    for field in ONLINE_METRIC_FIELDS:
+        minimum_name = f"{field}_min"
+        maximum_name = f"{field}_max"
+        selectors[minimum_name] = _metric_selector(field)
+        selectors[maximum_name] = _negated_metric_selector(field)
+        selector_fields[minimum_name] = field
+        selector_fields[maximum_name] = field
     selectors["shortest_window"] = lambda row: _numeric(row, "window_size")
     selectors["largest_window"] = lambda row: -_numeric(row, "window_size")
 
@@ -236,7 +269,7 @@ def _evaluate_metrics(
             oracle_hits += oracle_hit
             beneficial = bool(chosen.get("beneficial_vs_stale", False))
             beneficial_hits += int(beneficial)
-            if name in METRIC_FIELDS and len(ordered) >= 3:
+            if name in selector_fields and len(ordered) >= 3:
                 correlation = _spearman(
                     np.asarray([selector(row) for row in ordered], dtype=np.float64),
                     np.asarray([_numeric(row, "logits_kl") for row in ordered], dtype=np.float64),
@@ -262,7 +295,7 @@ def _evaluate_metrics(
 
         metric_values = np.asarray([selector(row) for row in rows], dtype=np.float64)
         global_correlation = (
-            _spearman(metric_values, all_kl) if name in METRIC_FIELDS else math.nan
+            _spearman(metric_values, all_kl) if name in selector_fields else math.nan
         )
         count = len(selected_rows)
         evaluation.append(
@@ -399,6 +432,107 @@ def _leave_one_sample_out_predictor(
     ]
 
 
+def _leave_one_sample_out_lookup(
+    rows: list[dict[str, str | int | float | bool]],
+    *,
+    condition_fields: tuple[str, ...],
+    predictor_name: str,
+) -> dict[str, str | int | float | bool]:
+    sample_ids = sorted({_sample_key(row) for row in rows})
+    selected_pairs: list[
+        tuple[
+            dict[str, str | int | float | bool],
+            dict[str, str | int | float | bool],
+            list[dict[str, str | int | float | bool]],
+        ]
+    ] = []
+    for held_out in sample_ids:
+        train = [row for row in rows if _sample_key(row) != held_out]
+        test = [row for row in rows if _sample_key(row) == held_out]
+        for group in _groups(test).values():
+            reference = group[0]
+            candidates: list[tuple[float, int]] = []
+            for window_size in sorted({_numeric(row, "window_size") for row in group}):
+                matching = [
+                    row
+                    for row in train
+                    if _numeric(row, "window_size") == window_size
+                    and all(
+                        str(row.get(field, "")) == str(reference.get(field, ""))
+                        for field in condition_fields
+                    )
+                ]
+                if matching:
+                    candidates.append(
+                        (
+                            float(
+                                np.mean(
+                                    [_numeric(row, "logits_kl") for row in matching]
+                                )
+                            ),
+                            int(window_size),
+                        )
+                    )
+            selected_window = (
+                min(candidates)[1]
+                if candidates
+                else max(int(_numeric(row, "window_size")) for row in group)
+            )
+            chosen = next(
+                row
+                for row in group
+                if int(_numeric(row, "window_size")) == selected_window
+            )
+            oracle = min(
+                group,
+                key=lambda row: (
+                    _numeric(row, "logits_kl"),
+                    _numeric(row, "window_size"),
+                ),
+            )
+            selected_pairs.append((chosen, oracle, group))
+
+    regrets: list[float] = []
+    normalized_regrets: list[float] = []
+    selected_recompute: list[float] = []
+    oracle_hits = 0
+    beneficial_hits = 0
+    for chosen, oracle, group in selected_pairs:
+        chosen_kl = _numeric(chosen, "logits_kl")
+        oracle_kl = _numeric(oracle, "logits_kl")
+        regret = chosen_kl - oracle_kl
+        scale = max(
+            max(_numeric(row, "logits_kl") for row in group) - oracle_kl,
+            1e-12,
+        )
+        regrets.append(regret)
+        normalized_regrets.append(regret / scale)
+        selected_recompute.append(_numeric(chosen, "recompute_fraction"))
+        oracle_hits += int(
+            _numeric(chosen, "window_size") == _numeric(oracle, "window_size")
+        )
+        beneficial_hits += int(bool(chosen.get("beneficial_vs_stale", False)))
+
+    count = len(selected_pairs)
+    return {
+        "predictor": predictor_name,
+        "status": "ok" if count else "no_groups",
+        "held_out_sample_count": len(sample_ids),
+        "group_count": count,
+        "condition_fields": ";".join(condition_fields),
+        "oracle_window_hit_rate": oracle_hits / count if count else math.nan,
+        "beneficial_selection_rate": beneficial_hits / count if count else math.nan,
+        "mean_kl_regret": float(np.mean(regrets)) if regrets else math.nan,
+        "median_kl_regret": float(np.median(regrets)) if regrets else math.nan,
+        "mean_normalized_kl_regret": (
+            float(np.mean(normalized_regrets)) if normalized_regrets else math.nan
+        ),
+        "mean_selected_recompute_fraction": (
+            float(np.mean(selected_recompute)) if selected_recompute else math.nan
+        ),
+    }
+
+
 def _groups(
     rows: list[dict[str, str | int | float | bool]],
 ) -> dict[
@@ -434,6 +568,15 @@ def _metric_selector(
 ) -> Callable[[dict[str, str | int | float | bool]], float]:
     def select(row: dict[str, str | int | float | bool]) -> float:
         return _numeric(row, field)
+
+    return select
+
+
+def _negated_metric_selector(
+    field: str,
+) -> Callable[[dict[str, str | int | float | bool]], float]:
+    def select(row: dict[str, str | int | float | bool]) -> float:
+        return -_numeric(row, field)
 
     return select
 
@@ -520,7 +663,7 @@ def _write_rows(
     path: Path,
     rows: list[dict[str, str | int | float | bool]],
 ) -> None:
-    fieldnames = list(rows[0]) if rows else []
+    fieldnames = list(dict.fromkeys(field for row in rows for field in row))
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()

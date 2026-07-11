@@ -115,6 +115,10 @@ def test_boundary_analysis_ranks_rejoin_windows_and_cross_validates(tmp_path: Pa
     assert {row["predictor"] for row in predictors} == {
         "ridge_log_kl_leave_one_sample_out_diagnostic",
         "ridge_log_kl_leave_one_sample_out_online",
+        "lookup_target_gap_leave_one_sample_out",
+        "lookup_target_leave_one_sample_out",
+        "lookup_gap_leave_one_sample_out",
+        "lookup_global_leave_one_sample_out",
     }
     predictor = next(
         row
