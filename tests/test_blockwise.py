@@ -7,10 +7,14 @@ import numpy as np
 
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.blockwise import (
+    _beam_sparse_objective_masks,
     _Evaluation,
     _greedy_sparse_objective_masks,
+    _joint_sparse_search_point,
     _logit_selection_metrics,
     _reference_token_id,
+    _SearchPoint,
+    _swap_refine_sparse_objective_masks,
 )
 from ttt_cache_lab.models.interface import BackendOutput
 
@@ -68,3 +72,109 @@ def test_reference_token_id_accepts_batch_encoding_like_mapping() -> None:
     sample = TaskSample(prompt="prompt", answer="answer", metadata={})
 
     assert _reference_token_id(backend, sample) == 17
+
+
+def test_beam_and_swap_escape_a_greedy_pair_trap() -> None:
+    candidate_mask = np.ones((1, 3), dtype=bool)
+    scores = {
+        (0,): 3.0,
+        (1,): 2.0,
+        (2,): 2.0,
+        (0, 1): 3.1,
+        (0, 2): 3.1,
+        (1, 2): 6.0,
+    }
+
+    def evaluate(mask: np.ndarray) -> _Evaluation:
+        selected = tuple(int(index) for index in np.flatnonzero(mask[0]))
+        return _evaluation([scores[selected], 0.0])
+
+    greedy = _greedy_sparse_objective_masks(
+        evaluate=evaluate,
+        candidate_mask=candidate_mask,
+        max_cells=2,
+        reference_token_id=0,
+        objective="reference_nll",
+    )
+    beam = _beam_sparse_objective_masks(
+        evaluate=evaluate,
+        candidate_mask=candidate_mask,
+        max_cells=2,
+        reference_token_id=0,
+        objective="reference_nll",
+        beam_width=2,
+    )
+    swapped = _swap_refine_sparse_objective_masks(
+        evaluate=evaluate,
+        greedy_path=greedy,
+        candidate_mask=candidate_mask,
+        reference_token_id=0,
+        objective="reference_nll",
+        max_rounds=2,
+    )
+
+    assert greedy[2][0].tolist() == [[True, True, False]]
+    assert beam[2].mask.tolist() == [[False, True, True]]
+    assert swapped[2].mask.tolist() == [[False, True, True]]
+    assert beam[2].probe_count > 0
+    assert swapped[2].probe_count > 0
+
+
+def test_joint_search_uses_cost_penalty_and_can_select_stale() -> None:
+    stale = _evaluation([0.0, 0.0])
+    one = _evaluation([4.0, 0.0])
+    two = _evaluation([4.01, 0.0])
+    path = {
+        1: _SearchPoint(
+            mask=np.asarray([[True, False]], dtype=bool),
+            evaluation=one,
+            score=_logit_selection_metrics(one.output.logits, reference_token_id=0)[0],
+            probe_count=2,
+        ),
+        2: _SearchPoint(
+            mask=np.asarray([[True, True]], dtype=bool),
+            evaluation=two,
+            score=_logit_selection_metrics(two.output.logits, reference_token_id=0)[0],
+            probe_count=3,
+        ),
+    }
+
+    unpenalized = _joint_sparse_search_point(
+        stale=stale,
+        path=path,
+        reference_token_id=0,
+        objective="reference_nll",
+        direct_total=2,
+        cost_penalty=0.0,
+    )
+    penalized = _joint_sparse_search_point(
+        stale=stale,
+        path=path,
+        reference_token_id=0,
+        objective="reference_nll",
+        direct_total=2,
+        cost_penalty=0.05,
+    )
+    harmful_path = {
+        1: _SearchPoint(
+            mask=np.asarray([[True]], dtype=bool),
+            evaluation=_evaluation([-2.0, 0.0]),
+            score=_logit_selection_metrics(
+                _evaluation([-2.0, 0.0]).output.logits,
+                reference_token_id=0,
+            )[0],
+            probe_count=1,
+        )
+    }
+    stale_selected = _joint_sparse_search_point(
+        stale=stale,
+        path=harmful_path,
+        reference_token_id=0,
+        objective="reference_nll",
+        direct_total=1,
+        cost_penalty=0.0,
+    )
+
+    assert int(np.count_nonzero(unpenalized.mask)) == 2
+    assert int(np.count_nonzero(penalized.mask)) == 1
+    assert int(np.count_nonzero(stale_selected.mask)) == 0

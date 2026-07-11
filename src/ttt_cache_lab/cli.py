@@ -143,6 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
     blockwise.add_argument("--oracle-candidate-limit", type=int, default=24)
     blockwise.add_argument("--oracle-max-cells", type=int, default=16)
     blockwise.add_argument("--direct-oracle-max-blocks", type=int, default=0)
+    blockwise.add_argument("--sparse-beam-widths", type=int, nargs="+", default=[2, 4])
+    blockwise.add_argument(
+        "--sparse-cost-penalties",
+        type=float,
+        nargs="+",
+        default=[0.0, 0.001, 0.005, 0.01],
+    )
+    blockwise.add_argument("--sparse-swap-rounds", type=int, default=4)
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -349,6 +357,9 @@ def main(argv: list[str] | None = None) -> None:
             oracle_candidate_limit=args.oracle_candidate_limit,
             oracle_max_cells=args.oracle_max_cells,
             direct_oracle_max_blocks=args.direct_oracle_max_blocks,
+            sparse_beam_widths=tuple(args.sparse_beam_widths),
+            sparse_cost_penalties=tuple(args.sparse_cost_penalties),
+            sparse_swap_rounds=args.sparse_swap_rounds,
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
