@@ -380,24 +380,27 @@ def _explore_condition(
     sparse_score_fn = getattr(backend, "blockwise_lora_delta_scores", None)
     sparse_cache: dict[bytes, _Evaluation] = {}
 
-    def evaluate_sparse(mask: np.ndarray) -> _Evaluation:
+    def probe_sparse(mask: np.ndarray) -> _Evaluation:
         if not callable(sparse_probe):
             raise RuntimeError("Backend does not implement block-sparse LoRA delta repair")
-        key = np.ascontiguousarray(mask, dtype=np.uint8).tobytes()
-        cached = sparse_cache.get(key)
-        if cached is not None:
-            return cached
         output = sparse_probe(
             baseline=baseline,
             block_mask=mask,
             block_size=block_size,
         )
         enrich_reference_metrics(output)
-        value = _Evaluation(
+        return _Evaluation(
             output=output,
             logits_kl=kl_divergence(full.logits, output.logits),
             top1_agreement=top1_agreement(full.logits, output.logits),
         )
+
+    def evaluate_sparse(mask: np.ndarray) -> _Evaluation:
+        key = np.ascontiguousarray(mask, dtype=np.uint8).tobytes()
+        cached = sparse_cache.get(key)
+        if cached is not None:
+            return cached
+        value = probe_sparse(mask)
         sparse_cache[key] = value
         return value
 
@@ -956,14 +959,16 @@ def _explore_condition(
                             mask = np.zeros_like(direct_available)
                             for index in chosen:
                                 mask[index] = True
-                            splice_eval = evaluate(mask)
-                            if (
-                                best_splice_eval is None
-                                or splice_eval.logits_kl < best_splice_eval.logits_kl - 1e-15
-                            ):
-                                best_splice_mask = mask.copy()
-                                best_splice_eval = splice_eval
-                            sparse_eval = evaluate_sparse(mask)
+                            if compute_cache_surgery_oracles:
+                                splice_eval = evaluate(mask)
+                                if (
+                                    best_splice_eval is None
+                                    or splice_eval.logits_kl
+                                    < best_splice_eval.logits_kl - 1e-15
+                                ):
+                                    best_splice_mask = mask.copy()
+                                    best_splice_eval = splice_eval
+                            sparse_eval = probe_sparse(mask)
                             if (
                                 best_sparse_eval is None
                                 or sparse_eval.logits_kl < best_sparse_eval.logits_kl - 1e-15
@@ -1007,18 +1012,17 @@ def _explore_condition(
                                 best_confidence = max_probability
                                 best_confidence_mask = mask.copy()
                                 best_confidence_eval = sparse_eval
-                        if (
-                            best_splice_mask is None
-                            or best_splice_eval is None
-                            or best_sparse_mask is None
-                            or best_sparse_eval is None
-                        ):
+                        if best_sparse_mask is None or best_sparse_eval is None:
                             continue
                         budget = direct_count / total_eligible
                         exhaustive_rows = [
-                            ("direct_splice_oracle", best_splice_mask, best_splice_eval),
                             ("sparse_delta_oracle", best_sparse_mask, best_sparse_eval),
                         ]
+                        if best_splice_mask is not None and best_splice_eval is not None:
+                            exhaustive_rows.insert(
+                                0,
+                                ("direct_splice_oracle", best_splice_mask, best_splice_eval),
+                            )
                         if best_reference_mask is not None and best_reference_eval is not None:
                             exhaustive_rows.append(
                                 (
