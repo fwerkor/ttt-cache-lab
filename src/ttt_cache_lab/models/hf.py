@@ -1573,6 +1573,271 @@ class HuggingFaceBackend:
             },
         )
 
+    def blockwise_lora_delta_scores(
+        self,
+        *,
+        baseline: BackendOutput,
+        stale: BackendOutput,
+        block_size: int,
+    ) -> dict[str, np.ndarray]:
+        """Score directly repairable LoRA K/V blocks without a full cache reference."""
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        if not baseline.extras:
+            raise ValueError("Blockwise LoRA scoring requires cached HF state")
+        old_past = baseline.extras.get("past_key_values")
+        old_lora_cache = baseline.extras.get("lora_cache", {})
+        if old_past is None or not isinstance(old_lora_cache, dict):
+            raise ValueError("Blockwise LoRA scoring requires past_key_values and LoRA state")
+        layers = self._past_as_layers(old_past)
+        if not layers:
+            raise ValueError("Blockwise LoRA scoring requires a non-empty cache")
+        sequence = int(layers[0][0].shape[-2])
+        block_count = math.ceil(sequence / block_size)
+        available = np.zeros((len(layers), block_count), dtype=bool)
+        attention_mass = np.zeros((len(layers), block_count), dtype=np.float64)
+        input_bound = np.zeros_like(attention_mass)
+        exact_delta_norm = np.zeros_like(attention_mass)
+        attention_summary = None
+        if stale.extras is not None:
+            candidate = stale.extras.get("attention_summary")
+            if isinstance(candidate, np.ndarray) and candidate.ndim == 2:
+                attention_summary = candidate
+        module_by_name = {
+            str(getattr(module, "lora_name", "")): module
+            for module in self._lora_modules
+            if getattr(module, "lora_name", "")
+        }
+        position_ids = self._prefix_position_ids(baseline.extras.get("prompt_state"))
+        for name, old_state in old_lora_cache.items():
+            if not isinstance(old_state, dict):
+                continue
+            projection = str(old_state.get("projection", ""))
+            layer = old_state.get("layer")
+            cached_input = old_state.get("input")
+            module = module_by_name.get(str(name))
+            if (
+                projection not in {"k", "v"}
+                or not isinstance(layer, int)
+                or layer < 0
+                or layer >= len(layers)
+                or cached_input is None
+                or module is None
+                or not hasattr(module, "lora_delta_output")
+            ):
+                continue
+            item_index = 0 if projection == "k" else 1
+            target_tensor = layers[layer][item_index]
+            old_a = old_state.get("a")
+            old_b = old_state.get("b")
+            if old_a is None or old_b is None:
+                continue
+            new_weight = (module.lora_b.detach().float() @ module.lora_a.detach().float()) * float(
+                module.scaling
+            )
+            old_weight = (old_b.detach().float() @ old_a.detach().float()) * float(
+                old_state.get("scaling", module.scaling)
+            )
+            weight_delta_norm = float(
+                self.torch.linalg.vector_norm(new_weight - old_weight).cpu()
+            )
+            full_delta = module.lora_delta_output(cached_input, old_state)
+            projected = self._reshape_projection_delta(full_delta, target_tensor)
+            if projected is not None and projection == "k":
+                projected = self._apply_rotary_to_key_delta(
+                    projected,
+                    position_ids=position_ids,
+                )
+            for block_index in range(block_count):
+                start = block_index * block_size
+                end = min(sequence, start + block_size)
+                available[layer, block_index] = True
+                cached_slice = cached_input[:, start:end, :].detach().float()
+                input_bound[layer, block_index] += float(
+                    self.torch.linalg.vector_norm(cached_slice).cpu()
+                ) * weight_delta_norm
+                if attention_summary is not None and layer < attention_summary.shape[0]:
+                    attention_mass[layer, block_index] = float(
+                        np.sum(attention_summary[layer, start:end])
+                    )
+                if projected is not None:
+                    projected_slice = projected[..., start:end, :].detach().float()
+                    target_slice = target_tensor[..., start:end, :].detach().float()
+                    numerator = float(
+                        self.torch.linalg.vector_norm(projected_slice).cpu()
+                    )
+                    denominator = float(
+                        self.torch.linalg.vector_norm(target_slice).cpu()
+                    )
+                    exact_delta_norm[layer, block_index] += numerator / max(
+                        denominator, 1e-12
+                    )
+        return {
+            "available": available,
+            "stale_attention_mass": attention_mass,
+            "input_weight_bound": input_bound,
+            "attention_input_bound": attention_mass * input_bound,
+            "predicted_delta_norm": exact_delta_norm,
+            "attention_predicted_delta": attention_mass * exact_delta_norm,
+        }
+
+    def probe_blockwise_lora_delta(
+        self,
+        *,
+        baseline: BackendOutput,
+        block_mask: np.ndarray,
+        block_size: int,
+    ) -> BackendOutput:
+        """Apply current LoRA K/V deltas only to selected cached token blocks."""
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        if not baseline.extras:
+            raise ValueError("Blockwise LoRA delta requires cached HF state")
+        old_past = baseline.extras.get("past_key_values")
+        old_lora_cache = baseline.extras.get("lora_cache", {})
+        if old_past is None or not isinstance(old_lora_cache, dict):
+            raise ValueError("Blockwise LoRA delta requires past_key_values and LoRA state")
+        layers = [tuple(layer) for layer in self._past_as_layers(old_past)]
+        if block_mask.ndim != 2 or block_mask.shape[0] != len(layers):
+            raise ValueError("block_mask must have shape [num_layers, num_token_blocks]")
+        sequence = int(layers[0][0].shape[-2])
+        block_count = math.ceil(sequence / block_size)
+        if block_mask.shape[1] != block_count:
+            raise ValueError(
+                f"block_mask has {block_mask.shape[1]} token blocks; expected {block_count}"
+            )
+        corrected = [list(layer) for layer in layers]
+        module_by_name = {
+            str(getattr(module, "lora_name", "")): module
+            for module in self._lora_modules
+            if getattr(module, "lora_name", "")
+        }
+        position_ids = self._prefix_position_ids(baseline.extras.get("prompt_state"))
+        selected_direct_cells: set[tuple[int, int]] = set()
+        available_direct_cells: set[tuple[int, int]] = set()
+        correction_flops = 0.0
+        residual_cache_bytes = 0
+        raw_delta_squared = 0.0
+        stored_delta_squared = 0.0
+        reset_peak_memory(self.torch, self.devices)
+        synchronize(self.torch, self.devices)
+        start_time = time.perf_counter()
+        for name, old_state in old_lora_cache.items():
+            if not isinstance(old_state, dict):
+                continue
+            projection = str(old_state.get("projection", ""))
+            layer = old_state.get("layer")
+            cached_input = old_state.get("input")
+            module = module_by_name.get(str(name))
+            if (
+                projection not in {"k", "v"}
+                or not isinstance(layer, int)
+                or layer < 0
+                or layer >= len(corrected)
+                or cached_input is None
+                or module is None
+                or not hasattr(module, "lora_delta_output")
+            ):
+                continue
+            item_index = 0 if projection == "k" else 1
+            target_tensor = corrected[layer][item_index]
+            mixed = target_tensor.detach().clone()
+            rank = int(old_state.get("rank", 0) or 0)
+            for block_index in range(block_count):
+                available_direct_cells.add((layer, block_index))
+                if not bool(block_mask[layer, block_index]):
+                    continue
+                start = block_index * block_size
+                end = min(sequence, start + block_size)
+                cached_slice = cached_input[:, start:end, :]
+                delta = module.lora_delta_output(cached_slice, old_state)
+                target_slice = target_tensor[..., start:end, :]
+                projected = self._reshape_projection_delta(delta, target_slice)
+                if projected is None:
+                    raise RuntimeError("Unable to reshape selected LoRA K/V block delta")
+                if projection == "k":
+                    block_positions = (
+                        position_ids[:, start:end] if position_ids is not None else None
+                    )
+                    projected = self._apply_rotary_to_key_delta(
+                        projected,
+                        position_ids=block_positions,
+                    )
+                    if projected is None:
+                        raise RuntimeError("Unable to apply RoPE to selected LoRA key block")
+                projected_on_target = projected.to(
+                    device=target_slice.device,
+                    dtype=target_slice.dtype,
+                )
+                corrected_slice = target_slice + projected_on_target
+                stored_delta = corrected_slice - target_slice
+                mixed[..., start:end, :] = corrected_slice
+                selected_direct_cells.add((layer, block_index))
+                residual_cache_bytes += int(
+                    stored_delta.numel() * stored_delta.element_size()
+                )
+                raw_float = projected.detach().float()
+                stored_float = stored_delta.detach().float()
+                raw_delta_squared += float(self.torch.sum(raw_float * raw_float).cpu())
+                stored_delta_squared += float(
+                    self.torch.sum(stored_float * stored_float).cpu()
+                )
+                if rank > 0:
+                    batch = int(cached_slice.shape[0])
+                    tokens = int(cached_slice.shape[1])
+                    input_width = int(cached_slice.shape[-1])
+                    output_width = int(delta.shape[-1])
+                    correction_flops += (
+                        4.0
+                        * batch
+                        * tokens
+                        * rank
+                        * (input_width + output_width)
+                    )
+            corrected[layer][item_index] = mixed
+        if not available_direct_cells:
+            raise ValueError("No directly repairable LoRA K/V cache blocks were found")
+        corrected_past = self._restore_past_type(
+            old_past, tuple(tuple(layer) for layer in corrected)
+        )
+        synchronize(self.torch, self.devices)
+        maintenance_s = time.perf_counter() - start_time
+        result = self._probe_with_past(
+            baseline=baseline,
+            past=corrected_past,
+            cache_tensor=self._summarize_past(corrected_past),
+            hidden_tensor=baseline.hidden_tensor,
+            lora_cache=old_lora_cache,
+            extra_metadata={
+                "cache_mode": "block_sparse_lora_weight_delta",
+                "delta_mode": "block_sparse_lora_weight_delta",
+                "block_size": block_size,
+                "selected_direct_cells": len(selected_direct_cells),
+                "available_direct_cells": len(available_direct_cells),
+                "selected_direct_fraction": (
+                    len(selected_direct_cells) / len(available_direct_cells)
+                ),
+                "cache_maintenance_latency": maintenance_s,
+                "strategy_flops": correction_flops,
+                "residual_cache_bytes": residual_cache_bytes,
+                "physical_cache_bytes": self._past_nbytes(corrected_past),
+                "delta_raw_l2": raw_delta_squared**0.5,
+                "delta_stored_l2": stored_delta_squared**0.5,
+                "delta_quantization_retention": (
+                    stored_delta_squared**0.5 / raw_delta_squared**0.5
+                    if raw_delta_squared > 0.0
+                    else 0.0
+                ),
+                "mixed_lora_block_state": True,
+            },
+            reset_memory_stats=False,
+        )
+        if result.extras is not None:
+            decode_s = float(result.extras.get("decode_latency", 0.0))
+            result.extras["cache_maintenance_latency"] = maintenance_s
+            result.extras["strategy_latency"] = maintenance_s + decode_s
+        return result
+
     def _set_lora_capture(self, enabled: bool) -> None:
         for module in self._lora_modules:
             if hasattr(module, "capture_lora_input"):

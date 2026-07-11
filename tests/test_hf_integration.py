@@ -365,6 +365,81 @@ def test_blockwise_cache_splice_selects_layer_token_cells(tiny_llama_dir: Path) 
     np.testing.assert_allclose(complete.logits, full.logits, rtol=1e-5, atol=1e-5)
 
 
+def test_block_sparse_lora_key_delta_repairs_only_selected_tokens(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    backend.configure_metrics(capture_attention=True)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 1},
+        ),
+        context_length=16,
+    )
+    target = parse_update_target("lora.k:1", num_layers=backend.num_layers)
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    baseline = backend.prefill(sample.prompt)
+    backend.train_lora_step(
+        sample,
+        target,
+        rank=2,
+        alpha=4.0,
+        learning_rate=0.05,
+        target_update_norm=0.02,
+    )
+    full = backend.full_recompute(sample.prompt, baseline)
+    assert baseline.extras is not None and full.extras is not None
+    stale = backend.probe_blockwise_cache_splice(
+        baseline=baseline,
+        full=full,
+        block_mask=np.zeros((backend.num_layers, 4), dtype=bool),
+        block_size=4,
+    )
+    scores = backend.blockwise_lora_delta_scores(
+        baseline=baseline,
+        stale=stale,
+        block_size=4,
+    )
+    assert scores["available"].shape == (backend.num_layers, 4)
+    assert scores["available"][1].all()
+    assert not scores["available"][0].any()
+    assert not scores["available"][2].any()
+    assert np.all(scores["stale_attention_mass"][1] >= 0.0)
+
+    mask = np.zeros((backend.num_layers, 4), dtype=bool)
+    mask[1, 1] = True
+    sparse = backend.probe_blockwise_lora_delta(
+        baseline=baseline,
+        block_mask=mask,
+        block_size=4,
+    )
+    assert sparse.extras is not None
+    assert sparse.extras["cache_mode"] == "block_sparse_lora_weight_delta"
+    assert sparse.extras["selected_direct_cells"] == 1
+    old_layers = backend._past_as_layers(baseline.extras["past_key_values"])
+    full_layers = backend._past_as_layers(full.extras["past_key_values"])
+    sparse_layers = backend._past_as_layers(sparse.extras["past_key_values"])
+    for layer_index in range(backend.num_layers):
+        for item_index in (0, 1):
+            actual = sparse_layers[layer_index][item_index]
+            expected = old_layers[layer_index][item_index].clone()
+            if layer_index == 1 and item_index == 0:
+                expected[..., 4:8, :] = full_layers[layer_index][item_index][..., 4:8, :]
+            assert torch.allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+    all_direct = np.zeros_like(mask)
+    all_direct[1, :] = True
+    repaired = backend.probe_blockwise_lora_delta(
+        baseline=baseline,
+        block_mask=all_direct,
+        block_size=4,
+    )
+    assert repaired.extras is not None
+    repaired_layers = backend._past_as_layers(repaired.extras["past_key_values"])
+    assert torch.allclose(repaired_layers[1][0], full_layers[1][0], rtol=1e-5, atol=1e-6)
+    assert torch.equal(repaired_layers[1][1], old_layers[1][1])
+
+
 def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     backend.configure_metrics(capture_attention=True)
