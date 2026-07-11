@@ -1,0 +1,37 @@
+output_root: runs/delta_quantization_confirm
+config_root: runs/delta_quantization_confirm_configs
+strategies:
+  - full_recompute
+  - stale_reuse
+  - delta_correction
+version_steps:
+  - 0
+  - 1
+profiles:
+  qwen_0_5b:
+    template: configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
+    norms: [1.0e-3, 1.0e-2]
+    targets:
+      - lora.k
+      - lora.v
+      - lora.k_late
+      - lora.v_late
+    num_samples: 4
+  qwen_1_5b:
+    template: configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
+    norms: [1.0e-3, 1.0e-2]
+    targets:
+      - lora.k
+      - lora.v
+      - lora.k_late
+      - lora.v_late
+    num_samples: 4
+  qwen_7b:
+    template: configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
+    norms: [1.0e-3, 1.0e-2]
+    targets:
+      - lora.k
+      - lora.v
+      - lora.k_late
+      - lora.v_late
+    num_samples: 2

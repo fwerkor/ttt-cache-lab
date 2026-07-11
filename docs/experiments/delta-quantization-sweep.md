@@ -43,12 +43,23 @@ A delta result is considered numerically testable only after the stored correcti
 
 No universal threshold is fixed in advance. The analysis reports the empirical transition and compares it across model size, target, and layer placement.
 
+## Pilot and confirmation phases
+
+The broad pilot sweep locates the numerical transition with a small sample budget. The confirmatory sweep then reruns the informative `1e-3` and `1e-2` points with 4 samples on 0.5B/1.5B and 2 samples on 7B. The confirmation specification is `configs/sweeps/ascend_delta_quantization_confirm.yaml`.
+
 ## Reproduction
 
-Generate concrete configs:
+Generate concrete pilot configs:
 
 ```bash
 python scripts/generate_delta_quantization_sweep.py
+```
+
+Generate confirmatory configs:
+
+```bash
+python scripts/generate_delta_quantization_sweep.py \
+  --spec configs/sweeps/ascend_delta_quantization_confirm.yaml
 ```
 
 Run a generated config with the normal Ascend launcher:
