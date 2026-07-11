@@ -963,9 +963,12 @@ def _reference_token_id(backend: ModelBackend, sample: TaskSample) -> int:
     if tokenizer is None or not callable(tokenizer):
         return -1
     encoded = tokenizer(sample.answer, add_special_tokens=False)
-    if not isinstance(encoded, dict):
+    getter = getattr(encoded, "get", None)
+    if not callable(getter):
         return -1
-    token_ids = encoded.get("input_ids", [])
+    token_ids = getter("input_ids", [])
+    if hasattr(token_ids, "tolist"):
+        token_ids = token_ids.tolist()
     if token_ids and isinstance(token_ids[0], list):
         token_ids = token_ids[0]
     return int(token_ids[0]) if token_ids else -1

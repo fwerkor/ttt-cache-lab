@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from collections import UserDict
+from types import SimpleNamespace
+
 import numpy as np
 
+from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.blockwise import (
     _Evaluation,
     _greedy_sparse_objective_masks,
     _logit_selection_metrics,
+    _reference_token_id,
 )
 from ttt_cache_lab.models.interface import BackendOutput
 
@@ -54,3 +59,12 @@ def test_greedy_sparse_reference_objective_selects_best_blocks() -> None:
 
     assert selected[1][0].tolist() == [[False, True, False]]
     assert selected[2][0].tolist() == [[False, True, True]]
+
+
+def test_reference_token_id_accepts_batch_encoding_like_mapping() -> None:
+    backend = SimpleNamespace(
+        tokenizer=lambda text, add_special_tokens=False: UserDict({"input_ids": [17, 18]})
+    )
+    sample = TaskSample(prompt="prompt", answer="answer", metadata={})
+
+    assert _reference_token_id(backend, sample) == 17
