@@ -17,6 +17,7 @@ def generate(spec_path: Path, *, profiles: set[str] | None = None) -> list[Path]
     config_root = Path(spec["config_root"])
     strategies = list(spec["strategies"])
     version_steps = list(spec["version_steps"])
+    norm_control = spec.get("norm_control")
     generated: list[Path] = []
 
     for profile_name, profile in spec["profiles"].items():
@@ -33,6 +34,8 @@ def generate(spec_path: Path, *, profiles: set[str] | None = None) -> list[Path]
             config["data"]["num_samples"] = int(profile["num_samples"])
             config["updates"]["targets"] = list(profile["targets"])
             config["updates"]["update_norm"] = norm
+            if norm_control is not None:
+                config["adapter"]["norm_control"] = str(norm_control)
             config["cache"]["strategies"] = strategies
             config["version_steps"] = version_steps
             destination = config_root / profile_name / f"{slug}.yaml"

@@ -1,0 +1,38 @@
+output_root: runs/delta_rms_calibration
+config_root: runs/delta_rms_calibration_configs
+norm_control: target_rms
+strategies:
+  - full_recompute
+  - stale_reuse
+  - delta_correction
+version_steps:
+  - 0
+  - 1
+profiles:
+  qwen_0_5b:
+    template: configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
+    norms: [1.0e-5, 1.0e-4]
+    targets:
+      - lora.k
+      - lora.v
+      - lora.k_late
+      - lora.v_late
+    num_samples: 1
+  qwen_1_5b:
+    template: configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
+    norms: [1.0e-5, 1.0e-4]
+    targets:
+      - lora.k
+      - lora.v
+      - lora.k_late
+      - lora.v_late
+    num_samples: 1
+  qwen_7b:
+    template: configs/experiments/ascend_e2_version_drift_qwen_7b.yaml
+    norms: [1.0e-5, 1.0e-4]
+    targets:
+      - lora.k
+      - lora.v
+      - lora.k_late
+      - lora.v_late
+    num_samples: 1
