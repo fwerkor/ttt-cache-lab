@@ -301,6 +301,70 @@ def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
                 assert torch.allclose(actual_tensor, expected_tensor, rtol=1e-5, atol=1e-6)
 
 
+def test_blockwise_cache_splice_selects_layer_token_cells(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 1},
+        ),
+        context_length=16,
+    )
+    target = parse_update_target("lora.k:1", num_layers=backend.num_layers)
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    baseline = backend.prefill(sample.prompt)
+    backend.train_lora_step(
+        sample,
+        target,
+        rank=2,
+        alpha=4.0,
+        learning_rate=0.05,
+        target_update_norm=0.02,
+    )
+    full = backend.full_recompute(sample.prompt, baseline)
+    assert baseline.extras is not None and full.extras is not None
+
+    old_layers = backend._past_as_layers(baseline.extras["past_key_values"])
+    current_layers = backend._past_as_layers(full.extras["past_key_values"])
+    token_count = int(old_layers[0][0].shape[-2])
+    block_size = 4
+    block_count = int(np.ceil(token_count / block_size))
+    mask = np.zeros((backend.num_layers, block_count), dtype=bool)
+    mask[1, 1] = True
+    mixed = backend.probe_blockwise_cache_splice(
+        baseline=baseline,
+        full=full,
+        block_mask=mask,
+        block_size=block_size,
+    )
+    assert mixed.extras is not None
+    assert mixed.extras["selected_block_cells"] == 1
+    mixed_layers = backend._past_as_layers(mixed.extras["past_key_values"])
+    for layer_index in range(backend.num_layers):
+        for item_index in (0, 1):
+            actual = mixed_layers[layer_index][item_index]
+            expected = old_layers[layer_index][item_index].clone()
+            if layer_index == 1:
+                expected[..., 4:8, :] = current_layers[layer_index][item_index][..., 4:8, :]
+            assert torch.equal(actual, expected)
+
+    empty = backend.probe_blockwise_cache_splice(
+        baseline=baseline,
+        full=full,
+        block_mask=np.zeros_like(mask),
+        block_size=block_size,
+    )
+    complete = backend.probe_blockwise_cache_splice(
+        baseline=baseline,
+        full=full,
+        block_mask=np.ones_like(mask),
+        block_size=block_size,
+    )
+    np.testing.assert_allclose(empty.logits, baseline.logits, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(complete.logits, full.logits, rtol=1e-5, atol=1e-5)
+
+
 def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     backend.configure_metrics(capture_attention=True)

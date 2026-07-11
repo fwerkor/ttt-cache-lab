@@ -1490,6 +1490,89 @@ class HuggingFaceBackend:
             extras=extras,
         )
 
+    def probe_blockwise_cache_splice(
+        self,
+        *,
+        baseline: BackendOutput,
+        full: BackendOutput,
+        block_mask: np.ndarray,
+        block_size: int,
+    ) -> BackendOutput:
+        """Evaluate an oracle layer-token KV splice.
+
+        ``block_mask[layer, block]`` selects current-version K/V from ``full``;
+        unselected cells retain the old cache from ``baseline``. This is an
+        analysis primitive, not a claim that the selected blocks can already be
+        recomputed independently by the production backend.
+        """
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        if not baseline.extras or not full.extras:
+            raise ValueError("Blockwise splice requires cached HF state")
+        old_past = baseline.extras.get("past_key_values")
+        new_past = full.extras.get("past_key_values")
+        if old_past is None or new_past is None:
+            raise ValueError("Blockwise splice requires old and current past_key_values")
+        old_layers = self._past_as_layers(old_past)
+        new_layers = self._past_as_layers(new_past)
+        if len(old_layers) != len(new_layers):
+            raise ValueError("Old and current cache layer counts differ")
+        if block_mask.ndim != 2 or block_mask.shape[0] != len(old_layers):
+            raise ValueError("block_mask must have shape [num_layers, num_token_blocks]")
+
+        corrected: list[tuple[Any, ...]] = []
+        selected_cells = 0
+        token_count: int | None = None
+        for layer_index, (old_layer, new_layer) in enumerate(
+            zip(old_layers, new_layers, strict=True)
+        ):
+            if len(old_layer) < 2 or len(new_layer) < 2:
+                raise ValueError("Each cache layer must contain key and value tensors")
+            items = list(old_layer)
+            for item_index in (0, 1):
+                old_tensor = old_layer[item_index]
+                new_tensor = new_layer[item_index]
+                if old_tensor.shape != new_tensor.shape or old_tensor.ndim < 2:
+                    raise ValueError("Old and current K/V tensor shapes differ")
+                sequence = int(old_tensor.shape[-2])
+                if token_count is None:
+                    token_count = sequence
+                elif token_count != sequence:
+                    raise ValueError("All K/V tensors must share a token dimension")
+                expected_blocks = math.ceil(sequence / block_size)
+                if block_mask.shape[1] != expected_blocks:
+                    raise ValueError(
+                        f"block_mask has {block_mask.shape[1]} token blocks; "
+                        f"expected {expected_blocks}"
+                    )
+                mixed = old_tensor.detach().clone()
+                for block_index, selected in enumerate(block_mask[layer_index]):
+                    if not bool(selected):
+                        continue
+                    start = block_index * block_size
+                    end = min(sequence, start + block_size)
+                    mixed[..., start:end, :] = new_tensor[..., start:end, :]
+                items[item_index] = mixed
+            selected_cells += int(np.count_nonzero(block_mask[layer_index]))
+            corrected.append(tuple(items))
+
+        mixed_past = self._restore_past_type(old_past, tuple(corrected))
+        total_cells = int(block_mask.size)
+        return self._probe_with_past(
+            baseline=baseline,
+            past=mixed_past,
+            cache_tensor=self._summarize_past(mixed_past),
+            hidden_tensor=baseline.hidden_tensor,
+            extra_metadata={
+                "cache_mode": "oracle_layer_token_block_splice",
+                "block_size": block_size,
+                "selected_block_cells": selected_cells,
+                "total_block_cells": total_cells,
+                "selected_block_fraction": selected_cells / total_cells if total_cells else 0.0,
+                "physical_cache_bytes": self._past_nbytes(mixed_past),
+            },
+        )
+
     def _set_lora_capture(self, enabled: bool) -> None:
         for module in self._lora_modules:
             if hasattr(module, "capture_lora_input"):
