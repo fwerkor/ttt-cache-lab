@@ -1511,6 +1511,74 @@ class HuggingFaceBackend:
             extras=extras,
         )
 
+    def score_reference_sequence(
+        self,
+        *,
+        baseline: BackendOutput,
+        past: Any,
+        reference_token_ids: list[int] | tuple[int, ...],
+        probe_lengths: tuple[int, ...],
+    ) -> dict[str, Any]:
+        """Return teacher-forced prefix NLLs for an arbitrary repaired cache."""
+        if not baseline.extras:
+            raise ValueError("Reference scoring requires cached prompt state")
+        if not probe_lengths or any(length <= 0 for length in probe_lengths):
+            raise ValueError("probe_lengths must contain positive values")
+        available = [int(token_id) for token_id in reference_token_ids]
+        if not available:
+            return {
+                "reference_probe_tokens": 0,
+                "reference_probe_latency": 0.0,
+            }
+        state = baseline.extras["prompt_state"]
+        max_tokens = min(max(probe_lengths), len(available))
+        target_ids = self.torch.tensor(
+            [available[:max_tokens]],
+            device=state.probe_ids.device,
+            dtype=state.probe_ids.dtype,
+        )
+        teacher_inputs = self.torch.cat(
+            [state.probe_ids, target_ids[:, :-1]],
+            dim=1,
+        )
+        synchronize(self.torch, self.devices)
+        start = time.perf_counter()
+        with self.torch.no_grad():
+            result = self.model(
+                input_ids=teacher_inputs,
+                past_key_values=self._clone_past(past),
+                use_cache=False,
+            )
+            logits = result.logits[:, -max_tokens:, :].float()
+            log_probabilities = self.torch.log_softmax(logits, dim=-1)
+            token_nll = -self.torch.gather(
+                log_probabilities,
+                dim=-1,
+                index=target_ids.unsqueeze(-1),
+            ).squeeze(-1)
+            prefix_nll = self.torch.cumsum(token_nll, dim=1) / self.torch.arange(
+                1,
+                max_tokens + 1,
+                device=token_nll.device,
+                dtype=token_nll.dtype,
+            ).unsqueeze(0)
+        synchronize(self.torch, self.devices)
+        latency = time.perf_counter() - start
+        metrics: dict[str, Any] = {
+            "reference_probe_tokens": max_tokens,
+            "reference_probe_latency": latency,
+            "reference_sequence_nll": float(prefix_nll[0, -1].detach().cpu()),
+            "reference_token_nll_values": [
+                float(value) for value in token_nll[0].detach().cpu().tolist()
+            ],
+        }
+        for length in sorted(set(probe_lengths)):
+            if length <= max_tokens:
+                metrics[f"reference_token_nll_{length}"] = float(
+                    prefix_nll[0, length - 1].detach().cpu()
+                )
+        return metrics
+
     def probe_blockwise_cache_splice(
         self,
         *,

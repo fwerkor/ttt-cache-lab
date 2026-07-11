@@ -440,6 +440,36 @@ def test_block_sparse_lora_key_delta_repairs_only_selected_tokens(tiny_llama_dir
     assert torch.equal(repaired_layers[1][1], old_layers[1][1])
 
 
+def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha beta",
+            metadata={"max_generation_tokens": 1},
+        ),
+        context_length=16,
+    )
+    baseline = backend.prefill(sample.prompt)
+    assert baseline.extras is not None
+    token_ids = backend.tokenizer(sample.answer, add_special_tokens=False)["input_ids"]
+    assert len(token_ids) >= 2
+
+    metrics = backend.score_reference_sequence(
+        baseline=baseline,
+        past=baseline.extras["past_key_values"],
+        reference_token_ids=token_ids,
+        probe_lengths=(1, 2),
+    )
+    logits = torch.tensor(baseline.logits[0], dtype=torch.float32)
+    expected_first_nll = float(-torch.log_softmax(logits, dim=-1)[token_ids[0]])
+
+    assert metrics["reference_probe_tokens"] == 2
+    assert metrics["reference_token_nll_1"] == pytest.approx(expected_first_nll, rel=1e-5)
+    assert np.isfinite(metrics["reference_token_nll_2"])
+    assert len(metrics["reference_token_nll_values"]) == 2
+
+
 def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     backend.configure_metrics(capture_attention=True)
