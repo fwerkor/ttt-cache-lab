@@ -26,7 +26,13 @@ def generate_window_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = _read_rows(input_csv)
     enriched = with_full_reference_metrics(rows)
-    window_rows = [row for row in enriched if row.get("cache_strategy") == "windowed_recompute"]
+    window_rows = [
+        row
+        for row in enriched
+        if row.get("cache_strategy") == "windowed_recompute"
+        and _number(row, "version_gap") > 0.0
+        and _window_size(row) > 0
+    ]
     cells = _aggregate(window_rows, thresholds=thresholds)
     cells_path = output_dir / "window_cells.csv"
     _write_rows(cells_path, cells)

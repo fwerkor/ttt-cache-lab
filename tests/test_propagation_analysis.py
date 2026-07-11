@@ -74,3 +74,63 @@ def test_propagation_analysis_detects_strong_decay(tmp_path: Path) -> None:
     assert profiles[0]["recovery_layer"] == "2"
     assert profiles[0]["recovered_before_end"] == "True"
     assert float(profiles[0]["tail_to_peak_ratio"]) == 0.05
+
+
+def test_propagation_analysis_labels_zero_gap_as_no_drift(tmp_path: Path) -> None:
+    input_csv = tmp_path / "zero.csv"
+    fieldnames = [
+        "sample_id",
+        "model_name",
+        "context_length",
+        "synthetic_difficulty",
+        "task_name",
+        "update_target",
+        "target_layer",
+        "adapter_version",
+        "cached_version",
+        "version_gap",
+        "configured_update_norm",
+        "layer_id",
+        "hidden_relative_error",
+        "hidden_cosine_distance",
+        "hidden_norm_ratio",
+        "key_relative_error",
+        "key_cosine_distance",
+        "value_relative_error",
+        "value_cosine_distance",
+    ]
+    rows = [
+        {
+            "sample_id": 0,
+            "model_name": "toy",
+            "context_length": 128,
+            "synthetic_difficulty": "easy",
+            "task_name": "passkey",
+            "update_target": "lora.k:1",
+            "target_layer": 1,
+            "adapter_version": 0,
+            "cached_version": 0,
+            "version_gap": 0,
+            "configured_update_norm": 0.01,
+            "layer_id": layer_id,
+            "hidden_relative_error": 0.0,
+            "hidden_cosine_distance": 0.0,
+            "hidden_norm_ratio": 1.0,
+            "key_relative_error": 0.0,
+            "key_cosine_distance": 0.0,
+            "value_relative_error": 0.0,
+            "value_cosine_distance": 0.0,
+        }
+        for layer_id in range(3)
+    ]
+    with input_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    _, profiles_path = generate_propagation_analysis(input_csv, tmp_path / "analysis")
+    with profiles_path.open("r", encoding="utf-8", newline="") as handle:
+        profiles = list(csv.DictReader(handle))
+    assert profiles[0]["profile"] == "no_drift"
+    assert profiles[0]["recovery_layer"] == "1"
+    assert profiles[0]["recovered_before_end"] == "True"

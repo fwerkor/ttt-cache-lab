@@ -102,7 +102,7 @@ def _build_profiles(
         tail = errors[-1]
         first = errors[0]
         threshold = peak * recovery_ratio
-        recovery_layer = -1
+        recovery_layer = target_layer if peak == 0.0 else -1
         if peak > 0.0:
             for index, _value in enumerate(errors):
                 if all(later <= threshold for later in errors[index:]):
@@ -126,13 +126,26 @@ def _build_profiles(
                 "recovery_ratio": recovery_ratio,
                 "recovery_layer": recovery_layer,
                 "recovered_before_end": recovery_layer >= 0,
-                "profile": _profile_label(tail_to_peak, peak_index, len(errors)),
+                "profile": _profile_label(
+                    tail_to_peak,
+                    peak_index,
+                    len(errors),
+                    peak=peak,
+                ),
             }
         )
     return profiles
 
 
-def _profile_label(tail_to_peak: float, peak_index: int, length: int) -> str:
+def _profile_label(
+    tail_to_peak: float,
+    peak_index: int,
+    length: int,
+    *,
+    peak: float,
+) -> str:
+    if peak == 0.0:
+        return "no_drift"
     if tail_to_peak <= 0.1:
         return "strong_decay"
     if tail_to_peak <= 0.5:

@@ -101,6 +101,32 @@ def test_window_analysis_selects_smallest_safe_window(tmp_path: Path) -> None:
                 "end_to_end_latency": 5.0,
             }
         )
+    zero_gap = {
+        **rows[0],
+        "adapter_version": 0,
+        "version_gap": 0,
+        "cache_strategy": "full_recompute",
+        "recompute_window_size": 0,
+        "task_score": 1.0,
+        "logits_kl": 0.0,
+        "top1_agreement": 1.0,
+        "false_safe": False,
+        "recompute_fraction": 1.0,
+        "flops_fraction": 1.0,
+        "end_to_end_latency": 10.0,
+    }
+    rows.extend(
+        [
+            zero_gap,
+            {
+                **zero_gap,
+                "cache_strategy": "windowed_recompute",
+                "recompute_fraction": 0.0,
+                "flops_fraction": 0.0,
+                "end_to_end_latency": 1.0,
+            },
+        ]
+    )
     with input_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
