@@ -1,0 +1,65 @@
+# Delta-correction quantization sweep
+
+## Question
+
+The existing all-layer LoRA experiments used a total update norm of `1e-5`. At BF16 cache precision, the direct K/V correction can be smaller than one representable cache step, making delta correction numerically indistinguishable from stale reuse. This sweep separates three effects:
+
+1. cache quantization loss;
+2. direct K/V weight-delta correction;
+3. hidden-state propagation after early or all-layer updates.
+
+## Experimental axes
+
+- Models: Qwen2.5-0.5B, 1.5B, and 7B.
+- Update norms: `1e-5` through `1e-2`, with the larger models using the informative subset.
+- Targets:
+  - all-layer `lora.k` and `lora.v`;
+  - final-layer `lora.k_late` and `lora.v_late`.
+- Strategies: full recompute, stale reuse, and direct delta correction.
+- Version gap: one update for the threshold scan.
+
+The final-layer targets are controls: their direct K/V correction is not followed by additional decoder layers, so a retained correction should be much closer to the full reference than an all-layer correction if propagation is the limiting factor.
+
+## Recorded diagnostics
+
+Every delta-correction record includes:
+
+- `delta_raw_l2`: L2 norm before cache-dtype quantization;
+- `delta_stored_l2`: L2 norm of the change actually stored in the cache;
+- `delta_raw_max_abs` and `delta_stored_max_abs`;
+- `delta_changed_fraction`: fraction of corrected K/V elements that changed after writing to cache dtype;
+- `delta_quantization_retention`: `stored_l2 / raw_l2`.
+
+The sweep summary additionally reports paired stale-versus-delta KL improvement and maintenance overhead.
+
+## Interpretation
+
+A delta result is considered numerically testable only after the stored correction is nontrivial. The primary evidence is the joint relationship between retention and quality:
+
+- low retention and identical stale/delta KL: quantization-limited;
+- high retention and late-layer improvement: direct correction works locally, while all-layer failure is propagation-limited;
+- high retention with no late-layer improvement: the direct correction implementation or underlying approximation remains inadequate;
+- quality improvement smaller than maintenance overhead: correct but not useful for the planner.
+
+No universal threshold is fixed in advance. The analysis reports the empirical transition and compares it across model size, target, and layer placement.
+
+## Reproduction
+
+Generate concrete configs:
+
+```bash
+python scripts/generate_delta_quantization_sweep.py
+```
+
+Run a generated config with the normal Ascend launcher:
+
+```bash
+bash scripts/run_ascend_e2_single.sh \
+  runs/delta_quantization_configs/qwen_0_5b/1em03.yaml
+```
+
+Aggregate completed runs:
+
+```bash
+python scripts/summarize_delta_quantization_sweep.py
+```
