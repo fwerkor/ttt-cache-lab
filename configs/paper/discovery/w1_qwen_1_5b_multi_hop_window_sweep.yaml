@@ -1,0 +1,88 @@
+name: paper-w1-qwen-1-5b-multi-hop-window
+output_dir: runs/paper/discovery/w1_qwen_1_5b_multi_hop_window
+base:
+  name: paper-w1-qwen-1-5b-multi-hop-window-base
+  output_dir: runs/paper/discovery/w1_qwen_1_5b_multi_hop_window/base
+  experiment_id: w1_finite_recompute_window
+  seed: 7
+  resume: true
+  checkpoint_each_target: true
+  model:
+    backend: hf
+    model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+    device: auto
+    torch_dtype: bfloat16
+    max_length: 4096
+    trust_remote_code: true
+    use_chat_template: true
+    parallelism: single
+    device_ids: []
+  data:
+    source: synthetic
+    task: multi_hop_tracing
+    benchmark_name: controlled-long-context
+    task_family: multi-hop
+    evaluation_partition: calibration
+    selection_seed: 2027
+    sample_offset: 0
+    num_samples: 8
+    context_length: 4096
+    answer_length: 4
+    max_generation_tokens: 32
+    synthetic_difficulty: easy
+    scorer: exact_match
+  updates:
+    targets:
+    - lora.q_early
+    step_count: 1
+    update_norm: 0.001
+  cache:
+    strategies:
+    - full_recompute
+    - stale_reuse
+    - windowed_recompute
+    - layerwise_recompute
+    recompute_window_size: 4
+    refresh_period: 4
+    update_norm_threshold: 0.01
+    version_gap_threshold: 8
+    oracle_kl_threshold: 0.05
+    oracle_top1_threshold: 0.99
+    oracle_task_drop_threshold: 0.01
+  metrics:
+    compute_tensor_metrics: true
+    compute_task_metrics: true
+    compute_attention_metrics: false
+    compute_layerwise_propagation_metrics: false
+    compute_flops_metrics: true
+  measurement:
+    warmup_runs: 0
+    timed_runs: 1
+    bootstrap_resamples: 2000
+    confidence_level: 0.95
+  adapter:
+    update_mode: lora_train
+    norm_control: target_l2
+    lora_rank: 8
+    lora_alpha: 16.0
+    learning_rate: 0.0002
+    train_steps_per_version: 1
+    freeze_base_model: true
+  version_steps:
+  - 1
+  - 4
+  - 16
+  cached_version: 0
+axes:
+- path: updates.targets
+  values:
+  - [lora.q_early]
+  - [lora.k_early]
+  - [lora.v_early]
+  - [lora.mlp_early]
+  - [lora.q_middle]
+  - [lora.mlp_middle]
+  - [lora.k_late]
+  - [lora.mlp_late]
+- path: cache.recompute_window_size
+  values: [1, 2, 4, 8, 16, 32]

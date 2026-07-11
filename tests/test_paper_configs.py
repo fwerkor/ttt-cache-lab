@@ -2,12 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ttt_cache_lab.configs import VersionedExperimentConfig
+from ttt_cache_lab.configs import VersionedExperimentConfig, VersionedSweepConfig
 from ttt_cache_lab.experiments.study import expand_study
 
 
+def _versioned_paper_paths() -> list[Path]:
+    return sorted(
+        path
+        for path in Path("configs/paper").glob("*/*.yaml")
+        if not path.name.endswith("_sweep.yaml")
+    )
+
+
+def _main_study_paths() -> list[Path]:
+    return [path for path in _versioned_paper_paths() if path.parent.name != "discovery"]
+
+
 def test_all_paper_configs_parse_and_use_fixed_dataset_selection() -> None:
-    paths = sorted(Path("configs/paper").glob("*/*.yaml"))
+    paths = _versioned_paper_paths()
     assert len(paths) >= 40
     configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
     assert all(config.data.evaluation_partition in {"calibration", "validation", "test"} for config in configs)
@@ -20,7 +32,7 @@ def test_all_paper_configs_parse_and_use_fixed_dataset_selection() -> None:
 
 
 def test_paper_matrix_contains_large_models_real_tasks_and_cache_pressure() -> None:
-    paths = sorted(Path("configs/paper").glob("*/*.yaml"))
+    paths = _versioned_paper_paths()
     configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
     model_names = {config.model.model_name_or_path for config in configs}
     assert "Qwen/Qwen2.5-7B-Instruct" in model_names
@@ -49,7 +61,7 @@ def test_controlled_calibration_covers_six_tasks_at_every_qwen_scale() -> None:
 
 
 def test_synthetic_paper_configs_use_explicit_nontruncating_generation_budgets() -> None:
-    paths = sorted(Path("configs/paper").glob("*/*.yaml"))
+    paths = _versioned_paper_paths()
     configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
     synthetic = [config for config in configs if config.data.source == "synthetic"]
     assert synthetic
@@ -147,9 +159,29 @@ def test_longbench_v2_partitions_are_disjoint_for_qwen_7b() -> None:
     assert sets[1].isdisjoint(sets[2])
 
 
+def test_discovery_gate_configs_cover_window_and_propagation_axes() -> None:
+    sweep_paths = sorted(Path("configs/paper/discovery").glob("w1_*_sweep.yaml"))
+    assert len(sweep_paths) == 2
+    sweeps = [VersionedSweepConfig.from_yaml(path) for path in sweep_paths]
+    assert all(len(sweep.expand()) == 48 for sweep in sweeps)
+    assert all("windowed_recompute" in sweep.base.cache.strategies for sweep in sweeps)
+    assert all(
+        {int(value) for axis in sweep.axes if axis.path == "cache.recompute_window_size" for value in axis.values}
+        == {1, 2, 4, 8, 16, 32}
+        for sweep in sweeps
+    )
+
+    propagation_paths = sorted(Path("configs/paper/discovery").glob("w2_*.yaml"))
+    assert len(propagation_paths) == 2
+    propagation = [VersionedExperimentConfig.from_yaml(path) for path in propagation_paths]
+    assert all(config.metrics.compute_layerwise_propagation_metrics for config in propagation)
+    assert all(config.metrics.propagation_probe_tokens == 32 for config in propagation)
+    assert all(len(config.updates.targets) == 8 for config in propagation)
+
+
 def test_study_manifest_expands_every_config_to_three_seeds() -> None:
     _, jobs = expand_study(Path("configs/paper/study.yaml"))
-    config_count = len(list(Path("configs/paper").glob("*/*.yaml")))
+    config_count = len(_main_study_paths())
     assert len(jobs) == config_count * 3
     assert {job.seed for job in jobs} == {7, 17, 29}
     dependent_stages = {"validation", "test", "delta", "scaling", "ablation", "workload"}

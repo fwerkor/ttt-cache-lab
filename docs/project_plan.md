@@ -290,6 +290,65 @@ There must be structured drift patterns. Useful expected patterns:
 
 If all targets drift identically, the planner idea is weak and the project direction should be reconsidered.
 
+## 8.5 Discovery gate W1/W2: finite propagation and minimum recompute windows
+
+The original E3 design only compares stale reuse, full recompute, and suffix recompute from the first affected layer to the model end. That matrix can produce a useful failure map, but it cannot establish the more novel claim that update effects decay after a bounded number of layers. Before expanding E3 to all large models, run two discovery experiments.
+
+### W1: finite recompute-window sweep
+
+For an update beginning at layer `s`, construct a mixed prefix cache:
+
+```text
+layers [0, s)       : reuse the cached-version K/V
+layers [s, e)       : recompute under the current parameters
+layers [e, L)       : reuse the cached-version K/V
+```
+
+The exclusive end layer `e` is swept through window sizes 1, 2, 4, 8, 16, and 32. Compare `windowed_recompute` with stale reuse, suffix `layerwise_recompute`, and full recompute. The first-stage matrix uses Qwen2.5-1.5B at 4K and Qwen2.5-7B at 8K, eight calibrated samples, Q/K/V/MLP updates at early, middle, and late positions, and version gaps 1, 4, and 16.
+
+Primary outputs:
+
+- safe-window rate across samples;
+- minimum window satisfying KL, top-1, task-drop, and false-safe thresholds;
+- latency/FLOP fraction of that window;
+- frequency with which no tested finite window is safe.
+
+Run:
+
+```bash
+python -m ttt_cache_lab.cli versioned-sweep \
+  --config configs/paper/discovery/w1_qwen_1_5b_multi_hop_window_sweep.yaml
+python -m ttt_cache_lab.cli window-analysis \
+  --input runs/paper/discovery/w1_qwen_1_5b_multi_hop_window/merged_records.csv \
+  --output-dir runs/paper/discovery/w1_qwen_1_5b_multi_hop_window/analysis
+```
+
+### W2: layerwise propagation probe
+
+At each selected version, compare the cached-version and current full-recompute states at every decoder layer. Record sampled-token hidden-state, K, and V relative error, cosine distance, and norm ratio. The probe samples a fixed number of token positions on device instead of copying complete long-context activations to the host.
+
+Primary outputs:
+
+- drift curves by layer;
+- peak drift layer;
+- tail-to-peak ratio;
+- first layer after which drift remains below a fixed fraction of the peak;
+- profile label: strong decay, partial decay, persistent, or late amplification.
+
+Run:
+
+```bash
+python -m ttt_cache_lab.cli versioned-run \
+  --config configs/paper/discovery/w2_qwen_1_5b_propagation.yaml
+python -m ttt_cache_lab.cli propagation-analysis \
+  --input runs/paper/discovery/w2_qwen_1_5b_propagation/propagation_records.csv \
+  --output-dir runs/paper/discovery/w2_qwen_1_5b_propagation/analysis
+```
+
+### Go/no-go rule
+
+Proceed to a learned or threshold-based window predictor only if W1 finds finite windows materially shorter than suffix recompute in a nontrivial fraction of conditions and W2 shows a reproducible decay or recovery pattern. If most conditions require recomputation to the model end and propagation remains persistent, retain E3 as a negative measurement study but do not position finite-window planning as the main contribution.
+
 ## 9. Experiment E3: update-target x version-gap failure map
 
 ### Purpose

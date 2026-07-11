@@ -9,6 +9,7 @@ from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperi
 from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
 from ttt_cache_lab.experiments.failures import capture_run_failure
 from ttt_cache_lab.experiments.pareto import generate_pareto
+from ttt_cache_lab.experiments.propagation_analysis import generate_propagation_analysis
 from ttt_cache_lab.experiments.report import generate_report
 from ttt_cache_lab.experiments.results import merge_record_files
 from ttt_cache_lab.experiments.runner import ExperimentRunner
@@ -25,6 +26,7 @@ from ttt_cache_lab.experiments.summarize import (
 from ttt_cache_lab.experiments.sweep import run_sweep, run_versioned_sweep
 from ttt_cache_lab.experiments.task_probe import run_task_probe
 from ttt_cache_lab.experiments.versioned import VersionedExperimentRunner, write_version_summary
+from ttt_cache_lab.experiments.window_analysis import WindowThresholds, generate_window_analysis
 from ttt_cache_lab.updates.targets import ModuleKind
 
 console = Console()
@@ -94,6 +96,25 @@ def build_parser() -> argparse.ArgumentParser:
     pareto = subparsers.add_parser("pareto", help="Generate E4 quality-cost Pareto table")
     pareto.add_argument("--input", required=True, type=Path)
     pareto.add_argument("--output-dir", required=True, type=Path)
+
+    window_analysis = subparsers.add_parser(
+        "window-analysis",
+        help="Aggregate finite recompute-window sweeps and select minimum safe windows",
+    )
+    window_analysis.add_argument("--input", required=True, type=Path)
+    window_analysis.add_argument("--output-dir", required=True, type=Path)
+    window_analysis.add_argument("--safe-kl", type=float, default=0.05)
+    window_analysis.add_argument("--safe-top1", type=float, default=0.99)
+    window_analysis.add_argument("--safe-task-drop", type=float, default=0.01)
+    window_analysis.add_argument("--min-safe-rate", type=float, default=0.95)
+
+    propagation_analysis = subparsers.add_parser(
+        "propagation-analysis",
+        help="Aggregate layerwise propagation records into drift profiles",
+    )
+    propagation_analysis.add_argument("--input", required=True, type=Path)
+    propagation_analysis.add_argument("--output-dir", required=True, type=Path)
+    propagation_analysis.add_argument("--recovery-ratio", type=float, default=0.1)
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -254,6 +275,29 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "pareto":
         pareto_csv = generate_pareto(args.input, args.output_dir)
         console.print(f"Wrote {pareto_csv}")
+        return
+    if args.command == "window-analysis":
+        cells, minima = generate_window_analysis(
+            args.input,
+            args.output_dir,
+            thresholds=WindowThresholds(
+                safe_kl=args.safe_kl,
+                safe_top1=args.safe_top1,
+                safe_task_drop=args.safe_task_drop,
+                min_safe_rate=args.min_safe_rate,
+            ),
+        )
+        console.print(f"Wrote {cells}")
+        console.print(f"Wrote {minima}")
+        return
+    if args.command == "propagation-analysis":
+        layers, profiles = generate_propagation_analysis(
+            args.input,
+            args.output_dir,
+            recovery_ratio=args.recovery_ratio,
+        )
+        console.print(f"Wrote {layers}")
+        console.print(f"Wrote {profiles}")
         return
     if args.command == "statistics":
         outputs = generate_statistical_report(

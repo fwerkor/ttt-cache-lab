@@ -52,6 +52,8 @@ E3 uses model-calibrated contexts and semantic difficulty rather than forcing th
 
 These settings are selected only from baseline task-viability probes. They are fixed before versioned cache experiments and remain explicit record dimensions through `context_length` and `synthetic_difficulty`; results from different cells must not be pooled as if they were the same workload.
 
+Before expanding E3 beyond the ongoing Qwen2.5-1.5B calibration, W1 and W2 form a discovery gate. W1 sweeps finite recompute windows and selects the smallest interval that is safe across samples; W2 records per-layer hidden/K/V drift and classifies whether propagation decays, persists, or amplifies. These experiments use calibration samples only. The 14B/32B E3 expansion and any learned window predictor proceed only if bounded windows materially outperform suffix recompute and the layerwise profiles show a reproducible recovery pattern. Otherwise the finite-window hypothesis is reported as a negative result and the main study remains a failure-boundary measurement.
+
 ### 3.2 Real long-context tasks
 
 The primary realistic benchmark is LongBench v2. Its multiple-choice schema gives deterministic automatic scoring while covering document QA, multi-document QA, long in-context learning, dialogue history, code-repository understanding, and structured-data understanding.
