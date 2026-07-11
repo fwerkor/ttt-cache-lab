@@ -33,6 +33,17 @@ METRIC_FIELDS = (
     "suffix_attention_input_relative_error_max",
     "suffix_attention_input_relative_error_last",
     "suffix_amplification_ratio",
+    "online_stale_probe_logits_kl",
+    "online_stale_probe_top1_disagreement",
+    "online_stale_attention_output_boundary_relative_error",
+    "online_stale_suffix_attention_js_mean",
+    "online_stale_suffix_attention_js_max",
+    "online_stale_suffix_attention_output_relative_error_mean",
+    "online_stale_suffix_attention_output_relative_error_max",
+    "online_stale_suffix_attention_output_relative_error_last",
+    "online_stale_suffix_attention_input_relative_error_mean",
+    "online_stale_suffix_attention_input_relative_error_max",
+    "online_stale_suffix_attention_input_relative_error_last",
 )
 
 PREDICTOR_FEATURES = (
@@ -54,6 +65,21 @@ PREDICTOR_FEATURES = (
     "suffix_attention_input_relative_error_max",
     "suffix_attention_input_relative_error_last",
     "suffix_amplification_ratio",
+    "recompute_fraction",
+)
+
+ONLINE_PREDICTOR_FEATURES = (
+    "online_stale_probe_logits_kl",
+    "online_stale_probe_top1_disagreement",
+    "online_stale_attention_output_boundary_relative_error",
+    "online_stale_suffix_attention_js_mean",
+    "online_stale_suffix_attention_js_max",
+    "online_stale_suffix_attention_output_relative_error_mean",
+    "online_stale_suffix_attention_output_relative_error_max",
+    "online_stale_suffix_attention_output_relative_error_last",
+    "online_stale_suffix_attention_input_relative_error_mean",
+    "online_stale_suffix_attention_input_relative_error_max",
+    "online_stale_suffix_attention_input_relative_error_last",
     "recompute_fraction",
 )
 
@@ -88,7 +114,20 @@ def generate_boundary_analysis(
     _write_rows(metric_evaluation_path, metric_rows)
     _write_rows(group_selections_path, selection_rows)
 
-    predictor_rows = _leave_one_sample_out_predictor(enriched, ridge=ridge)
+    predictor_rows = [
+        *_leave_one_sample_out_predictor(
+            enriched,
+            ridge=ridge,
+            feature_fields=PREDICTOR_FEATURES,
+            predictor_name="ridge_log_kl_leave_one_sample_out_diagnostic",
+        ),
+        *_leave_one_sample_out_predictor(
+            enriched,
+            ridge=ridge,
+            feature_fields=ONLINE_PREDICTOR_FEATURES,
+            predictor_name="ridge_log_kl_leave_one_sample_out_online",
+        ),
+    ]
     predictor_summary_path = output_dir / "boundary_predictor_summary.csv"
     _write_rows(predictor_summary_path, predictor_rows)
     (output_dir / "boundary_analysis.md").write_text(
@@ -127,6 +166,9 @@ def _enrich(
             row, "attention_top8_overlap"
         )
         item["attention_topk_distance"] = 1.0 - _number(row, "attention_topk_overlap")
+        item["online_stale_probe_top1_disagreement"] = 1.0 - _number(
+            row, "online_stale_probe_top1_agreement"
+        )
         reference = stale.get(_boundary_key(row))
         stale_kl = _number(reference, "logits_kl") if reference is not None else math.nan
         stale_top1 = (
@@ -264,12 +306,14 @@ def _leave_one_sample_out_predictor(
     rows: list[dict[str, str | int | float | bool]],
     *,
     ridge: float,
+    feature_fields: tuple[str, ...],
+    predictor_name: str,
 ) -> list[dict[str, str | int | float | bool]]:
     sample_ids = sorted({_sample_key(row) for row in rows})
     if len(sample_ids) < 2:
         return [
             {
-                "predictor": "ridge_log_kl_leave_one_sample_out",
+                "predictor": predictor_name,
                 "status": "insufficient_samples",
                 "held_out_sample_count": len(sample_ids),
                 "group_count": 0,
@@ -288,7 +332,7 @@ def _leave_one_sample_out_predictor(
         test = [row for row in rows if _sample_key(row) == held_out]
         if not train or not test:
             continue
-        x_train = _feature_matrix(train)
+        x_train = _feature_matrix(train, feature_fields=feature_fields)
         y_train = np.log(np.asarray([_numeric(row, "logits_kl") for row in train]) + 1e-8)
         mean = x_train.mean(axis=0)
         std = x_train.std(axis=0)
@@ -298,7 +342,7 @@ def _leave_one_sample_out_predictor(
         penalty = np.eye(design.shape[1], dtype=np.float64) * ridge
         penalty[0, 0] = 0.0
         coefficients = np.linalg.solve(design.T @ design + penalty, design.T @ y_train)
-        x_test = (_feature_matrix(test) - mean) / std
+        x_test = (_feature_matrix(test, feature_fields=feature_fields) - mean) / std
         predicted = np.column_stack([np.ones(len(x_test)), x_test]) @ coefficients
         for row, value in zip(test, predicted, strict=True):
             predictions.append({**row, "predicted_log_kl": float(value)})
@@ -334,12 +378,12 @@ def _leave_one_sample_out_predictor(
     count = len(groups)
     return [
         {
-            "predictor": "ridge_log_kl_leave_one_sample_out",
+            "predictor": predictor_name,
             "status": "ok" if count else "no_groups",
             "held_out_sample_count": len(sample_ids),
             "group_count": count,
-            "feature_count": len(PREDICTOR_FEATURES),
-            "features": ";".join(PREDICTOR_FEATURES),
+            "feature_count": len(feature_fields),
+            "features": ";".join(feature_fields),
             "ridge": ridge,
             "oracle_window_hit_rate": oracle_hits / count if count else math.nan,
             "beneficial_selection_rate": beneficial_hits / count if count else math.nan,
@@ -394,9 +438,13 @@ def _metric_selector(
     return select
 
 
-def _feature_matrix(rows: list[dict[str, str | int | float | bool]]) -> np.ndarray:
+def _feature_matrix(
+    rows: list[dict[str, str | int | float | bool]],
+    *,
+    feature_fields: tuple[str, ...],
+) -> np.ndarray:
     return np.asarray(
-        [[_numeric(row, field) for field in PREDICTOR_FEATURES] for row in rows],
+        [[_numeric(row, field) for field in feature_fields] for row in rows],
         dtype=np.float64,
     )
 

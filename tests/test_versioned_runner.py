@@ -467,9 +467,15 @@ def test_versioned_runner_writes_boundary_compatibility_sidecar(tmp_path: Path) 
     assert {record.boundary_layer for record in records} == {2, 3}
     assert all(record.has_stale_rejoin for record in records)
     assert all(record.metric_available for record in records)
+    assert all(record.online_metric_available for record in records)
     assert all(record.attention_kl >= 0.0 for record in records)
     assert all(record.attention_output_relative_error >= 0.0 for record in records)
     assert all(record.attention_weighted_key_relative_error >= 0.0 for record in records)
+    assert all(record.online_stale_probe_logits_kl >= 0.0 for record in records)
+    assert all(
+        record.online_stale_suffix_attention_output_relative_error_mean >= 0.0
+        for record in records
+    )
 
 
 def test_versioned_runner_writes_layerwise_propagation_sidecar(tmp_path: Path) -> None:

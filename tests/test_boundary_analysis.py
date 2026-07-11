@@ -111,7 +111,16 @@ def test_boundary_analysis_ranks_rejoin_windows_and_cross_validates(tmp_path: Pa
     assert float(shortest["oracle_window_hit_rate"]) < 1.0
     assert float(shortest["mean_kl_regret"]) > 0.0
 
-    predictor = _read(artifacts.predictor_summary_path)[0]
+    predictors = _read(artifacts.predictor_summary_path)
+    assert {row["predictor"] for row in predictors} == {
+        "ridge_log_kl_leave_one_sample_out_diagnostic",
+        "ridge_log_kl_leave_one_sample_out_online",
+    }
+    predictor = next(
+        row
+        for row in predictors
+        if row["predictor"] == "ridge_log_kl_leave_one_sample_out_diagnostic"
+    )
     assert predictor["status"] == "ok"
     assert int(predictor["held_out_sample_count"]) == 3
     assert float(predictor["oracle_window_hit_rate"]) == 1.0

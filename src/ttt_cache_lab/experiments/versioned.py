@@ -481,6 +481,7 @@ class VersionedExperimentRunner:
             if self.config.metrics.compute_task_metrics
             else 0.0
         )
+        stale_probe_output: BackendOutput | None = None
         for strategy in strategies:
             cache_key = str(strategy.name)
             cached = strategy_caches[cache_key]
@@ -581,6 +582,8 @@ class VersionedExperimentRunner:
                 fallback_latency=fallback_latency,
             )
             approx = measurement.output
+            if strategy.name is StrategyName.STALE_REUSE:
+                stale_probe_output = approx
             new_refresh_count = cached.refresh_count + (1 if is_refresh_action(decision) else 0)
             block_state = (
                 CacheBlockState.VALID_EXACT
@@ -712,6 +715,7 @@ class VersionedExperimentRunner:
                         baseline_output,
                         full,
                         approx,
+                        stale_probe_output,
                         sample_id=sample_id,
                         dataset_sample_id=str(
                             sample.metadata.get("dataset_sample_id", sample_id)

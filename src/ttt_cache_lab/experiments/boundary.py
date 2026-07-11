@@ -64,6 +64,18 @@ class BoundaryRecord:
     suffix_attention_input_relative_error_max: float
     suffix_attention_input_relative_error_last: float
     suffix_amplification_ratio: float
+    online_stale_probe_logits_kl: float
+    online_stale_probe_top1_agreement: float
+    online_stale_attention_output_boundary_relative_error: float
+    online_stale_suffix_attention_js_mean: float
+    online_stale_suffix_attention_js_max: float
+    online_stale_suffix_attention_output_relative_error_mean: float
+    online_stale_suffix_attention_output_relative_error_max: float
+    online_stale_suffix_attention_output_relative_error_last: float
+    online_stale_suffix_attention_input_relative_error_mean: float
+    online_stale_suffix_attention_input_relative_error_max: float
+    online_stale_suffix_attention_input_relative_error_last: float
+    online_metric_available: bool
     metric_available: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -96,6 +108,7 @@ def collect_boundary_record(
     baseline: BackendOutput,
     full: BackendOutput,
     approx: BackendOutput,
+    stale: BackendOutput | None,
     *,
     sample_id: int,
     dataset_sample_id: str,
@@ -148,6 +161,18 @@ def collect_boundary_record(
     suffix_attention_input_relative_error_max = 0.0
     suffix_attention_input_relative_error_last = 0.0
     suffix_amplification_ratio = 0.0
+    online_stale_probe_logits_kl = 0.0
+    online_stale_probe_top1_agreement = 0.0
+    online_stale_attention_output_boundary_relative_error = 0.0
+    online_stale_suffix_attention_js_mean = 0.0
+    online_stale_suffix_attention_js_max = 0.0
+    online_stale_suffix_attention_output_relative_error_mean = 0.0
+    online_stale_suffix_attention_output_relative_error_max = 0.0
+    online_stale_suffix_attention_output_relative_error_last = 0.0
+    online_stale_suffix_attention_input_relative_error_mean = 0.0
+    online_stale_suffix_attention_input_relative_error_max = 0.0
+    online_stale_suffix_attention_input_relative_error_last = 0.0
+    online_metric_available = False
     metric_available = False
 
     if has_stale_rejoin:
@@ -242,6 +267,62 @@ def collect_boundary_record(
             / max(attention_output_relative_error, 1e-12)
         )
 
+        if stale is not None:
+            online_stale_probe_logits_kl = _logits_kl(stale.logits, approx.logits)
+            online_stale_probe_top1_agreement = float(
+                int(np.argmax(stale.logits) == np.argmax(approx.logits))
+            )
+            stale_boundary_output = _layer_array(
+                stale, "attention_output_summary", clamped_boundary
+            )
+            if (
+                stale_boundary_output is not None
+                and approx_attention_output is not None
+            ):
+                online_stale_attention_output_boundary_relative_error, _ = (
+                    _vector_metrics(stale_boundary_output, approx_attention_output)
+                )
+                online_metric_available = True
+            online_stale_suffix_js = _suffix_distribution_metric(
+                stale,
+                approx,
+                name="attention_summary",
+                start_layer=clamped_boundary,
+                metric="js",
+            )
+            online_stale_suffix_outputs = _suffix_vector_relative_errors(
+                stale,
+                approx,
+                name="attention_output_summary",
+                start_layer=clamped_boundary,
+            )
+            online_stale_suffix_inputs = _suffix_vector_relative_errors(
+                stale,
+                approx,
+                name="attention_input_summary",
+                start_layer=clamped_boundary,
+            )
+            (
+                online_stale_suffix_attention_js_mean,
+                online_stale_suffix_attention_js_max,
+                _,
+            ) = _summary_metrics(online_stale_suffix_js)
+            (
+                online_stale_suffix_attention_output_relative_error_mean,
+                online_stale_suffix_attention_output_relative_error_max,
+                online_stale_suffix_attention_output_relative_error_last,
+            ) = _summary_metrics(online_stale_suffix_outputs)
+            (
+                online_stale_suffix_attention_input_relative_error_mean,
+                online_stale_suffix_attention_input_relative_error_max,
+                online_stale_suffix_attention_input_relative_error_last,
+            ) = _summary_metrics(online_stale_suffix_inputs)
+            online_metric_available = online_metric_available or bool(
+                online_stale_suffix_js
+                or online_stale_suffix_outputs
+                or online_stale_suffix_inputs
+            )
+
         baseline_cache = _cache_layers(baseline)
         full_cache = _cache_layers(full)
         if clamped_boundary < min(len(baseline_cache), len(full_cache)):
@@ -318,6 +399,36 @@ def collect_boundary_record(
             suffix_attention_input_relative_error_last
         ),
         suffix_amplification_ratio=suffix_amplification_ratio,
+        online_stale_probe_logits_kl=online_stale_probe_logits_kl,
+        online_stale_probe_top1_agreement=online_stale_probe_top1_agreement,
+        online_stale_attention_output_boundary_relative_error=(
+            online_stale_attention_output_boundary_relative_error
+        ),
+        online_stale_suffix_attention_js_mean=(
+            online_stale_suffix_attention_js_mean
+        ),
+        online_stale_suffix_attention_js_max=(
+            online_stale_suffix_attention_js_max
+        ),
+        online_stale_suffix_attention_output_relative_error_mean=(
+            online_stale_suffix_attention_output_relative_error_mean
+        ),
+        online_stale_suffix_attention_output_relative_error_max=(
+            online_stale_suffix_attention_output_relative_error_max
+        ),
+        online_stale_suffix_attention_output_relative_error_last=(
+            online_stale_suffix_attention_output_relative_error_last
+        ),
+        online_stale_suffix_attention_input_relative_error_mean=(
+            online_stale_suffix_attention_input_relative_error_mean
+        ),
+        online_stale_suffix_attention_input_relative_error_max=(
+            online_stale_suffix_attention_input_relative_error_max
+        ),
+        online_stale_suffix_attention_input_relative_error_last=(
+            online_stale_suffix_attention_input_relative_error_last
+        ),
+        online_metric_available=online_metric_available,
         metric_available=metric_available,
     )
 
@@ -365,6 +476,32 @@ def read_boundary_records(path: Path) -> list[BoundaryRecord]:
             payload.setdefault("suffix_attention_input_relative_error_max", 0.0)
             payload.setdefault("suffix_attention_input_relative_error_last", 0.0)
             payload.setdefault("suffix_amplification_ratio", 0.0)
+            payload.setdefault("online_stale_probe_logits_kl", 0.0)
+            payload.setdefault("online_stale_probe_top1_agreement", 0.0)
+            payload.setdefault(
+                "online_stale_attention_output_boundary_relative_error", 0.0
+            )
+            payload.setdefault("online_stale_suffix_attention_js_mean", 0.0)
+            payload.setdefault("online_stale_suffix_attention_js_max", 0.0)
+            payload.setdefault(
+                "online_stale_suffix_attention_output_relative_error_mean", 0.0
+            )
+            payload.setdefault(
+                "online_stale_suffix_attention_output_relative_error_max", 0.0
+            )
+            payload.setdefault(
+                "online_stale_suffix_attention_output_relative_error_last", 0.0
+            )
+            payload.setdefault(
+                "online_stale_suffix_attention_input_relative_error_mean", 0.0
+            )
+            payload.setdefault(
+                "online_stale_suffix_attention_input_relative_error_max", 0.0
+            )
+            payload.setdefault(
+                "online_stale_suffix_attention_input_relative_error_last", 0.0
+            )
+            payload.setdefault("online_metric_available", False)
             records.append(BoundaryRecord(**payload))
     return records
 
@@ -500,6 +637,25 @@ def _topk_overlap(left: np.ndarray, right: np.ndarray, topk: int) -> float:
     left_top = set(np.argpartition(left, -k)[-k:].tolist())
     right_top = set(np.argpartition(right, -k)[-k:].tolist())
     return len(left_top & right_top) / k
+
+
+def _logits_kl(reference: Any, candidate: Any) -> float:
+    left = np.asarray(_to_numpy(reference), dtype=np.float64).reshape(-1)
+    right = np.asarray(_to_numpy(candidate), dtype=np.float64).reshape(-1)
+    size = min(left.size, right.size)
+    if size == 0:
+        return 0.0
+    left = left[:size] - np.max(left[:size])
+    right = right[:size] - np.max(right[:size])
+    left_probability = np.exp(left)
+    right_probability = np.exp(right)
+    left_probability /= max(float(left_probability.sum()), 1e-12)
+    right_probability /= max(float(right_probability.sum()), 1e-12)
+    left_probability = np.clip(left_probability, 1e-12, None)
+    right_probability = np.clip(right_probability, 1e-12, None)
+    return float(
+        np.sum(left_probability * np.log(left_probability / right_probability))
+    )
 
 
 def _vector_metrics(reference: Any, candidate: Any) -> tuple[float, float]:
