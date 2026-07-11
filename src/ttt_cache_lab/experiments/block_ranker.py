@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,6 +20,8 @@ FEATURE_NAMES = (
     "token_length_fraction",
     "layer_fraction",
 )
+RANK_FEATURE_NAMES = FEATURE_NAMES[:5]
+RANK_FUSION_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 
 def fit_block_ranker(
@@ -47,14 +49,15 @@ def fit_block_ranker(
     labels = _oracle_frequency_labels(feature_rows, oracle_masks)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in feature_rows:
-        key = _condition_key(row)
+        condition = _condition_key(row)
         cell = (int(row["layer"]), int(row["token_block"]))
         grouped[row["update_target"]].append(
             {
-                "condition": key,
+                "condition": condition,
                 "cell": cell,
+                "center": float(row["token_center_fraction"]),
                 "x": _feature_vector(row),
-                "y": labels.get((key, cell), 0.0),
+                "y": labels.get((condition, cell), 0.0),
             }
         )
 
@@ -66,14 +69,33 @@ def fit_block_ranker(
         groups = [str(item["condition"][0]) for item in items]
         ridge, cv_mse = _choose_ridge(x, y, groups, ridge_values)
         mean, scale, intercept, weights = _fit_standardized_ridge(x, y, ridge)
+        ridge_overlap = _ridge_cv_overlap(items, oracle_masks, ridge)
+        fusion_feature, fusion_weight, fusion_overlap = _choose_rank_fusion(
+            items, oracle_masks
+        )
+        position_prior = _position_prior(items)
+        selected_mode = (
+            "rank_fusion"
+            if fusion_overlap >= ridge_overlap - 1e-15
+            else "ridge"
+        )
         models[target] = {
             "feature_names": list(FEATURE_NAMES),
+            "selected_mode": selected_mode,
             "mean": mean.tolist(),
             "scale": scale.tolist(),
             "intercept": float(intercept),
             "weights": weights.tolist(),
             "ridge": float(ridge),
             "grouped_cv_mse": float(cv_mse),
+            "ridge_cv_oracle_overlap": float(ridge_overlap),
+            "rank_fusion_feature": fusion_feature,
+            "rank_fusion_prior_weight": float(fusion_weight),
+            "rank_fusion_cv_oracle_overlap": float(fusion_overlap),
+            "position_prior": {
+                _center_key(center): float(value)
+                for center, value in sorted(position_prior.items())
+            },
             "training_cells": int(len(items)),
             "training_conditions": int(len(set(item["condition"] for item in items))),
             "default_count": int(default_budgets.get(target, 0)),
@@ -86,7 +108,9 @@ def fit_block_ranker(
         "training_inputs": [str(path) for path in input_dirs],
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return output_path
 
 
@@ -112,12 +136,35 @@ def score_block_features(
     model = models.get(update_target)
     if not isinstance(model, dict):
         raise ValueError(f"Block ranker has no model for update target {update_target!r}")
+    if not feature_rows:
+        raise ValueError("At least one block feature row is required")
     x = np.stack([_feature_vector(row) for row in feature_rows], axis=0)
-    mean = np.asarray(model["mean"], dtype=np.float64)
-    scale = np.asarray(model["scale"], dtype=np.float64)
-    weights = np.asarray(model["weights"], dtype=np.float64)
-    standardized = (x - mean) / scale
-    scores = float(model["intercept"]) + standardized @ weights
+    selected_mode = str(model.get("selected_mode", "ridge"))
+    if selected_mode == "rank_fusion":
+        feature_name = str(model["rank_fusion_feature"])
+        try:
+            feature_index = FEATURE_NAMES.index(feature_name)
+        except ValueError as error:
+            raise ValueError(f"Unknown rank-fusion feature {feature_name!r}") from error
+        feature_scores = x[:, feature_index]
+        prior_scores = _lookup_position_prior(
+            model.get("position_prior", {}),
+            [float(row.get("token_center_fraction", 0.0)) for row in feature_rows],
+        )
+        prior_weight = float(model.get("rank_fusion_prior_weight", 0.0))
+        scores = _rank_fusion_scores(
+            prior_scores,
+            feature_scores,
+            prior_weight=prior_weight,
+        )
+    elif selected_mode == "ridge":
+        mean = np.asarray(model["mean"], dtype=np.float64)
+        scale = np.asarray(model["scale"], dtype=np.float64)
+        weights = np.asarray(model["weights"], dtype=np.float64)
+        standardized = (x - mean) / scale
+        scores = float(model["intercept"]) + standardized @ weights
+    else:
+        raise ValueError(f"Unsupported block ranker mode {selected_mode!r}")
     return np.asarray(scores, dtype=np.float64), int(model.get("default_count", 0))
 
 
@@ -189,6 +236,147 @@ def _fit_standardized_ridge(
     return mean, scale, float(coefficients[0]), coefficients[1:]
 
 
+def _ridge_cv_overlap(
+    items: list[dict[str, Any]],
+    oracle_masks: dict[tuple[tuple[str, ...], int], set[tuple[int, int]]],
+    ridge: float,
+) -> float:
+    conditions = sorted(set(item["condition"] for item in items))
+    if len(conditions) < 2:
+        return math.nan
+    overlaps: list[float] = []
+    for held_out in conditions:
+        train_items = [item for item in items if item["condition"] != held_out]
+        test_items = [item for item in items if item["condition"] == held_out]
+        train_x = np.stack([item["x"] for item in train_items], axis=0)
+        train_y = np.asarray([item["y"] for item in train_items], dtype=np.float64)
+        mean, scale, intercept, weights = _fit_standardized_ridge(
+            train_x, train_y, ridge
+        )
+        test_x = np.stack([item["x"] for item in test_items], axis=0)
+        scores = intercept + ((test_x - mean) / scale) @ weights
+        overlaps.extend(
+            _condition_oracle_overlaps(test_items, scores, oracle_masks)
+        )
+    return float(np.mean(overlaps)) if overlaps else math.nan
+
+
+def _choose_rank_fusion(
+    items: list[dict[str, Any]],
+    oracle_masks: dict[tuple[tuple[str, ...], int], set[tuple[int, int]]],
+) -> tuple[str, float, float]:
+    conditions = sorted(set(item["condition"] for item in items))
+    if len(conditions) < 2:
+        return "log_input_weight_bound", 0.0, math.nan
+    best_feature = "log_input_weight_bound"
+    best_weight = 0.0
+    best_overlap = -math.inf
+    for feature_name in RANK_FEATURE_NAMES:
+        feature_index = FEATURE_NAMES.index(feature_name)
+        for prior_weight in RANK_FUSION_WEIGHTS:
+            overlaps: list[float] = []
+            for held_out in conditions:
+                train_items = [item for item in items if item["condition"] != held_out]
+                test_items = [item for item in items if item["condition"] == held_out]
+                prior = _position_prior(train_items)
+                prior_scores = np.asarray(
+                    [
+                        _nearest_prior(prior, float(item["center"]))
+                        for item in test_items
+                    ],
+                    dtype=np.float64,
+                )
+                feature_scores = np.asarray(
+                    [float(item["x"][feature_index]) for item in test_items],
+                    dtype=np.float64,
+                )
+                scores = _rank_fusion_scores(
+                    prior_scores,
+                    feature_scores,
+                    prior_weight=prior_weight,
+                )
+                overlaps.extend(
+                    _condition_oracle_overlaps(test_items, scores, oracle_masks)
+                )
+            overlap = float(np.mean(overlaps)) if overlaps else -math.inf
+            candidate = (overlap, -prior_weight, feature_name)
+            incumbent = (best_overlap, -best_weight, best_feature)
+            if candidate > incumbent:
+                best_feature = feature_name
+                best_weight = prior_weight
+                best_overlap = overlap
+    return best_feature, best_weight, best_overlap
+
+
+def _condition_oracle_overlaps(
+    items: list[dict[str, Any]],
+    scores: np.ndarray,
+    oracle_masks: dict[tuple[tuple[str, ...], int], set[tuple[int, int]]],
+) -> list[float]:
+    if not items:
+        return []
+    condition = cast(tuple[str, ...], items[0]["condition"])
+    cells = [cast(tuple[int, int], item["cell"]) for item in items]
+    order = np.argsort(-scores, kind="mergesort")
+    counts = sorted(count for key, count in oracle_masks if key == condition)
+    overlaps: list[float] = []
+    for count in counts:
+        oracle = oracle_masks[(condition, count)]
+        selected = {cells[index] for index in order[:count]}
+        overlaps.append(len(selected & oracle) / max(count, 1))
+    return overlaps
+
+
+def _position_prior(items: list[dict[str, Any]]) -> dict[float, float]:
+    grouped: dict[float, list[float]] = defaultdict(list)
+    for item in items:
+        grouped[round(float(item["center"]), 12)].append(float(item["y"]))
+    return {center: float(np.mean(values)) for center, values in grouped.items()}
+
+
+def _center_key(center: float) -> str:
+    return f"{round(center, 12):.12g}"
+
+
+def _lookup_position_prior(
+    raw_prior: Any,
+    centers: list[float],
+) -> np.ndarray:
+    if not isinstance(raw_prior, dict) or not raw_prior:
+        return np.zeros(len(centers), dtype=np.float64)
+    prior = {float(key): float(value) for key, value in raw_prior.items()}
+    return np.asarray(
+        [_nearest_prior(prior, center) for center in centers], dtype=np.float64
+    )
+
+
+def _nearest_prior(prior: dict[float, float], center: float) -> float:
+    if not prior:
+        return 0.0
+    nearest = min(prior, key=lambda candidate: abs(candidate - center))
+    return prior[nearest]
+
+
+def _descending_ranks(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(-values, kind="mergesort")
+    ranks = np.empty(len(values), dtype=np.float64)
+    ranks[order] = np.arange(len(values), dtype=np.float64)
+    return ranks
+
+
+def _rank_fusion_scores(
+    prior_scores: np.ndarray,
+    feature_scores: np.ndarray,
+    *,
+    prior_weight: float,
+) -> np.ndarray:
+    prior_ranks = _descending_ranks(prior_scores)
+    feature_ranks = _descending_ranks(feature_scores)
+    return -(
+        prior_weight * prior_ranks + (1.0 - prior_weight) * feature_ranks
+    )
+
+
 def _oracle_masks(
     rows: list[dict[str, str]],
 ) -> dict[tuple[tuple[str, ...], int], set[tuple[int, int]]]:
@@ -243,21 +431,33 @@ def _default_budgets(rows: list[dict[str, str]]) -> dict[str, int]:
     for row in rows:
         if row.get("selector") in {"stale", "sparse_delta_oracle"}:
             grouped[_condition_key(row)].append(row)
-    by_target: dict[str, list[int]] = defaultdict(list)
+
+    gains_by_target: dict[str, dict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for condition, candidates in grouped.items():
-        if not candidates:
+        stale_rows = [row for row in candidates if row.get("selector") == "stale"]
+        if not stale_rows:
             continue
-        best = min(
-            candidates,
-            key=lambda row: (float(row["logits_kl"]), int(row.get("selected_cells", 0))),
-        )
-        by_target[condition[1]].append(int(best.get("selected_cells", 0)))
+        stale_kl = float(stale_rows[0]["logits_kl"])
+        denominator = max(abs(stale_kl), 1e-12)
+        gains_by_target[condition[1]][0].append(0.0)
+        for row in candidates:
+            if row.get("selector") != "sparse_delta_oracle":
+                continue
+            count = int(row.get("selected_cells", 0))
+            gain = (stale_kl - float(row["logits_kl"])) / denominator
+            gains_by_target[condition[1]][count].append(gain)
+
     defaults: dict[str, int] = {}
-    for target, counts in by_target.items():
-        frequencies = Counter(counts)
+    for target, by_count in gains_by_target.items():
         defaults[target] = min(
-            frequencies,
-            key=lambda count: (-frequencies[count], count),
+            by_count,
+            key=lambda count: (
+                -float(np.median(by_count[count])),
+                -float(np.mean(by_count[count])),
+                count,
+            ),
         )
     return defaults
 
