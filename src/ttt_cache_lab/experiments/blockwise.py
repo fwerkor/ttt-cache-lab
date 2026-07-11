@@ -146,6 +146,8 @@ def run_blockwise_exploration(
                     str(fingerprint()) if callable(fingerprint) else "unavailable"
                 )
                 full = backend.full_recompute(sample.prompt, current)
+                baseline_extras = baseline.extras or {}
+                full_extras = full.extras or {}
                 base_condition = {
                     "sample_id": sample_id,
                     "dataset_sample_id": str(sample.metadata.get("dataset_sample_id", sample_id)),
@@ -159,6 +161,24 @@ def run_blockwise_exploration(
                     "initial_adapter_fingerprint": initial_adapter_fingerprint,
                     "final_adapter_fingerprint": final_adapter_fingerprint,
                     "context_length": config.data.context_length,
+                    "baseline_prefill_latency": float(
+                        baseline_extras.get("prefill_latency", 0.0)
+                    ),
+                    "baseline_decode_latency": float(
+                        baseline_extras.get("decode_latency", 0.0)
+                    ),
+                    "full_recompute_prefill_latency": float(
+                        full_extras.get("prefill_latency", 0.0)
+                    ),
+                    "full_recompute_decode_latency": float(
+                        full_extras.get("decode_latency", 0.0)
+                    ),
+                    "full_recompute_strategy_latency": float(
+                        full_extras.get("strategy_latency", 0.0)
+                    ),
+                    "full_recompute_flops": float(
+                        full_extras.get("full_recompute_flops", 0.0)
+                    ),
                     "seed": config.seed,
                 }
                 reference_token_ids = _reference_token_ids(backend, sample)
