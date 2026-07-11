@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explore oracle layer-token cache splices and token-block frontiers",
     )
     blockwise.add_argument("--config", required=True, type=Path)
-    blockwise.add_argument("--block-size", type=int, default=64)
+    blockwise.add_argument("--block-sizes", type=int, nargs="+", default=[64])
     blockwise.add_argument("--version-gap", type=int, default=4)
     blockwise.add_argument(
         "--budget-fractions",
@@ -342,7 +342,7 @@ def main(argv: list[str] | None = None) -> None:
         blockwise_config = VersionedExperimentConfig.from_yaml(args.config)
         blockwise_artifacts = run_blockwise_exploration(
             blockwise_config,
-            block_size=args.block_size,
+            block_sizes=tuple(args.block_sizes),
             version_gap=args.version_gap,
             budget_fractions=tuple(args.budget_fractions),
             oracle_candidate_limit=args.oracle_candidate_limit,

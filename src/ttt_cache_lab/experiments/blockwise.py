@@ -39,14 +39,16 @@ class _Evaluation:
 def run_blockwise_exploration(
     config: VersionedExperimentConfig,
     *,
-    block_size: int,
+    block_sizes: tuple[int, ...],
     version_gap: int,
     budget_fractions: tuple[float, ...],
     oracle_candidate_limit: int = 24,
     oracle_max_cells: int = 16,
 ) -> BlockwiseArtifacts:
-    if block_size <= 0:
-        raise ValueError("block_size must be positive")
+    if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
+        raise ValueError("block sizes must be positive")
+    if len(set(block_sizes)) != len(block_sizes):
+        raise ValueError("block sizes must be unique")
     if version_gap <= 0:
         raise ValueError("version_gap must be positive")
     if not budget_fractions or any(value <= 0.0 or value > 1.0 for value in budget_fractions):
@@ -102,7 +104,7 @@ def run_blockwise_exploration(
                     current = result.output
                     accumulated_update_norm += result.update_norm
                 full = backend.full_recompute(sample.prompt, current)
-                condition = {
+                base_condition = {
                     "sample_id": sample_id,
                     "dataset_sample_id": str(sample.metadata.get("dataset_sample_id", sample_id)),
                     "task_name": config.data.task,
@@ -113,23 +115,24 @@ def run_blockwise_exploration(
                     "configured_update_norm": config.updates.update_norm,
                     "accumulated_update_norm": accumulated_update_norm,
                     "context_length": config.data.context_length,
-                    "block_size": block_size,
                     "seed": config.seed,
                 }
-                condition_records, condition_frontier, condition_masks = _explore_condition(
-                    backend=backend,
-                    splice=splice,
-                    baseline=baseline,
-                    full=full,
-                    target=target,
-                    condition=condition,
-                    budget_fractions=budget_fractions,
-                    oracle_candidate_limit=oracle_candidate_limit,
-                    oracle_max_cells=oracle_max_cells,
-                )
-                records.extend(condition_records)
-                frontier_rows.extend(condition_frontier)
-                mask_rows.extend(condition_masks)
+                for block_size in block_sizes:
+                    condition = {**base_condition, "block_size": block_size}
+                    condition_records, condition_frontier, condition_masks = _explore_condition(
+                        backend=backend,
+                        splice=splice,
+                        baseline=baseline,
+                        full=full,
+                        target=target,
+                        condition=condition,
+                        budget_fractions=budget_fractions,
+                        oracle_candidate_limit=oracle_candidate_limit,
+                        oracle_max_cells=oracle_max_cells,
+                    )
+                    records.extend(condition_records)
+                    frontier_rows.extend(condition_frontier)
+                    mask_rows.extend(condition_masks)
                 _write_rows(output_dir / "blockwise_records.csv", records)
                 _write_jsonl(output_dir / "blockwise_records.jsonl", records)
                 _write_rows(output_dir / "block_frontier.csv", frontier_rows)
