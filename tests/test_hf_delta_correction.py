@@ -38,6 +38,7 @@ def test_hf_weight_delta_patch_updates_kv_without_full_reference() -> None:
             return {"a": torch.zeros(1, 4), "b": torch.zeros(4, 1), "scaling": 1.0}
 
     backend = cast(Any, object.__new__(HuggingFaceBackend))
+    backend.torch = torch
     backend._lora_modules = [FakeLora()]
     old_past = ((torch.zeros(1, 2, 2, 2), torch.zeros(1, 2, 2, 2)),)
     old_cache = {
@@ -60,6 +61,57 @@ def test_hf_weight_delta_patch_updates_kv_without_full_reference() -> None:
     assert new_cache
     assert torch.allclose(corrected[0][0], torch.ones(1, 2, 2, 2))
     assert torch.allclose(corrected[0][1], torch.zeros(1, 2, 2, 2))
+    assert backend._last_delta_raw_l2 == pytest.approx(8**0.5)
+    assert backend._last_delta_stored_l2 == pytest.approx(8**0.5)
+    assert backend._last_delta_changed_fraction == 1.0
+    assert backend._last_delta_quantization_retention == pytest.approx(1.0)
+
+
+def test_hf_delta_metrics_capture_bfloat16_quantization_loss() -> None:
+    torch = pytest.importorskip("torch")
+
+    class TinyFakeLora:
+        lora_name = "model.layers.0.self_attn.k_proj"
+
+        def lora_delta_output(self, cached_input: Any, old_state: dict[str, Any]) -> Any:
+            del old_state
+            return torch.full(
+                (cached_input.shape[0], cached_input.shape[1], 4),
+                1.0e-6,
+                dtype=torch.float32,
+            )
+
+        def lora_state(self) -> dict[str, Any]:
+            return {"a": torch.zeros(1, 4), "b": torch.zeros(4, 1), "scaling": 1.0}
+
+    backend = cast(Any, object.__new__(HuggingFaceBackend))
+    backend.torch = torch
+    backend._lora_modules = [TinyFakeLora()]
+    old_past = ((torch.ones(1, 2, 2, 2, dtype=torch.bfloat16), torch.zeros(1, 2, 2, 2)),)
+    old_cache = {
+        "model.layers.0.self_attn.k_proj": {
+            "input": torch.zeros(1, 2, 4),
+            "a": torch.zeros(1, 4),
+            "b": torch.zeros(4, 1),
+            "scaling": 1.0,
+            "layer": 0,
+            "projection": "k",
+        }
+    }
+
+    corrected, _ = HuggingFaceBackend._apply_lora_weight_delta_to_past(
+        backend,
+        old_past,
+        old_cache,
+        split_layer=0,
+    )
+
+    assert corrected is not None
+    assert torch.equal(corrected[0][0], old_past[0][0])
+    assert backend._last_delta_raw_l2 > 0.0
+    assert backend._last_delta_stored_l2 == 0.0
+    assert backend._last_delta_changed_fraction == 0.0
+    assert backend._last_delta_quantization_retention == 0.0
 
 
 def test_hf_key_delta_is_rotated_before_cache_update() -> None:

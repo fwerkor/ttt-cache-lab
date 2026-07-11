@@ -1289,6 +1289,12 @@ class HuggingFaceBackend:
             result.extras["strategy_latency"] = total_s
             result.extras["peak_memory_allocated"] = max_memory_allocated(self.torch, self.devices)
             result.extras["strategy_flops"] = self._last_correction_flops
+            result.extras["delta_raw_l2"] = self._last_delta_raw_l2
+            result.extras["delta_stored_l2"] = self._last_delta_stored_l2
+            result.extras["delta_raw_max_abs"] = self._last_delta_raw_max_abs
+            result.extras["delta_stored_max_abs"] = self._last_delta_stored_max_abs
+            result.extras["delta_changed_fraction"] = self._last_delta_changed_fraction
+            result.extras["delta_quantization_retention"] = self._last_delta_quantization_retention
         self._last_delta_s = total_s
         return result
 
@@ -1376,6 +1382,12 @@ class HuggingFaceBackend:
     ) -> tuple[Any | None, dict[str, Any]]:
         self._last_low_rank_cache_bytes = 0
         self._last_residual_cache_bytes = 0
+        self._last_delta_raw_l2 = 0.0
+        self._last_delta_stored_l2 = 0.0
+        self._last_delta_raw_max_abs = 0.0
+        self._last_delta_stored_max_abs = 0.0
+        self._last_delta_changed_fraction = 0.0
+        self._last_delta_quantization_retention = 0.0
         if not isinstance(old_lora_cache, dict) or not old_lora_cache:
             return None, {}
         module_by_name = {
@@ -1390,6 +1402,12 @@ class HuggingFaceBackend:
         low_rank_cache_bytes = 0
         residual_cache_bytes = 0
         correction_flops = 0.0
+        raw_delta_squared = 0.0
+        stored_delta_squared = 0.0
+        raw_delta_max_abs = 0.0
+        stored_delta_max_abs = 0.0
+        changed_elements = 0
+        corrected_elements = 0
         self._last_correction_flops = 0.0
         for name, old_state in old_lora_cache.items():
             if not isinstance(old_state, dict):
@@ -1429,10 +1447,22 @@ class HuggingFaceBackend:
                 low_rank_cache_bytes += batch * tokens * rank * int(cached_input.element_size())
                 correction_flops += 4.0 * batch * tokens * rank * (input_width + output_width)
             residual_cache_bytes += int(projected.numel() * projected.element_size())
-            corrected[layer][item_index] = corrected[layer][item_index] + projected.to(
-                device=corrected[layer][item_index].device,
-                dtype=corrected[layer][item_index].dtype,
+            target_tensor = corrected[layer][item_index]
+            projected_on_target = projected.to(
+                device=target_tensor.device,
+                dtype=target_tensor.dtype,
             )
+            corrected_tensor = target_tensor + projected_on_target
+            stored_delta = corrected_tensor - target_tensor
+            raw_float = projected.detach().float()
+            stored_float = stored_delta.detach().float()
+            raw_delta_squared += float(self.torch.sum(raw_float * raw_float).cpu())
+            stored_delta_squared += float(self.torch.sum(stored_float * stored_float).cpu())
+            raw_delta_max_abs = max(raw_delta_max_abs, float(raw_float.abs().max().cpu()))
+            stored_delta_max_abs = max(stored_delta_max_abs, float(stored_float.abs().max().cpu()))
+            changed_elements += int(self.torch.count_nonzero(stored_delta).cpu())
+            corrected_elements += int(stored_delta.numel())
+            corrected[layer][item_index] = corrected_tensor
             state = module.lora_state()
             state["input"] = cached_input.detach()
             state["name"] = name
@@ -1457,6 +1487,18 @@ class HuggingFaceBackend:
         self._last_correction_flops = correction_flops
         self._last_low_rank_cache_bytes = low_rank_cache_bytes
         self._last_residual_cache_bytes = residual_cache_bytes
+        self._last_delta_raw_l2 = raw_delta_squared**0.5
+        self._last_delta_stored_l2 = stored_delta_squared**0.5
+        self._last_delta_raw_max_abs = raw_delta_max_abs
+        self._last_delta_stored_max_abs = stored_delta_max_abs
+        self._last_delta_changed_fraction = (
+            changed_elements / corrected_elements if corrected_elements > 0 else 0.0
+        )
+        self._last_delta_quantization_retention = (
+            self._last_delta_stored_l2 / self._last_delta_raw_l2
+            if self._last_delta_raw_l2 > 0.0
+            else 0.0
+        )
         return self._restore_past_type(past_key_values, corrected_layers), new_lora_cache
 
     def _prefix_position_ids(self, state: Any) -> Any | None:

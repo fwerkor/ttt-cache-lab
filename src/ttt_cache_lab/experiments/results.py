@@ -84,6 +84,12 @@ class ExperimentRecord:
     strategy_flops: float = 0.0
     full_recompute_flops: float = 0.0
     flops_fraction: float = 0.0
+    delta_raw_l2: float = 0.0
+    delta_stored_l2: float = 0.0
+    delta_raw_max_abs: float = 0.0
+    delta_stored_max_abs: float = 0.0
+    delta_changed_fraction: float = 0.0
+    delta_quantization_retention: float = 0.0
     planner_source: str = ""
     failure_map_path: str = ""
     failure_map_sha256: str = ""

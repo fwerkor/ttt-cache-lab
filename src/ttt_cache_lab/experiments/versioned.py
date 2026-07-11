@@ -23,6 +23,7 @@ from ttt_cache_lab.experiments.metrics import (
     is_refresh_action,
     output_baseline_fidelity,
     output_cache_bytes,
+    output_delta_metric,
     output_full_recompute_flops,
     output_memory_allocated,
     output_peak_memory_allocated,
@@ -643,6 +644,14 @@ class VersionedExperimentRunner:
                         if full_recompute_flops > 0.0
                         else 0.0
                     ),
+                    delta_raw_l2=output_delta_metric(approx, "delta_raw_l2"),
+                    delta_stored_l2=output_delta_metric(approx, "delta_stored_l2"),
+                    delta_raw_max_abs=output_delta_metric(approx, "delta_raw_max_abs"),
+                    delta_stored_max_abs=output_delta_metric(approx, "delta_stored_max_abs"),
+                    delta_changed_fraction=output_delta_metric(approx, "delta_changed_fraction"),
+                    delta_quantization_retention=output_delta_metric(
+                        approx, "delta_quantization_retention"
+                    ),
                     planner_source=planner_source,
                     failure_map_path=failure_map_path,
                     failure_map_sha256=failure_map_sha256,
@@ -881,6 +890,12 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "strategy_flops_mean",
         "full_recompute_flops_mean",
         "flops_fraction_mean",
+        "delta_raw_l2_mean",
+        "delta_stored_l2_mean",
+        "delta_raw_max_abs_mean",
+        "delta_stored_max_abs_mean",
+        "delta_changed_fraction_mean",
+        "delta_quantization_retention_mean",
     ]
     with output_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=[*dimension_fields, *metric_fields])
@@ -934,6 +949,14 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                     "strategy_flops_mean": _mean(records, "strategy_flops"),
                     "full_recompute_flops_mean": _mean(records, "full_recompute_flops"),
                     "flops_fraction_mean": _mean(records, "flops_fraction"),
+                    "delta_raw_l2_mean": _mean(records, "delta_raw_l2"),
+                    "delta_stored_l2_mean": _mean(records, "delta_stored_l2"),
+                    "delta_raw_max_abs_mean": _mean(records, "delta_raw_max_abs"),
+                    "delta_stored_max_abs_mean": _mean(records, "delta_stored_max_abs"),
+                    "delta_changed_fraction_mean": _mean(records, "delta_changed_fraction"),
+                    "delta_quantization_retention_mean": _mean(
+                        records, "delta_quantization_retention"
+                    ),
                 }
             )
 

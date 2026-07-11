@@ -172,6 +172,12 @@ def output_strategy_flops(output: BackendOutput, *, fallback: float = 0.0) -> fl
     return float(value) if isinstance(value, int | float) else float(fallback)
 
 
+def output_delta_metric(output: BackendOutput, key: str) -> float:
+    extras = output.extras or {}
+    value = extras.get(key)
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
 def output_full_recompute_flops(output: BackendOutput, *, fallback: float = 0.0) -> float:
     extras = output.extras or {}
     value = extras.get("full_recompute_flops")
