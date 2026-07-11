@@ -63,6 +63,7 @@ class HuggingFaceBackend:
         parallelism: str = "single",
         device_ids: list[int] | None = None,
         seed: int,
+        deterministic: bool = True,
     ) -> None:
         try:
             import torch
@@ -72,7 +73,12 @@ class HuggingFaceBackend:
 
         self.torch = torch
         self.seed = seed
+        self.deterministic = deterministic
         torch.manual_seed(seed)
+        npu = getattr(torch, "npu", None)
+        if npu is not None and hasattr(npu, "manual_seed_all"):
+            npu.manual_seed_all(seed)
+        torch.use_deterministic_algorithms(deterministic)
         dtype = self._resolve_dtype(torch_dtype)
         load_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
         if revision is not None:

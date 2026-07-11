@@ -24,6 +24,7 @@ class ModelConfig(BaseModel):
     use_chat_template: bool = False
     parallelism: Literal["single", "model_shard"] = "single"
     device_ids: list[int] = Field(default_factory=list)
+    deterministic: bool = True
 
 
 class DataConfig(BaseModel):

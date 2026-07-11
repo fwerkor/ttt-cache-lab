@@ -30,6 +30,7 @@ def build_backend(config: ModelConfig, *, seed: int) -> ModelBackend:
             parallelism=config.parallelism,
             device_ids=config.device_ids,
             seed=seed,
+            deterministic=config.deterministic,
         )
     if config.backend == "ascend_hf":
         from ttt_cache_lab.models.ascend import AscendHuggingFaceBackend
@@ -48,5 +49,6 @@ def build_backend(config: ModelConfig, *, seed: int) -> ModelBackend:
             parallelism=config.parallelism,
             device_ids=config.device_ids,
             seed=seed,
+            deterministic=config.deterministic,
         )
     raise ValueError(f"Unsupported model backend: {config.backend}")
