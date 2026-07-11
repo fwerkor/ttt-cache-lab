@@ -251,7 +251,7 @@ class SyntheticTaskFactory:
             _difficulty_value(
                 difficulty,
                 easy=4,
-                medium=32,
+                medium=16,
                 hard=hard_distractor_count,
             ),
         )
