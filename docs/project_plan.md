@@ -347,9 +347,29 @@ python -m ttt_cache_lab.cli propagation-analysis \
   --output-dir runs/paper/discovery/w2_qwen_1_5b_propagation/analysis
 ```
 
+### W4: layer-token blockwise oracle and frontier probe
+
+W1 treats every decoder layer as one indivisible cache unit. W4 tests whether that granularity hides a more efficient repair set. For each sample and parameter-update trajectory, construct the old and current full-prefix K/V caches once, then evaluate layer-by-token-block splice masks using block sizes 32, 64, and 128. All block sizes and selectors must share exactly the same trained adapter state and old/full cache pair; independently retrained block-size runs are invalid for comparison.
+
+W4 is explicitly a cache-surgery oracle upper bound. Selecting current-version K/V blocks does not by itself demonstrate that those blocks can be independently recomputed by a production kernel. Compare random masks, raw K/V drift, attention-weighted K/V drift, a full-layer prefix with the same cache-cell budget, a restricted greedy oracle, and a per-token marginal frontier. Report KL, gain relative to paired stale reuse, block budget, mask connected components, rectangle fill, per-token best repair depth, and depth-curve monotonicity.
+
+Run:
+
+```bash
+python -m ttt_cache_lab.cli blockwise-explore \
+  --config configs/paper/discovery/w4_qwen_1_5b_blockwise_oracle.yaml \
+  --block-sizes 32 64 128 \
+  --version-gap 4 \
+  --budget-fractions 0.07142857142857142 0.14285714285714285 \
+  --oracle-candidate-limit 32 \
+  --oracle-max-cells 32
+```
+
+B1 succeeds if a non-rectangular mask consistently improves on the paired one-layer or two-layer prefix at the same selected cache-cell fraction. B2 succeeds if token blocks exhibit materially different best repair depths and the best masks have low rectangle fill or multiple connected components. A deployable system contribution additionally requires a predictor that approaches the oracle without current full-cache access and a real sparse-recompute or copy-on-write implementation.
+
 ### Go/no-go rule
 
-Proceed to a learned or threshold-based window predictor only if W1 finds finite windows materially shorter than suffix recompute in a nontrivial fraction of conditions and W2 shows a reproducible decay or recovery pattern. If most conditions require recomputation to the model end and propagation remains persistent, retain E3 as a negative measurement study but do not position finite-window planning as the main contribution.
+Proceed to a learned or threshold-based window predictor only if W1 finds finite windows materially shorter than suffix recompute in a nontrivial fraction of conditions and W2 shows a reproducible decay or recovery pattern. If W4 finds a strong blockwise oracle gap, prioritize layer-token risk prediction and sparse block repair over a scalar window-length planner. If most conditions require recomputation to the model end and propagation remains persistent, retain E3 as a negative measurement study but do not position finite-window planning as the main contribution.
 
 ## 9. Experiment E3: update-target x version-gap failure map
 
