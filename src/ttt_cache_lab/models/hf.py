@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -152,6 +153,8 @@ class HuggingFaceBackend:
         self._last_adaptation_s = 0.0
         self._last_raw_update_norm = 0.0
         self._last_applied_update_norm = 0.0
+        self._last_updated_parameter_count = 0
+        self._last_applied_update_rms = 0.0
         self._lora_modules: list[Any] = []
         self._active_lora_modules: list[Any] = []
         self._prepared_input_ids: dict[str, Any] = {}
@@ -625,6 +628,12 @@ class HuggingFaceBackend:
     def last_applied_update_norm(self) -> float:
         return self._last_applied_update_norm
 
+    def last_updated_parameter_count(self) -> int:
+        return self._last_updated_parameter_count
+
+    def last_applied_update_rms(self) -> float:
+        return self._last_applied_update_rms
+
     def restore_after_update(self) -> None:
         for param, delta in reversed(self._deltas):
             with self.torch.no_grad():
@@ -635,6 +644,8 @@ class HuggingFaceBackend:
         self._last_adaptation_s = 0.0
         self._last_raw_update_norm = 0.0
         self._last_applied_update_norm = 0.0
+        self._last_updated_parameter_count = 0
+        self._last_applied_update_rms = 0.0
 
     def setup_lora(self, target: UpdateTarget, *, rank: int, alpha: float, freeze_base_model: bool = True) -> int:
         from torch import nn
@@ -705,6 +716,7 @@ class HuggingFaceBackend:
         learning_rate: float,
         freeze_base_model: bool = True,
         target_update_norm: float | None = None,
+        target_update_rms: float | None = None,
     ) -> float:
         count = self.setup_lora(target, rank=rank, alpha=alpha, freeze_base_model=freeze_base_model)
         if count == 0:
@@ -738,6 +750,7 @@ class HuggingFaceBackend:
         loss = outputs.loss
         loss.backward()
         pending_updates: list[tuple[Any, Any]] = []
+        updated_parameter_count = 0
         squared_norm = self.torch.zeros((), dtype=self.torch.float64, device=self.device)
         with self.torch.no_grad():
             for module in self._active_lora_modules:
@@ -746,17 +759,31 @@ class HuggingFaceBackend:
                         continue
                     delta = -learning_rate * param.grad
                     pending_updates.append((param, delta))
+                    updated_parameter_count += int(param.numel())
                     squared_norm += self.torch.sum(delta.detach().double() ** 2).to(self.device)
             raw_norm = float(self.torch.sqrt(squared_norm).cpu())
+            if target_update_norm is not None and target_update_rms is not None:
+                raise ValueError("target_update_norm and target_update_rms are mutually exclusive")
+            target_l2 = target_update_norm
+            if target_update_rms is not None:
+                if target_update_rms < 0.0:
+                    raise ValueError("target_update_rms must be non-negative")
+                target_l2 = target_update_rms * math.sqrt(updated_parameter_count)
             scale = 1.0
-            if target_update_norm is not None:
-                if target_update_norm < 0.0:
+            if target_l2 is not None:
+                if target_l2 < 0.0:
                     raise ValueError("target_update_norm must be non-negative")
                 if raw_norm > 0.0:
-                    scale = target_update_norm / raw_norm
+                    scale = target_l2 / raw_norm
             applied_norm = raw_norm * scale
             self._last_raw_update_norm = raw_norm
             self._last_applied_update_norm = applied_norm
+            self._last_updated_parameter_count = updated_parameter_count
+            self._last_applied_update_rms = (
+                applied_norm / math.sqrt(updated_parameter_count)
+                if updated_parameter_count > 0
+                else 0.0
+            )
             for param, delta in pending_updates:
                 param.add_(delta * scale)
                 param.grad = None

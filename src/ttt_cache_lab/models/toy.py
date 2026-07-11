@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 
 import numpy as np
@@ -29,6 +30,8 @@ class ToyBackend:
         self._sample_answers: dict[str, str] = {}
         self._last_raw_update_norm = 0.0
         self._last_applied_update_norm = 0.0
+        self._last_updated_parameter_count = 0
+        self._last_applied_update_rms = 0.0
 
     @property
     def parameter_count(self) -> int:
@@ -221,9 +224,17 @@ class ToyBackend:
     def last_applied_update_norm(self) -> float:
         return self._last_applied_update_norm
 
+    def last_updated_parameter_count(self) -> int:
+        return self._last_updated_parameter_count
+
+    def last_applied_update_rms(self) -> float:
+        return self._last_applied_update_rms
+
     def restore_after_update(self) -> None:
         self._last_raw_update_norm = 0.0
         self._last_applied_update_norm = 0.0
+        self._last_updated_parameter_count = 0
+        self._last_applied_update_rms = 0.0
 
     def train_lora_step(
         self,
@@ -235,13 +246,23 @@ class ToyBackend:
         learning_rate: float,
         freeze_base_model: bool = True,
         target_update_norm: float | None = None,
+        target_update_rms: float | None = None,
     ) -> float:
-        del sample, rank, alpha, freeze_base_model
+        del sample, alpha, freeze_base_model
         # Toy mode has no persistent parameters. Return a deterministic update-norm proxy.
         measured = learning_rate * self._target_multiplier(target)
-        applied = measured if target_update_norm is None else target_update_norm
+        updated_parameter_count = max(1, rank * self.hidden_size * 2)
+        if target_update_norm is not None and target_update_rms is not None:
+            raise ValueError("target_update_norm and target_update_rms are mutually exclusive")
+        applied = measured
+        if target_update_norm is not None:
+            applied = target_update_norm
+        elif target_update_rms is not None:
+            applied = target_update_rms * math.sqrt(updated_parameter_count)
         self._last_raw_update_norm = measured
         self._last_applied_update_norm = applied
+        self._last_updated_parameter_count = updated_parameter_count
+        self._last_applied_update_rms = applied / math.sqrt(updated_parameter_count)
         return applied
 
     def _target_multiplier(self, target: UpdateTarget) -> float:

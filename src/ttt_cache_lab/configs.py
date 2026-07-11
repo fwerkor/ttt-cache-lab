@@ -181,7 +181,7 @@ def _set_dotted(payload: dict[str, Any], dotted: str, value: Any) -> None:
 
 class AdapterConfig(BaseModel):
     update_mode: Literal["random", "lora_train", "static_lora"] = "random"
-    norm_control: Literal["target_l2", "none"] = "target_l2"
+    norm_control: Literal["target_l2", "target_rms", "none"] = "target_l2"
     lora_rank: int = 8
     lora_alpha: float = 16.0
     learning_rate: float = 1e-3

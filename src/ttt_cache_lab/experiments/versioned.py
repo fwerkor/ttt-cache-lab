@@ -542,6 +542,12 @@ class VersionedExperimentRunner:
                 decision.strategy,
                 self.config.cache.failure_map_path,
             )
+            last_parameter_count = getattr(backend, "last_updated_parameter_count", None)
+            updated_parameter_count = (
+                int(last_parameter_count()) if callable(last_parameter_count) else 0
+            )
+            last_update_rms = getattr(backend, "last_applied_update_rms", None)
+            applied_update_rms = float(last_update_rms()) if callable(last_update_rms) else 0.0
             records.append(
                 ExperimentRecord(
                     sample_id=sample_id,
@@ -581,6 +587,8 @@ class VersionedExperimentRunner:
                         if accumulated_raw_update_norm > 0.0
                         else 0.0
                     ),
+                    updated_parameter_count=updated_parameter_count,
+                    applied_update_rms=applied_update_rms,
                     lora_rank=self.config.adapter.lora_rank,
                     update_mode=self.config.adapter.update_mode,
                     norm_control=self.config.adapter.norm_control,
@@ -870,6 +878,8 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
         "update_norm_since_cache_mean",
         "raw_update_norm_since_cache_mean",
         "update_scale_mean",
+        "updated_parameter_count_mean",
+        "applied_update_rms_mean",
         "cache_block_count_mean",
         "adaptation_latency_mean",
         "cache_maintenance_latency_mean",
@@ -925,6 +935,8 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
                         records, "raw_update_norm_since_cache"
                     ),
                     "update_scale_mean": _mean(records, "update_scale"),
+                    "updated_parameter_count_mean": _mean(records, "updated_parameter_count"),
+                    "applied_update_rms_mean": _mean(records, "applied_update_rms"),
                     "cache_block_count_mean": _mean(records, "cache_block_count"),
                     "adaptation_latency_mean": _mean(records, "adaptation_latency"),
                     "cache_maintenance_latency_mean": _mean(records, "cache_maintenance_latency"),

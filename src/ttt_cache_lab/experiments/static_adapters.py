@@ -513,6 +513,11 @@ class StaticAdapterExperimentRunner:
                                 if self.config.adapter.norm_control == "target_l2"
                                 else None
                             ),
+                            target_update_rms=(
+                                self.config.updates.update_norm
+                                if self.config.adapter.norm_control == "target_rms"
+                                else None
+                            ),
                         )
                     )
                     raw_norm += float(backend.last_raw_update_norm())

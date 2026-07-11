@@ -81,3 +81,27 @@ def test_supervised_lora_updater_can_keep_raw_learning_rate_update() -> None:
     assert result.raw_update_norm == pytest.approx(0.45)
     assert result.update_norm == pytest.approx(result.raw_update_norm)
     assert result.update_scale == 1.0
+
+
+def test_supervised_lora_updater_can_target_parameter_rms() -> None:
+    backend = ToyBackend(num_layers=2, hidden_size=8, vocab_size=16, seed=7)
+    sample = TaskSample(prompt="key 1", answer="1", metadata={})
+    target = parse_update_target("lora.k:1", num_layers=backend.num_layers)
+    updater = build_updater(
+        backend,
+        mode="lora_train",
+        sample=sample,
+        target=target,
+        rank=4,
+        learning_rate=0.5,
+        norm_control="target_rms",
+    )
+    result = updater.update(
+        backend.prefill(sample.prompt),
+        target,
+        step_count=1,
+        update_norm=0.01,
+    )
+    assert backend.last_updated_parameter_count() == 64
+    assert backend.last_applied_update_rms() == pytest.approx(0.01)
+    assert result.update_norm == pytest.approx(0.08)

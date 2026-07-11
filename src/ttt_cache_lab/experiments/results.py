@@ -40,6 +40,8 @@ class ExperimentRecord:
     update_norm_since_cache: float = 0.0
     raw_update_norm_since_cache: float = 0.0
     update_scale: float = 0.0
+    updated_parameter_count: int = 0
+    applied_update_rms: float = 0.0
     lora_rank: int = 0
     update_mode: str = "random"
     norm_control: str = ""

@@ -110,6 +110,9 @@ class SupervisedLoraUpdater:
                     target_update_norm=(
                         update_norm if self.norm_control == "target_l2" else None
                     ),
+                    target_update_rms=(
+                        update_norm if self.norm_control == "target_rms" else None
+                    ),
                 )
             )
             total_raw_norm += float(self.backend.last_raw_update_norm())
