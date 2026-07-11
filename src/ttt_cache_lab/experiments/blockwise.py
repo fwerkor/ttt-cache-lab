@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ def run_blockwise_exploration(
     budget_fractions: tuple[float, ...],
     oracle_candidate_limit: int = 24,
     oracle_max_cells: int = 16,
+    direct_oracle_max_blocks: int = 0,
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
         raise ValueError("block sizes must be positive")
@@ -55,6 +57,8 @@ def run_blockwise_exploration(
         raise ValueError("budget fractions must be in (0, 1]")
     if oracle_candidate_limit < 1 or oracle_max_cells < 1:
         raise ValueError("oracle limits must be positive")
+    if direct_oracle_max_blocks < 0:
+        raise ValueError("direct_oracle_max_blocks must be nonnegative")
 
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -129,6 +133,7 @@ def run_blockwise_exploration(
                         budget_fractions=budget_fractions,
                         oracle_candidate_limit=oracle_candidate_limit,
                         oracle_max_cells=oracle_max_cells,
+                        direct_oracle_max_blocks=direct_oracle_max_blocks,
                     )
                     records.extend(condition_records)
                     frontier_rows.extend(condition_frontier)
@@ -162,6 +167,7 @@ def _explore_condition(
     budget_fractions: tuple[float, ...],
     oracle_candidate_limit: int,
     oracle_max_cells: int,
+    direct_oracle_max_blocks: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     old_layers = _past_layers(baseline)
     new_layers = _past_layers(full)
@@ -343,6 +349,82 @@ def _explore_condition(
                     all_direct,
                 )
             )
+            if 0 < direct_total <= direct_oracle_max_blocks:
+                direct_indices = [tuple(index) for index in np.argwhere(direct_available)]
+                seen_direct_counts: set[int] = set()
+                for count in desired_counts:
+                    direct_count = min(count, direct_total)
+                    if direct_count in seen_direct_counts:
+                        continue
+                    seen_direct_counts.add(direct_count)
+                    best_splice_mask: np.ndarray | None = None
+                    best_splice_eval: _Evaluation | None = None
+                    best_sparse_mask: np.ndarray | None = None
+                    best_sparse_eval: _Evaluation | None = None
+                    for chosen in combinations(direct_indices, direct_count):
+                        mask = np.zeros_like(direct_available)
+                        for index in chosen:
+                            mask[index] = True
+                        splice_eval = evaluate(mask)
+                        if (
+                            best_splice_eval is None
+                            or splice_eval.logits_kl < best_splice_eval.logits_kl - 1e-15
+                        ):
+                            best_splice_mask = mask.copy()
+                            best_splice_eval = splice_eval
+                        sparse_eval = evaluate_sparse(mask)
+                        if (
+                            best_sparse_eval is None
+                            or sparse_eval.logits_kl < best_sparse_eval.logits_kl - 1e-15
+                        ):
+                            best_sparse_mask = mask.copy()
+                            best_sparse_eval = sparse_eval
+                    if (
+                        best_splice_mask is None
+                        or best_splice_eval is None
+                        or best_sparse_mask is None
+                        or best_sparse_eval is None
+                    ):
+                        continue
+                    budget = direct_count / total_eligible
+                    records.append(
+                        _record(
+                            condition,
+                            selector="direct_splice_oracle",
+                            requested_budget_fraction=budget,
+                            mask=best_splice_mask,
+                            eligible=eligible,
+                            evaluation=best_splice_eval,
+                            stale_kl=stale.logits_kl,
+                        )
+                    )
+                    records.append(
+                        _record(
+                            condition,
+                            selector="sparse_delta_oracle",
+                            requested_budget_fraction=budget,
+                            mask=best_sparse_mask,
+                            eligible=eligible,
+                            evaluation=best_sparse_eval,
+                            stale_kl=stale.logits_kl,
+                        )
+                    )
+                    mask_rows.extend(
+                        _mask_rows(
+                            condition,
+                            "direct_splice_oracle",
+                            budget,
+                            best_splice_mask,
+                        )
+                    )
+                    mask_rows.extend(
+                        _mask_rows(
+                            condition,
+                            "sparse_delta_oracle",
+                            budget,
+                            best_sparse_mask,
+                        )
+                    )
 
     greedy_limit = min(max(desired_counts), oracle_max_cells, total_eligible)
     candidate_mask = _candidate_pool(

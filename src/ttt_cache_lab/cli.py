@@ -142,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     blockwise.add_argument("--oracle-candidate-limit", type=int, default=24)
     blockwise.add_argument("--oracle-max-cells", type=int, default=16)
+    blockwise.add_argument("--direct-oracle-max-blocks", type=int, default=0)
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -347,6 +348,7 @@ def main(argv: list[str] | None = None) -> None:
             budget_fractions=tuple(args.budget_fractions),
             oracle_candidate_limit=args.oracle_candidate_limit,
             oracle_max_cells=args.oracle_max_cells,
+            direct_oracle_max_blocks=args.direct_oracle_max_blocks,
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
