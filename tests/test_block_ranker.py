@@ -9,6 +9,7 @@ import pytest
 
 from ttt_cache_lab.experiments.block_ranker import (
     FEATURE_NAMES,
+    _confidence_probe_policies,
     _one_probe_policies,
     fit_block_ranker,
     load_block_ranker,
@@ -166,6 +167,48 @@ def test_one_probe_policy_prefers_safe_candidate_and_conservative_margin() -> No
     assert policy["reference_nll_margin"] == 0.2
     assert policy["calibration_harmful"] == 0
     assert policy["calibration_accepted"] == 2
+
+
+def test_confidence_probe_policy_rejects_low_confidence_harm() -> None:
+    rows: list[dict[str, str]] = []
+    for sample, confidence_gain, candidate_kl in (
+        (0, 0.03, 0.04),
+        (1, 0.0005, 0.12),
+    ):
+        condition = {
+            key: str(value)
+            for key, value in _condition("lora.k_middle", sample).items()
+        }
+        rows.append(
+            {
+                **condition,
+                "selector": "stale",
+                "selected_cells": "0",
+                "logits_kl": "0.10",
+                "output_max_probability": "0.50",
+                "cache_maintenance_latency": "0.0",
+                "decode_latency": "0.02",
+            }
+        )
+        rows.append(
+            {
+                **condition,
+                "selector": "sparse_input_bound",
+                "selected_cells": "2",
+                "logits_kl": str(candidate_kl),
+                "output_max_probability": str(0.50 + confidence_gain),
+                "cache_maintenance_latency": "0.01",
+                "decode_latency": "0.02",
+            }
+        )
+
+    policy = _confidence_probe_policies(rows)["lora.k_middle"]
+
+    assert policy["candidate_selector"] == "sparse_input_bound"
+    assert policy["candidate_count"] == 2
+    assert policy["confidence_margin"] == 0.02
+    assert policy["calibration_harmful"] == 0
+    assert policy["calibration_accepted"] == 1
 
 
 def test_load_block_ranker_rejects_schema_mismatch(tmp_path: Path) -> None:

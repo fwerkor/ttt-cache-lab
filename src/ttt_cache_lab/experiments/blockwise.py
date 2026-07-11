@@ -655,11 +655,17 @@ def _explore_condition(
                         reference_token_id = int(
                             condition.get("reference_token_id", -1)
                         )
-                        stale_nll, _, _ = _logit_selection_metrics(
-                            stale.output.logits,
-                            reference_token_id=reference_token_id,
+                        stale_nll, stale_entropy, stale_max_probability = (
+                            _logit_selection_metrics(
+                                stale.output.logits,
+                                reference_token_id=reference_token_id,
+                            )
                         )
-                        candidate_nll, _, _ = _logit_selection_metrics(
+                        (
+                            candidate_nll,
+                            candidate_entropy,
+                            candidate_max_probability,
+                        ) = _logit_selection_metrics(
                             candidate_evaluation.output.logits,
                             reference_token_id=reference_token_id,
                         )
@@ -713,6 +719,12 @@ def _explore_condition(
                                     "candidate_selector": candidate_selector,
                                     "candidate_selected_cells": candidate_count,
                                     "candidate_reference_token_nll": candidate_nll,
+                                    "candidate_output_entropy": candidate_entropy,
+                                    "candidate_output_max_probability": (
+                                        candidate_max_probability
+                                    ),
+                                    "stale_output_entropy": stale_entropy,
+                                    "stale_output_max_probability": stale_max_probability,
                                     "candidate_logits_kl": (
                                         candidate_evaluation.logits_kl
                                     ),
@@ -744,6 +756,150 @@ def _explore_condition(
                             _mask_rows(
                                 condition,
                                 "sparse_one_probe_policy",
+                                selected_budget,
+                                selected_mask,
+                            )
+                        )
+
+                confidence_probe_policy = (
+                    target_model.get("confidence_probe_policy")
+                    if isinstance(target_model, dict)
+                    else None
+                )
+                if isinstance(confidence_probe_policy, dict):
+                    candidate_selector = str(
+                        confidence_probe_policy.get("candidate_selector", "")
+                    )
+                    candidate_score_name = sparse_selectors.get(candidate_selector)
+                    candidate_count = max(
+                        0,
+                        min(
+                            int(confidence_probe_policy.get("candidate_count", 0)),
+                            direct_total,
+                        ),
+                    )
+                    confidence_margin = float(
+                        confidence_probe_policy.get("confidence_margin", 0.0)
+                    )
+                    if candidate_score_name is not None and candidate_count > 0:
+                        candidate_scores = np.asarray(
+                            sparse_scores[candidate_score_name], dtype=np.float64
+                        )
+                        candidate_mask = _top_mask(
+                            candidate_scores,
+                            direct_available,
+                            candidate_count,
+                        )
+                        candidate_evaluation = evaluate_sparse(candidate_mask)
+                        reference_token_id = int(
+                            condition.get("reference_token_id", -1)
+                        )
+                        stale_nll, stale_entropy, stale_max_probability = (
+                            _logit_selection_metrics(
+                                stale.output.logits,
+                                reference_token_id=reference_token_id,
+                            )
+                        )
+                        (
+                            candidate_nll,
+                            candidate_entropy,
+                            candidate_max_probability,
+                        ) = _logit_selection_metrics(
+                            candidate_evaluation.output.logits,
+                            reference_token_id=reference_token_id,
+                        )
+                        confidence_improvement = (
+                            candidate_max_probability - stale_max_probability
+                        )
+                        accepted = bool(
+                            np.isfinite(confidence_improvement)
+                            and confidence_improvement > confidence_margin
+                        )
+                        if accepted:
+                            selected_mask = candidate_mask
+                            selected_evaluation = candidate_evaluation
+                            selected_count = candidate_count
+                        else:
+                            selected_mask = np.zeros_like(direct_available)
+                            selected_evaluation = stale
+                            selected_count = 0
+                        candidate_extras = candidate_evaluation.output.extras or {}
+                        stale_extras = stale.output.extras or {}
+                        candidate_maintenance = float(
+                            candidate_extras.get("cache_maintenance_latency", 0.0)
+                        )
+                        candidate_decode = float(
+                            candidate_extras.get("decode_latency", 0.0)
+                        )
+                        candidate_latency = candidate_maintenance + candidate_decode
+                        stale_decode = float(stale_extras.get("decode_latency", 0.0))
+                        selected_budget = selected_count / total_eligible
+                        records.append(
+                            _record(
+                                condition,
+                                selector="sparse_one_probe_confidence_gate",
+                                requested_budget_fraction=selected_budget,
+                                mask=selected_mask,
+                                eligible=eligible,
+                                evaluation=selected_evaluation,
+                                stale_kl=stale.logits_kl,
+                                selection_metadata={
+                                    "selection_objective": "confidence_stale_gate",
+                                    "search_probe_count": 1,
+                                    "search_reference_token_evaluations": 0,
+                                    "joint_budget_selection": True,
+                                    "selected_stale_action": not accepted,
+                                    "safety_gate_passed": accepted,
+                                    "selection_stale_margin": confidence_margin,
+                                    "selection_stale_score": stale_max_probability,
+                                    "selection_raw_score": candidate_max_probability,
+                                    "selection_objective_improvement_vs_stale": (
+                                        confidence_improvement
+                                    ),
+                                    "sparse_ranker_path": str(sparse_ranker_path),
+                                    "candidate_selector": candidate_selector,
+                                    "candidate_selected_cells": candidate_count,
+                                    "candidate_reference_token_nll": candidate_nll,
+                                    "candidate_output_entropy": candidate_entropy,
+                                    "candidate_output_max_probability": (
+                                        candidate_max_probability
+                                    ),
+                                    "stale_reference_token_nll": stale_nll,
+                                    "stale_output_entropy": stale_entropy,
+                                    "stale_output_max_probability": (
+                                        stale_max_probability
+                                    ),
+                                    "candidate_logits_kl": (
+                                        candidate_evaluation.logits_kl
+                                    ),
+                                    "candidate_cache_maintenance_latency": (
+                                        candidate_maintenance
+                                    ),
+                                    "candidate_decode_latency": candidate_decode,
+                                    "planner_probe_latency": candidate_latency,
+                                    "end_to_end_planner_latency": (
+                                        stale_decode + candidate_latency
+                                    ),
+                                    "candidate_strategy_flops": float(
+                                        candidate_extras.get("strategy_flops", 0.0)
+                                    ),
+                                    "confidence_probe_calibration_harmful": int(
+                                        confidence_probe_policy.get(
+                                            "calibration_harmful", 0
+                                        )
+                                    ),
+                                    "confidence_probe_calibration_mean_gain": float(
+                                        confidence_probe_policy.get(
+                                            "calibration_mean_gain", 0.0
+                                        )
+                                    ),
+                                },
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(
+                                condition,
+                                "sparse_one_probe_confidence_gate",
                                 selected_budget,
                                 selected_mask,
                             )
