@@ -122,9 +122,14 @@ def run_blockwise_exploration(
                     "seed": config.seed,
                 }
                 for block_size in block_sizes:
-                    condition = {**base_condition, "block_size": block_size}
+                    condition = {
+                        **base_condition,
+                        "block_size": block_size,
+                        "reference_token_id": _reference_token_id(backend, sample),
+                    }
                     condition_records, condition_frontier, condition_masks = _explore_condition(
                         backend=backend,
+                        sample=sample,
                         splice=splice,
                         baseline=baseline,
                         full=full,
@@ -159,6 +164,7 @@ def run_blockwise_exploration(
 def _explore_condition(
     *,
     backend: ModelBackend,
+    sample: TaskSample,
     splice: Any,
     baseline: BackendOutput,
     full: BackendOutput,
@@ -169,6 +175,7 @@ def _explore_condition(
     oracle_max_cells: int,
     direct_oracle_max_blocks: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    del sample
     old_layers = _past_layers(baseline)
     new_layers = _past_layers(full)
     if len(old_layers) != len(new_layers):
@@ -361,6 +368,13 @@ def _explore_condition(
                     best_splice_eval: _Evaluation | None = None
                     best_sparse_mask: np.ndarray | None = None
                     best_sparse_eval: _Evaluation | None = None
+                    best_reference_mask: np.ndarray | None = None
+                    best_reference_eval: _Evaluation | None = None
+                    best_reference_nll = math.inf
+                    best_confidence_mask: np.ndarray | None = None
+                    best_confidence_eval: _Evaluation | None = None
+                    best_confidence = -math.inf
+                    reference_token_id = int(condition.get("reference_token_id", -1))
                     for chosen in combinations(direct_indices, direct_count):
                         mask = np.zeros_like(direct_available)
                         for index in chosen:
@@ -379,6 +393,18 @@ def _explore_condition(
                         ):
                             best_sparse_mask = mask.copy()
                             best_sparse_eval = sparse_eval
+                        reference_nll, _, max_probability = _logit_selection_metrics(
+                            sparse_eval.output.logits,
+                            reference_token_id=reference_token_id,
+                        )
+                        if np.isfinite(reference_nll) and reference_nll < best_reference_nll:
+                            best_reference_nll = reference_nll
+                            best_reference_mask = mask.copy()
+                            best_reference_eval = sparse_eval
+                        if max_probability > best_confidence:
+                            best_confidence = max_probability
+                            best_confidence_mask = mask.copy()
+                            best_confidence_eval = sparse_eval
                     if (
                         best_splice_mask is None
                         or best_splice_eval is None
@@ -409,6 +435,46 @@ def _explore_condition(
                             stale_kl=stale.logits_kl,
                         )
                     )
+                    if best_reference_mask is not None and best_reference_eval is not None:
+                        records.append(
+                            _record(
+                                condition,
+                                selector="sparse_reference_objective_oracle",
+                                requested_budget_fraction=budget,
+                                mask=best_reference_mask,
+                                eligible=eligible,
+                                evaluation=best_reference_eval,
+                                stale_kl=stale.logits_kl,
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(
+                                condition,
+                                "sparse_reference_objective_oracle",
+                                budget,
+                                best_reference_mask,
+                            )
+                        )
+                    if best_confidence_mask is not None and best_confidence_eval is not None:
+                        records.append(
+                            _record(
+                                condition,
+                                selector="sparse_confidence_objective_oracle",
+                                requested_budget_fraction=budget,
+                                mask=best_confidence_mask,
+                                eligible=eligible,
+                                evaluation=best_confidence_eval,
+                                stale_kl=stale.logits_kl,
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(
+                                condition,
+                                "sparse_confidence_objective_oracle",
+                                budget,
+                                best_confidence_mask,
+                            )
+                        )
                     mask_rows.extend(
                         _mask_rows(
                             condition,
@@ -425,6 +491,44 @@ def _explore_condition(
                             best_sparse_mask,
                         )
                     )
+                max_direct_count = max(seen_direct_counts) if seen_direct_counts else 0
+                objective_paths = {
+                    "sparse_reference_greedy": _greedy_sparse_objective_masks(
+                        evaluate=evaluate_sparse,
+                        candidate_mask=direct_available,
+                        max_cells=max_direct_count,
+                        reference_token_id=int(condition.get("reference_token_id", -1)),
+                        objective="reference_nll",
+                    ),
+                    "sparse_confidence_greedy": _greedy_sparse_objective_masks(
+                        evaluate=evaluate_sparse,
+                        candidate_mask=direct_available,
+                        max_cells=max_direct_count,
+                        reference_token_id=int(condition.get("reference_token_id", -1)),
+                        objective="confidence",
+                    ),
+                }
+                for selector, path_by_count in objective_paths.items():
+                    for direct_count in sorted(seen_direct_counts):
+                        selected = path_by_count.get(direct_count)
+                        if selected is None:
+                            continue
+                        mask, evaluation = selected
+                        budget = direct_count / total_eligible
+                        records.append(
+                            _record(
+                                condition,
+                                selector=selector,
+                                requested_budget_fraction=budget,
+                                mask=mask,
+                                eligible=eligible,
+                                evaluation=evaluation,
+                                stale_kl=stale.logits_kl,
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(condition, selector, budget, mask)
+                        )
 
     greedy_limit = min(max(desired_counts), oracle_max_cells, total_eligible)
     candidate_mask = _candidate_pool(
@@ -568,6 +672,47 @@ def _greedy_oracle_masks(
     return result
 
 
+def _greedy_sparse_objective_masks(
+    *,
+    evaluate: Any,
+    candidate_mask: np.ndarray,
+    max_cells: int,
+    reference_token_id: int,
+    objective: str,
+) -> dict[int, tuple[np.ndarray, _Evaluation]]:
+    if objective not in {"reference_nll", "confidence"}:
+        raise ValueError(f"Unsupported sparse objective: {objective}")
+    current = np.zeros_like(candidate_mask)
+    candidates = [tuple(index) for index in np.argwhere(candidate_mask)]
+    result: dict[int, tuple[np.ndarray, _Evaluation]] = {}
+    for step in range(1, max_cells + 1):
+        best_cell: tuple[int, int] | None = None
+        best_evaluation: _Evaluation | None = None
+        best_score = math.inf
+        for layer_index, block_index in candidates:
+            if current[layer_index, block_index]:
+                continue
+            trial = current.copy()
+            trial[layer_index, block_index] = True
+            evaluation = evaluate(trial)
+            reference_nll, _, max_probability = _logit_selection_metrics(
+                evaluation.output.logits,
+                reference_token_id=reference_token_id,
+            )
+            score = reference_nll if objective == "reference_nll" else -max_probability
+            if not np.isfinite(score):
+                continue
+            if score < best_score - 1e-15:
+                best_score = score
+                best_cell = (layer_index, block_index)
+                best_evaluation = evaluation
+        if best_cell is None or best_evaluation is None:
+            break
+        current[best_cell] = True
+        result[step] = (current.copy(), best_evaluation)
+    return result
+
+
 def _column_frontier_profiles(
     *,
     evaluate: Any,
@@ -658,6 +803,11 @@ def _record(
     eligible_count = int(np.count_nonzero(eligible))
     structure = _mask_structure(mask)
     extras = evaluation.output.extras or {}
+    reference_token_id = int(condition.get("reference_token_id", -1))
+    reference_nll, output_entropy, output_max_probability = _logit_selection_metrics(
+        evaluation.output.logits,
+        reference_token_id=reference_token_id,
+    )
     return {
         **condition,
         "selector": selector,
@@ -667,6 +817,9 @@ def _record(
         "selected_fraction": selected / eligible_count if eligible_count else 0.0,
         "logits_kl": evaluation.logits_kl,
         "top1_agreement": evaluation.top1_agreement,
+        "reference_token_nll": reference_nll,
+        "output_entropy": output_entropy,
+        "output_max_probability": output_max_probability,
         "stale_logits_kl": stale_kl,
         "kl_gain_vs_stale": stale_kl - evaluation.logits_kl,
         "beneficial_vs_stale": evaluation.logits_kl <= stale_kl + 1e-15,
@@ -803,6 +956,38 @@ def _past_layers(output: BackendOutput) -> list[Any]:
     if hasattr(past, "to_legacy_cache"):
         return list(past.to_legacy_cache())
     return list(past)
+
+
+def _reference_token_id(backend: ModelBackend, sample: TaskSample) -> int:
+    tokenizer = getattr(backend, "tokenizer", None)
+    if tokenizer is None or not callable(tokenizer):
+        return -1
+    encoded = tokenizer(sample.answer, add_special_tokens=False)
+    if not isinstance(encoded, dict):
+        return -1
+    token_ids = encoded.get("input_ids", [])
+    if token_ids and isinstance(token_ids[0], list):
+        token_ids = token_ids[0]
+    return int(token_ids[0]) if token_ids else -1
+
+
+def _logit_selection_metrics(
+    logits: np.ndarray,
+    *,
+    reference_token_id: int,
+) -> tuple[float, float, float]:
+    values = np.asarray(logits, dtype=np.float64).reshape(-1, logits.shape[-1])[0]
+    shifted = values - float(np.max(values))
+    exp_values = np.exp(shifted)
+    denominator = float(np.sum(exp_values))
+    probabilities = exp_values / max(denominator, 1e-300)
+    positive = probabilities[probabilities > 0.0]
+    entropy = float(-np.sum(positive * np.log(positive)))
+    max_probability = float(np.max(probabilities))
+    if reference_token_id < 0 or reference_token_id >= len(values):
+        return math.nan, entropy, max_probability
+    log_partition = float(np.log(max(denominator, 1e-300)) + np.max(values))
+    return log_partition - float(values[reference_token_id]), entropy, max_probability
 
 
 def _prepare_target(
