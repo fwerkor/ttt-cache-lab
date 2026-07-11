@@ -108,6 +108,8 @@ class MetricsConfig(BaseModel):
     compute_attention_metrics: bool = False
     compute_layerwise_propagation_metrics: bool = False
     propagation_probe_tokens: int = Field(default=32, ge=1)
+    compute_boundary_compatibility_metrics: bool = False
+    boundary_attention_topk: int = Field(default=8, ge=1)
     compute_flops_metrics: bool = True
 
 

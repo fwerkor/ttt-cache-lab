@@ -149,6 +149,8 @@ class ExperimentArtifacts:
     metadata_path: Path | None = None
     propagation_jsonl_path: Path | None = None
     propagation_csv_path: Path | None = None
+    boundary_jsonl_path: Path | None = None
+    boundary_csv_path: Path | None = None
 
 
 def write_records(

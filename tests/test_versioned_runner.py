@@ -417,6 +417,61 @@ def test_versioned_runner_records_finite_recompute_window(tmp_path: Path) -> Non
     assert len({record.accumulated_raw_update_norm for record in records}) == 1
 
 
+def test_versioned_runner_writes_boundary_compatibility_sidecar(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-boundary-compatibility",
+            "experiment_id": "unit_boundary_compatibility",
+            "seed": 9,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 6, "hidden_size": 16, "vocab_size": 32},
+            "data": {
+                "task": "passkey",
+                "task_family": "retrieval",
+                "num_samples": 1,
+                "context_length": 64,
+                "answer_length": 2,
+            },
+            "updates": {"targets": ["lora.k:1"], "update_norm": 0.1},
+            "cache": {
+                "strategies": [
+                    "full_recompute",
+                    "stale_reuse",
+                    "windowed_recompute_1",
+                    "windowed_recompute_2",
+                    "layerwise_recompute",
+                ]
+            },
+            "metrics": {
+                "compute_boundary_compatibility_metrics": True,
+                "boundary_attention_topk": 2,
+            },
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [1],
+        }
+    )
+    artifacts = VersionedExperimentRunner(config).run()
+    assert artifacts.boundary_jsonl_path is not None
+    assert artifacts.boundary_jsonl_path.exists()
+    assert artifacts.boundary_csv_path is not None
+    assert artifacts.boundary_csv_path.exists()
+
+    from ttt_cache_lab.experiments.boundary import read_boundary_records
+
+    records = read_boundary_records(artifacts.boundary_jsonl_path)
+    assert len(records) == 2
+    assert {record.cache_strategy for record in records} == {
+        "windowed_recompute_1",
+        "windowed_recompute_2",
+    }
+    assert {record.boundary_layer for record in records} == {2, 3}
+    assert all(record.has_stale_rejoin for record in records)
+    assert all(record.metric_available for record in records)
+    assert all(record.attention_kl >= 0.0 for record in records)
+    assert all(record.attention_output_relative_error >= 0.0 for record in records)
+    assert all(record.attention_weighted_key_relative_error >= 0.0 for record in records)
+
+
 def test_versioned_runner_writes_layerwise_propagation_sidecar(tmp_path: Path) -> None:
     config = VersionedExperimentConfig.model_validate(
         {

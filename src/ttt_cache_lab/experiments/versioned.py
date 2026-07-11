@@ -19,6 +19,11 @@ from ttt_cache_lab.cache.strategies import (
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
+from ttt_cache_lab.experiments.boundary import (
+    BoundaryRecord,
+    collect_boundary_record,
+    write_boundary_records,
+)
 from ttt_cache_lab.experiments.cache_managers import build_strategy_managers
 from ttt_cache_lab.experiments.measurement import execute_strategy, measure_backend_call
 from ttt_cache_lab.experiments.metrics import (
@@ -88,7 +93,12 @@ class VersionedExperimentRunner:
     def run(self) -> ExperimentArtifacts:
         data = build_task_samples(self.config.data, seed=self.config.seed)
         backend = build_backend(self.config.model, seed=self.config.seed)
-        backend.configure_metrics(capture_attention=self.config.metrics.compute_attention_metrics)
+        backend.configure_metrics(
+            capture_attention=(
+                self.config.metrics.compute_attention_metrics
+                or self.config.metrics.compute_boundary_compatibility_metrics
+            )
+        )
         run_metadata = collect_run_metadata(self.config)
         self._run_metadata = run_metadata
         metadata_path = write_run_metadata(self.config.output_dir, run_metadata)
@@ -128,6 +138,7 @@ class VersionedExperimentRunner:
         target_steps = set(self.config.version_steps)
         records: list[ExperimentRecord] = []
         propagation_records: list[PropagationRecord] = []
+        boundary_records: list[BoundaryRecord] = []
 
         for sample_id, sample in enumerate(data):
             sample = backend.prepare_sample(sample, context_length=self.config.data.context_length)
@@ -239,6 +250,7 @@ class VersionedExperimentRunner:
                     )
                     self._record_step(
                         records,
+                        boundary_records,
                         backend=backend,
                         sample_id=sample_id,
                         sample=sample,
@@ -278,6 +290,7 @@ class VersionedExperimentRunner:
                     )
                     self._record_step(
                         records,
+                        boundary_records,
                         backend=backend,
                         sample_id=sample_id,
                         sample=sample,
@@ -307,6 +320,12 @@ class VersionedExperimentRunner:
                             self.config.output_dir,
                             merge_existing=self.config.resume,
                         )
+                    if self.config.metrics.compute_boundary_compatibility_metrics:
+                        write_boundary_records(
+                            boundary_records,
+                            self.config.output_dir,
+                            merge_existing=self.config.resume,
+                        )
 
         artifacts = write_records(
             records,
@@ -314,17 +333,42 @@ class VersionedExperimentRunner:
             merge_existing=self.config.resume,
             metadata_path=metadata_path,
         )
-        if not self.config.metrics.compute_layerwise_propagation_metrics:
+        propagation_jsonl_path: Path | None = None
+        propagation_csv_path: Path | None = None
+        boundary_jsonl_path: Path | None = None
+        boundary_csv_path: Path | None = None
+        if self.config.metrics.compute_layerwise_propagation_metrics:
+            propagation = write_propagation_records(
+                propagation_records,
+                self.config.output_dir,
+                merge_existing=self.config.resume,
+            )
+            propagation_jsonl_path = propagation.jsonl_path
+            propagation_csv_path = propagation.csv_path
+        if self.config.metrics.compute_boundary_compatibility_metrics:
+            boundary = write_boundary_records(
+                boundary_records,
+                self.config.output_dir,
+                merge_existing=self.config.resume,
+            )
+            boundary_jsonl_path = boundary.jsonl_path
+            boundary_csv_path = boundary.csv_path
+        if all(
+            path is None
+            for path in (
+                propagation_jsonl_path,
+                propagation_csv_path,
+                boundary_jsonl_path,
+                boundary_csv_path,
+            )
+        ):
             return artifacts
-        propagation = write_propagation_records(
-            propagation_records,
-            self.config.output_dir,
-            merge_existing=self.config.resume,
-        )
         return replace(
             artifacts,
-            propagation_jsonl_path=propagation.jsonl_path,
-            propagation_csv_path=propagation.csv_path,
+            propagation_jsonl_path=propagation_jsonl_path,
+            propagation_csv_path=propagation_csv_path,
+            boundary_jsonl_path=boundary_jsonl_path,
+            boundary_csv_path=boundary_csv_path,
         )
 
     def _append_propagation_records(
@@ -402,6 +446,7 @@ class VersionedExperimentRunner:
     def _record_step(
         self,
         records: list[ExperimentRecord],
+        boundary_records: list[BoundaryRecord],
         *,
         backend: ModelBackend,
         sample_id: int,
@@ -650,6 +695,55 @@ class VersionedExperimentRunner:
             )
             last_update_rms = getattr(backend, "last_applied_update_rms", None)
             applied_update_rms = float(last_update_rms()) if callable(last_update_rms) else 0.0
+            recompute_fraction_value = estimate_recompute_fraction(
+                decision, num_layers=backend.num_layers
+            )
+            if (
+                self.config.metrics.compute_boundary_compatibility_metrics
+                and is_windowed_strategy_name(decision.strategy)
+                and decision.first_invalid_layer is not None
+                and decision.last_recomputed_layer is not None
+                and version_gap > 0
+            ):
+                boundary_layer = min(backend.num_layers, decision.last_recomputed_layer)
+                window_size = max(0, boundary_layer - decision.first_invalid_layer)
+                boundary_records.append(
+                    collect_boundary_record(
+                        baseline_output,
+                        full,
+                        approx,
+                        sample_id=sample_id,
+                        dataset_sample_id=str(
+                            sample.metadata.get("dataset_sample_id", sample_id)
+                        ),
+                        task_name=self.config.data.task,
+                        task_family=self.config.data.task_family,
+                        model_name=(
+                            self.config.model.model_name_or_path
+                            or self.config.model.modelscope_model_id
+                            or "toy"
+                        ),
+                        model_num_layers=backend.num_layers,
+                        update_target=target_name,
+                        target_layer=target.layer,
+                        adapter_version=adapter_version,
+                        cached_version=record_cached_version,
+                        cache_strategy=str(decision.strategy),
+                        window_size=window_size,
+                        boundary_layer=boundary_layer,
+                        context_length=self.config.data.context_length,
+                        synthetic_difficulty=self.config.data.synthetic_difficulty,
+                        seed=self.config.seed,
+                        configured_update_norm=self.config.updates.update_norm,
+                        accumulated_update_norm=accumulated_update_norm,
+                        accumulated_raw_update_norm=accumulated_raw_update_norm,
+                        logits_kl=logits_kl_value,
+                        top1_agreement=top1,
+                        task_drop_vs_full=full_task_score - task_score,
+                        recompute_fraction=recompute_fraction_value,
+                        topk=self.config.metrics.boundary_attention_topk,
+                    )
+                )
             records.append(
                 ExperimentRecord(
                     sample_id=sample_id,
@@ -723,7 +817,7 @@ class VersionedExperimentRunner:
                     decode_latency=decode_latency,
                     end_to_end_latency=strategy_adaptation_latency + strategy_latency,
                     throughput_tokens_per_s=output_throughput(approx, latency=strategy_latency),
-                    recompute_fraction=estimate_recompute_fraction(decision, num_layers=backend.num_layers),
+                    recompute_fraction=recompute_fraction_value,
                     cache_hit=is_cache_hit(decision),
                     refresh_count=new_refresh_count,
                     rejected_reuse=(decision.reject_reuse or decision.action is CacheAction.REJECT_UPDATE),

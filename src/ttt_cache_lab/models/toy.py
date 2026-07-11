@@ -245,7 +245,10 @@ class ToyBackend:
         scores -= np.max(scores, axis=-1, keepdims=True)
         probabilities = np.exp(scores)
         probabilities /= np.sum(probabilities, axis=-1, keepdims=True)
-        return {"attention_summary": probabilities}
+        return {
+            "attention_summary": probabilities,
+            "attention_output_summary": cache.mean(axis=1),
+        }
 
     def last_adaptation_latency(self) -> float:
         return 0.0
