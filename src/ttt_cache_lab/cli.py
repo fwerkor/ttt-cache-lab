@@ -6,6 +6,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig, VersionedSweepConfig
+from ttt_cache_lab.experiments.blockwise import run_blockwise_exploration
 from ttt_cache_lab.experiments.boundary_analysis import generate_boundary_analysis
 from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
 from ttt_cache_lab.experiments.failures import capture_run_failure
@@ -125,6 +126,22 @@ def build_parser() -> argparse.ArgumentParser:
     boundary_analysis.add_argument("--summary-input", required=True, type=Path)
     boundary_analysis.add_argument("--output-dir", required=True, type=Path)
     boundary_analysis.add_argument("--ridge", type=float, default=1e-3)
+
+    blockwise = subparsers.add_parser(
+        "blockwise-explore",
+        help="Explore oracle layer-token cache splices and token-block frontiers",
+    )
+    blockwise.add_argument("--config", required=True, type=Path)
+    blockwise.add_argument("--block-size", type=int, default=64)
+    blockwise.add_argument("--version-gap", type=int, default=4)
+    blockwise.add_argument(
+        "--budget-fractions",
+        type=float,
+        nargs="+",
+        default=[0.05, 0.1, 0.25],
+    )
+    blockwise.add_argument("--oracle-candidate-limit", type=int, default=24)
+    blockwise.add_argument("--oracle-max-cells", type=int, default=16)
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -320,6 +337,21 @@ def main(argv: list[str] | None = None) -> None:
         console.print(f"Wrote {boundary_artifacts.metric_evaluation_path}")
         console.print(f"Wrote {boundary_artifacts.group_selections_path}")
         console.print(f"Wrote {boundary_artifacts.predictor_summary_path}")
+        return
+    if args.command == "blockwise-explore":
+        blockwise_config = VersionedExperimentConfig.from_yaml(args.config)
+        blockwise_artifacts = run_blockwise_exploration(
+            blockwise_config,
+            block_size=args.block_size,
+            version_gap=args.version_gap,
+            budget_fractions=tuple(args.budget_fractions),
+            oracle_candidate_limit=args.oracle_candidate_limit,
+            oracle_max_cells=args.oracle_max_cells,
+        )
+        console.print(f"Wrote {blockwise_artifacts.records_csv}")
+        console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
+        console.print(f"Wrote {blockwise_artifacts.masks_csv}")
+        console.print(f"Wrote {blockwise_artifacts.report_markdown}")
         return
     if args.command == "statistics":
         outputs = generate_statistical_report(
