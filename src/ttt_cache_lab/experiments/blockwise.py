@@ -59,6 +59,7 @@ def run_blockwise_exploration(
     sparse_swap_rounds: int = 4,
     reference_probe_lengths: tuple[int, ...] = (1,),
     sparse_stale_margins: tuple[float, ...] = (0.0,),
+    compute_cache_surgery_oracles: bool = True,
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
         raise ValueError("block sizes must be positive")
@@ -206,6 +207,7 @@ def run_blockwise_exploration(
                         sparse_swap_rounds=sparse_swap_rounds,
                         reference_probe_lengths=reference_probe_lengths,
                         sparse_stale_margins=sparse_stale_margins,
+                        compute_cache_surgery_oracles=compute_cache_surgery_oracles,
                     )
                     records.extend(condition_records)
                     frontier_rows.extend(condition_frontier)
@@ -246,6 +248,7 @@ def _explore_condition(
     sparse_swap_rounds: int,
     reference_probe_lengths: tuple[int, ...],
     sparse_stale_margins: tuple[float, ...],
+    compute_cache_surgery_oracles: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     old_layers = _past_layers(baseline)
     new_layers = _past_layers(full)
@@ -409,28 +412,31 @@ def _explore_condition(
                 layer_index * block_count + block_index
             )
 
-    selectors = {
-        "random": random_scores,
-        "kv_drift": kv_scores,
-        "attention_weighted_kv_drift": attention_scores,
-        "layer_prefix": layer_prefix_scores,
-    }
-    for selector, scores in selectors.items():
-        for count in desired_counts:
-            mask = _top_mask(scores, eligible, count)
-            evaluation = evaluate(mask)
-            records.append(
-                _record(
-                    condition,
-                    selector=selector,
-                    requested_budget_fraction=count / total_eligible,
-                    mask=mask,
-                    eligible=eligible,
-                    evaluation=evaluation,
-                    stale_kl=stale.logits_kl,
+    if compute_cache_surgery_oracles:
+        selectors = {
+            "random": random_scores,
+            "kv_drift": kv_scores,
+            "attention_weighted_kv_drift": attention_scores,
+            "layer_prefix": layer_prefix_scores,
+        }
+        for selector, scores in selectors.items():
+            for count in desired_counts:
+                mask = _top_mask(scores, eligible, count)
+                evaluation = evaluate(mask)
+                records.append(
+                    _record(
+                        condition,
+                        selector=selector,
+                        requested_budget_fraction=count / total_eligible,
+                        mask=mask,
+                        eligible=eligible,
+                        evaluation=evaluation,
+                        stale_kl=stale.logits_kl,
+                    )
                 )
-            )
-            mask_rows.extend(_mask_rows(condition, selector, count / total_eligible, mask))
+                mask_rows.extend(
+                    _mask_rows(condition, selector, count / total_eligible, mask)
+                )
 
     if sparse_scores is not None:
         direct_available = np.asarray(sparse_scores["available"], dtype=bool) & eligible
@@ -843,76 +849,78 @@ def _explore_condition(
                                 _mask_rows(condition, joint_selector, budget, joint.mask)
                             )
 
-    greedy_limit = min(max(desired_counts), oracle_max_cells, total_eligible)
-    candidate_mask = _candidate_pool(
-        kv_scores,
-        attention_scores,
-        eligible,
-        limit=max(oracle_candidate_limit, greedy_limit),
-    )
-    greedy_masks = _greedy_oracle_masks(
-        evaluate=evaluate,
-        candidate_mask=candidate_mask,
-        max_cells=greedy_limit,
-    )
-    for count in desired_counts:
-        actual = min(count, greedy_limit)
-        mask = greedy_masks[actual]
-        evaluation = evaluate(mask)
-        records.append(
-            _record(
-                condition,
-                selector="greedy_oracle",
-                requested_budget_fraction=count / total_eligible,
-                mask=mask,
-                eligible=eligible,
-                evaluation=evaluation,
-                stale_kl=stale.logits_kl,
+    frontier_rows: list[dict[str, Any]] = []
+    if compute_cache_surgery_oracles:
+        greedy_limit = min(max(desired_counts), oracle_max_cells, total_eligible)
+        candidate_mask = _candidate_pool(
+            kv_scores,
+            attention_scores,
+            eligible,
+            limit=max(oracle_candidate_limit, greedy_limit),
+        )
+        greedy_masks = _greedy_oracle_masks(
+            evaluate=evaluate,
+            candidate_mask=candidate_mask,
+            max_cells=greedy_limit,
+        )
+        for count in desired_counts:
+            actual = min(count, greedy_limit)
+            mask = greedy_masks[actual]
+            evaluation = evaluate(mask)
+            records.append(
+                _record(
+                    condition,
+                    selector="greedy_oracle",
+                    requested_budget_fraction=count / total_eligible,
+                    mask=mask,
+                    eligible=eligible,
+                    evaluation=evaluation,
+                    stale_kl=stale.logits_kl,
+                )
             )
-        )
-        mask_rows.extend(
-            _mask_rows(condition, "greedy_oracle", count / total_eligible, mask)
-        )
-
-    frontier_rows, profiles = _column_frontier_profiles(
-        evaluate=evaluate,
-        condition=condition,
-        eligible=eligible,
-        start_layer=start_layer,
-        token_count=token_count,
-        stale_kl=stale.logits_kl,
-    )
-    for count in desired_counts:
-        mask = _assemble_frontier_mask(profiles, eligible, cell_budget=count)
-        evaluation = evaluate(mask)
-        records.append(
-            _record(
-                condition,
-                selector="marginal_frontier",
-                requested_budget_fraction=count / total_eligible,
-                mask=mask,
-                eligible=eligible,
-                evaluation=evaluation,
-                stale_kl=stale.logits_kl,
+            mask_rows.extend(
+                _mask_rows(condition, "greedy_oracle", count / total_eligible, mask)
             )
-        )
-        mask_rows.extend(
-            _mask_rows(condition, "marginal_frontier", count / total_eligible, mask)
-        )
 
-    complete = eligible.copy()
-    complete_eval = evaluate(complete)
-    records.append(
-        _record(
-            condition,
-            selector="eligible_full",
-            requested_budget_fraction=1.0,
-            mask=complete,
+        frontier_rows, profiles = _column_frontier_profiles(
+            evaluate=evaluate,
+            condition=condition,
             eligible=eligible,
-            evaluation=complete_eval,
+            start_layer=start_layer,
+            token_count=token_count,
             stale_kl=stale.logits_kl,
         )
-    )
+        for count in desired_counts:
+            mask = _assemble_frontier_mask(profiles, eligible, cell_budget=count)
+            evaluation = evaluate(mask)
+            records.append(
+                _record(
+                    condition,
+                    selector="marginal_frontier",
+                    requested_budget_fraction=count / total_eligible,
+                    mask=mask,
+                    eligible=eligible,
+                    evaluation=evaluation,
+                    stale_kl=stale.logits_kl,
+                )
+            )
+            mask_rows.extend(
+                _mask_rows(condition, "marginal_frontier", count / total_eligible, mask)
+            )
+
+        complete = eligible.copy()
+        complete_eval = evaluate(complete)
+        records.append(
+            _record(
+                condition,
+                selector="eligible_full",
+                requested_budget_fraction=1.0,
+                mask=complete,
+                eligible=eligible,
+                evaluation=complete_eval,
+                stale_kl=stale.logits_kl,
+            )
+        )
     return records, frontier_rows, mask_rows
 
 

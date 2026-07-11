@@ -158,6 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=[0.0],
     )
+    blockwise.add_argument(
+        "--skip-cache-surgery-oracles",
+        action="store_true",
+        help="Skip splice baselines and frontier probes for sparse runtime benchmarks",
+    )
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -369,6 +374,7 @@ def main(argv: list[str] | None = None) -> None:
             sparse_swap_rounds=args.sparse_swap_rounds,
             reference_probe_lengths=tuple(args.reference_probe_lengths),
             sparse_stale_margins=tuple(args.sparse_stale_margins),
+            compute_cache_surgery_oracles=not args.skip_cache_surgery_oracles,
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
