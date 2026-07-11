@@ -182,11 +182,23 @@ class HuggingFaceBackend:
         return self._infer_num_layers_from_config(self.model.config)
 
     def _infer_num_layers_from_config(self, config: Any) -> int:
+        config = self._text_config(config)
         for name in ("num_hidden_layers", "n_layer", "num_layers", "n_layers"):
             value = getattr(config, name, None)
             if isinstance(value, int) and value > 0:
                 return value
         raise ValueError(f"Cannot infer transformer layer count from {type(config).__name__}")
+
+    @staticmethod
+    def _text_config(config: Any) -> Any:
+        nested = getattr(config, "text_config", None)
+        return nested if nested is not None else config
+
+    def _is_text_decoder_module(self, name: str) -> bool:
+        model_type = str(getattr(self.model.config, "model_type", "")).lower()
+        if model_type == "gemma3":
+            return "language_model" in name or name == "lm_head"
+        return True
 
     def prepare_sample(self, sample: TaskSample, *, context_length: int) -> TaskSample:
         if context_length < 2:
@@ -603,10 +615,11 @@ class HuggingFaceBackend:
         return 0.0
 
     def _full_prefill_flops(self, tokens: int) -> float:
+        config = self._text_config(self.model.config)
         hidden = self._hidden_size()
         intermediate = self._intermediate_size(hidden)
-        heads = max(1, int(getattr(self.model.config, "num_attention_heads", 1) or 1))
-        kv_heads = int(getattr(self.model.config, "num_key_value_heads", heads) or heads)
+        heads = max(1, int(getattr(config, "num_attention_heads", 1) or 1))
+        kv_heads = int(getattr(config, "num_key_value_heads", heads) or heads)
         kv_width = hidden * kv_heads / heads
         projection = 2.0 * tokens * hidden * (2.0 * hidden + 2.0 * kv_width)
         attention = 4.0 * tokens * tokens * hidden
@@ -614,15 +627,17 @@ class HuggingFaceBackend:
         return self.num_layers * (projection + attention + mlp)
 
     def _hidden_size(self) -> int:
+        config = self._text_config(self.model.config)
         for name in ("hidden_size", "n_embd", "d_model"):
-            value = getattr(self.model.config, name, None)
+            value = getattr(config, name, None)
             if isinstance(value, int) and value > 0:
                 return value
         return 1
 
     def _intermediate_size(self, hidden: int) -> int:
+        config = self._text_config(self.model.config)
         for name in ("intermediate_size", "n_inner", "ffn_dim"):
-            value = getattr(self.model.config, name, None)
+            value = getattr(config, name, None)
             if isinstance(value, int) and value > 0:
                 return value
         return 4 * hidden
@@ -676,9 +691,11 @@ class HuggingFaceBackend:
             if child_name == "base" and is_lora_linear(parent):
                 continue
             lower = module_name.lower()
+            if not self._is_text_decoder_module(lower):
+                continue
             if target.layer is not None and not self._name_matches_layer(lower, target.layer):
                 continue
-            if not any(part in lower for part in filters):
+            if not self._module_matches_target(lower, target.kind, filters=filters):
                 continue
             if is_lora_linear(module):
                 if not getattr(module, "lora_name", ""):
@@ -1295,6 +1312,10 @@ class HuggingFaceBackend:
 
     def _decoder_layers(self) -> tuple[Any | None, str]:
         backbone = getattr(self.model, "model", None)
+        language_model = getattr(backbone, "language_model", None)
+        layers = getattr(language_model, "layers", None)
+        if layers is not None:
+            return layers, "gemma3"
         layers = getattr(backbone, "layers", None)
         if layers is not None:
             return layers, "llama_like"
@@ -2006,6 +2027,9 @@ class HuggingFaceBackend:
     ) -> Any | None:
         model = getattr(self, "model", None)
         backbone = getattr(model, "model", None)
+        language_model = getattr(backbone, "language_model", None)
+        if language_model is not None:
+            backbone = language_model
         rotary = getattr(backbone, "rotary_emb", None)
         if not callable(rotary):
             return key_delta
@@ -2094,11 +2118,29 @@ class HuggingFaceBackend:
         selected = []
         for name, param in self.model.named_parameters():
             lower = name.lower()
+            if not self._is_text_decoder_module(lower):
+                continue
             if target.layer is not None and not self._name_matches_layer(lower, target.layer):
                 continue
-            if any(part in lower for part in filters):
+            if self._module_matches_target(lower, target.kind, filters=filters):
                 selected.append(param)
         return selected
+
+    def _module_matches_target(
+        self,
+        name: str,
+        kind: ModuleKind,
+        *,
+        filters: tuple[str, ...] | None = None,
+    ) -> bool:
+        if kind in {ModuleKind.MOE_ROUTER, ModuleKind.LORA_MOE_ROUTER}:
+            return name.endswith(".mlp.gate")
+        if kind in {ModuleKind.MOE_SHARED_EXPERT, ModuleKind.LORA_MOE_SHARED_EXPERT}:
+            return ".mlp.shared_expert." in name
+        if kind is ModuleKind.MOE_ROUTED_EXPERTS:
+            return ".mlp.experts." in name
+        active_filters = filters if filters is not None else self._target_filters(kind)
+        return any(part in name for part in active_filters)
 
     def _target_filters(self, kind: ModuleKind) -> tuple[str, ...]:
         mapping = {
@@ -2121,6 +2163,9 @@ class HuggingFaceBackend:
                 "attention.dense",
             ),
             ModuleKind.MLP: ("mlp", "gate_proj", "up_proj", "down_proj", "mlp.c_fc", "mlp.c_proj"),
+            ModuleKind.MOE_ROUTER: tuple(),
+            ModuleKind.MOE_SHARED_EXPERT: tuple(),
+            ModuleKind.MOE_ROUTED_EXPERTS: tuple(),
             ModuleKind.NORM: ("norm", "ln_"),
             ModuleKind.OUTPUT_HEAD: ("lm_head",),
             ModuleKind.LORA_Q: ("q_proj", "query", "c_attn"),
@@ -2156,6 +2201,8 @@ class HuggingFaceBackend:
                 "down_proj",
             ),
             ModuleKind.LORA_MLP: ("mlp", "gate_proj", "up_proj", "down_proj", "mlp.c_fc", "mlp.c_proj"),
+            ModuleKind.LORA_MOE_ROUTER: tuple(),
+            ModuleKind.LORA_MOE_SHARED_EXPERT: tuple(),
             ModuleKind.UNKNOWN: tuple(),
         }
         return mapping.get(kind, tuple())

@@ -259,10 +259,15 @@ class CachePlanner:
             ModuleKind.ATTENTION_O,
             ModuleKind.ATTENTION_ATTN,
             ModuleKind.MLP,
+            ModuleKind.MOE_ROUTER,
+            ModuleKind.MOE_SHARED_EXPERT,
+            ModuleKind.MOE_ROUTED_EXPERTS,
             ModuleKind.LORA_O,
             ModuleKind.LORA_ATTN,
             ModuleKind.LORA_ALL_LATE,
             ModuleKind.LORA_MLP,
+            ModuleKind.LORA_MOE_ROUTER,
+            ModuleKind.LORA_MOE_SHARED_EXPERT,
         }:
             return self._refresh_decision(
                 target,
@@ -398,10 +403,15 @@ class CachePlanner:
             ModuleKind.ATTENTION_O: 1.0,
             ModuleKind.ATTENTION_ATTN: 1.0,
             ModuleKind.MLP: 1.0,
+            ModuleKind.MOE_ROUTER: 1.2,
+            ModuleKind.MOE_SHARED_EXPERT: 1.0,
+            ModuleKind.MOE_ROUTED_EXPERTS: 1.0,
             ModuleKind.LORA_O: 1.0,
             ModuleKind.LORA_ATTN: 1.0,
             ModuleKind.LORA_ALL_LATE: 1.0,
             ModuleKind.LORA_MLP: 1.0,
+            ModuleKind.LORA_MOE_ROUTER: 1.2,
+            ModuleKind.LORA_MOE_SHARED_EXPERT: 1.0,
             ModuleKind.NORM: 1.5,
         }.get(target.kind, 2.0)
         return risk * max(1, version_gap) * max(0.0, update_norm)

@@ -12,6 +12,9 @@ class ModuleKind(StrEnum):
     ATTENTION_QV = "attention.qv"
     ATTENTION_ATTN = "attention.attn"
     MLP = "mlp"
+    MOE_ROUTER = "moe.router"
+    MOE_SHARED_EXPERT = "moe.shared_expert"
+    MOE_ROUTED_EXPERTS = "moe.routed_experts"
     NORM = "norm"
     OUTPUT_HEAD = "output_head"
     LORA_Q = "lora.q"
@@ -22,6 +25,8 @@ class ModuleKind(StrEnum):
     LORA_ATTN = "lora.attn"
     LORA_ALL_LATE = "lora.all_late"
     LORA_MLP = "lora.mlp"
+    LORA_MOE_ROUTER = "lora.moe_router"
+    LORA_MOE_SHARED_EXPERT = "lora.moe_shared_expert"
     UNKNOWN = "unknown"
 
 
@@ -71,6 +76,14 @@ def parse_update_target(raw: str, *, num_layers: int | None = None) -> UpdateTar
         "attention.qv": ModuleKind.ATTENTION_QV,
         "attention.attn": ModuleKind.ATTENTION_ATTN,
         "mlp": ModuleKind.MLP,
+        "moe.router": ModuleKind.MOE_ROUTER,
+        "router": ModuleKind.MOE_ROUTER,
+        "moe.shared": ModuleKind.MOE_SHARED_EXPERT,
+        "moe.shared_expert": ModuleKind.MOE_SHARED_EXPERT,
+        "shared_expert": ModuleKind.MOE_SHARED_EXPERT,
+        "moe.experts": ModuleKind.MOE_ROUTED_EXPERTS,
+        "moe.routed_experts": ModuleKind.MOE_ROUTED_EXPERTS,
+        "routed_experts": ModuleKind.MOE_ROUTED_EXPERTS,
         "norm": ModuleKind.NORM,
         "output_head": ModuleKind.OUTPUT_HEAD,
         "head": ModuleKind.OUTPUT_HEAD,
@@ -83,6 +96,11 @@ def parse_update_target(raw: str, *, num_layers: int | None = None) -> UpdateTar
         "lora.all": ModuleKind.LORA_ALL_LATE,
         "lora.all_late": ModuleKind.LORA_ALL_LATE,
         "lora.mlp": ModuleKind.LORA_MLP,
+        "lora.moe_router": ModuleKind.LORA_MOE_ROUTER,
+        "lora.router": ModuleKind.LORA_MOE_ROUTER,
+        "lora.moe_shared": ModuleKind.LORA_MOE_SHARED_EXPERT,
+        "lora.moe_shared_expert": ModuleKind.LORA_MOE_SHARED_EXPERT,
+        "lora.shared_expert": ModuleKind.LORA_MOE_SHARED_EXPERT,
     }
     kind = aliases.get(normalized, ModuleKind.UNKNOWN)
     return UpdateTarget(kind=kind, layer=layer, raw=raw)
