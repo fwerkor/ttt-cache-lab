@@ -8,6 +8,7 @@ import numpy as np
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.blockwise import (
     _beam_sparse_objective_masks,
+    _condition_seed,
     _Evaluation,
     _greedy_sparse_objective_masks,
     _joint_sparse_search_point,
@@ -29,6 +30,28 @@ def _evaluation(logits: list[float]) -> _Evaluation:
         extras={},
     )
     return _Evaluation(output=output, logits_kl=0.0, top1_agreement=1.0)
+
+
+def test_condition_seed_ignores_runtime_metadata() -> None:
+    condition = {
+        "seed": 7,
+        "sample_id": 1,
+        "dataset_sample_id": "sample-1",
+        "task_name": "multi_hop",
+        "model_name": "qwen",
+        "update_target": "lora.k_middle",
+        "target_layer": 14,
+        "version_gap": 4,
+        "configured_update_norm": 0.01,
+        "context_length": 512,
+        "block_size": 64,
+        "baseline_prefill_latency": 0.1,
+    }
+    changed_runtime = {**condition, "baseline_prefill_latency": 9.9}
+    changed_axis = {**condition, "block_size": 128}
+
+    assert _condition_seed(condition) == _condition_seed(changed_runtime)
+    assert _condition_seed(condition) != _condition_seed(changed_axis)
 
 
 def test_logit_selection_metrics_tracks_reference_and_confidence() -> None:

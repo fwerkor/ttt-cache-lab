@@ -1544,7 +1544,23 @@ def _single_token_sample(sample: TaskSample) -> TaskSample:
 
 
 def _condition_seed(condition: dict[str, Any]) -> int:
-    payload = json.dumps(condition, sort_keys=True, default=str).encode("utf-8")
+    stable_fields = {
+        key: condition.get(key)
+        for key in (
+            "seed",
+            "sample_id",
+            "dataset_sample_id",
+            "task_name",
+            "model_name",
+            "update_target",
+            "target_layer",
+            "version_gap",
+            "configured_update_norm",
+            "context_length",
+            "block_size",
+        )
+    }
+    payload = json.dumps(stable_fields, sort_keys=True, default=str).encode()
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
