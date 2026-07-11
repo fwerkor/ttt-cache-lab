@@ -27,6 +27,7 @@ class BlockwiseArtifacts:
     records_jsonl: Path
     frontier_csv: Path
     masks_csv: Path
+    features_csv: Path
     report_markdown: Path
 
 
@@ -60,6 +61,7 @@ def run_blockwise_exploration(
     reference_probe_lengths: tuple[int, ...] = (1,),
     sparse_stale_margins: tuple[float, ...] = (0.0,),
     compute_cache_surgery_oracles: bool = True,
+    compute_structured_sparse_search: bool = True,
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
         raise ValueError("block sizes must be positive")
@@ -103,6 +105,7 @@ def run_blockwise_exploration(
     records: list[dict[str, Any]] = []
     frontier_rows: list[dict[str, Any]] = []
     mask_rows: list[dict[str, Any]] = []
+    feature_rows: list[dict[str, Any]] = []
     samples = build_task_samples(config.data, seed=config.seed)
     try:
         for sample_id, raw_sample in enumerate(samples):
@@ -190,7 +193,12 @@ def run_blockwise_exploration(
                         "reference_token_id": reference_token_ids[0] if reference_token_ids else -1,
                         "reference_token_count": len(reference_token_ids),
                     }
-                    condition_records, condition_frontier, condition_masks = _explore_condition(
+                    (
+                        condition_records,
+                        condition_frontier,
+                        condition_masks,
+                        condition_features,
+                    ) = _explore_condition(
                         backend=backend,
                         sample=sample,
                         splice=splice,
@@ -208,14 +216,17 @@ def run_blockwise_exploration(
                         reference_probe_lengths=reference_probe_lengths,
                         sparse_stale_margins=sparse_stale_margins,
                         compute_cache_surgery_oracles=compute_cache_surgery_oracles,
+                        compute_structured_sparse_search=compute_structured_sparse_search,
                     )
                     records.extend(condition_records)
                     frontier_rows.extend(condition_frontier)
                     mask_rows.extend(condition_masks)
+                    feature_rows.extend(condition_features)
                 _write_rows(output_dir / "blockwise_records.csv", records)
                 _write_jsonl(output_dir / "blockwise_records.jsonl", records)
                 _write_rows(output_dir / "block_frontier.csv", frontier_rows)
                 _write_rows(output_dir / "block_masks.csv", mask_rows)
+                _write_rows(output_dir / "block_features.csv", feature_rows)
     finally:
         backend.restore_after_update()
 
@@ -226,6 +237,7 @@ def run_blockwise_exploration(
         records_jsonl=output_dir / "blockwise_records.jsonl",
         frontier_csv=output_dir / "block_frontier.csv",
         masks_csv=output_dir / "block_masks.csv",
+        features_csv=output_dir / "block_features.csv",
         report_markdown=report_path,
     )
 
@@ -249,7 +261,13 @@ def _explore_condition(
     reference_probe_lengths: tuple[int, ...],
     sparse_stale_margins: tuple[float, ...],
     compute_cache_surgery_oracles: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    compute_structured_sparse_search: bool,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     old_layers = _past_layers(baseline)
     new_layers = _past_layers(full)
     if len(old_layers) != len(new_layers):
@@ -396,6 +414,7 @@ def _explore_condition(
         )
     ]
     mask_rows: list[dict[str, Any]] = []
+    feature_rows: list[dict[str, Any]] = []
     desired_counts = sorted(
         {
             max(1, min(total_eligible, int(math.ceil(total_eligible * fraction))))
@@ -441,6 +460,39 @@ def _explore_condition(
     if sparse_scores is not None:
         direct_available = np.asarray(sparse_scores["available"], dtype=bool) & eligible
         direct_total = int(np.count_nonzero(direct_available))
+        for layer_index, block_index in np.argwhere(direct_available):
+            token_start = int(block_index) * block_size
+            token_end = min(token_count, token_start + block_size)
+            feature_rows.append(
+                {
+                    **condition,
+                    "layer": int(layer_index),
+                    "token_block": int(block_index),
+                    "token_start": token_start,
+                    "token_end": token_end,
+                    "token_center_fraction": (
+                        (token_start + token_end) / 2.0 / max(token_count, 1)
+                    ),
+                    "token_length_fraction": (token_end - token_start) / max(token_count, 1),
+                    "layer_fraction": int(layer_index) / max(layer_count - 1, 1),
+                    "direct_available_cells": direct_total,
+                    "stale_attention_mass": float(
+                        sparse_scores["stale_attention_mass"][layer_index, block_index]
+                    ),
+                    "input_weight_bound": float(
+                        sparse_scores["input_weight_bound"][layer_index, block_index]
+                    ),
+                    "attention_input_bound": float(
+                        sparse_scores["attention_input_bound"][layer_index, block_index]
+                    ),
+                    "predicted_delta_norm": float(
+                        sparse_scores["predicted_delta_norm"][layer_index, block_index]
+                    ),
+                    "attention_predicted_delta": float(
+                        sparse_scores["attention_predicted_delta"][layer_index, block_index]
+                    ),
+                }
+            )
         sparse_selectors = {
             "sparse_attention_mass": "stale_attention_mass",
             "sparse_input_bound": "input_weight_bound",
@@ -490,364 +542,365 @@ def _explore_condition(
                     all_direct,
                 )
             )
-            direct_indices = [tuple(index) for index in np.argwhere(direct_available)]
-            search_counts = sorted({min(count, direct_total) for count in desired_counts})
-            reference_token_id = int(condition.get("reference_token_id", -1))
-            reference_objectives = [("reference", "reference_nll")]
-            for length in effective_reference_lengths:
-                if length <= 1:
-                    continue
-                key = f"reference_token_nll_{length}"
-                if stale.output.extras and key in stale.output.extras:
-                    reference_objectives.append((f"reference{length}", f"reference_nll_{length}"))
+            if compute_structured_sparse_search:
+                direct_indices = [tuple(index) for index in np.argwhere(direct_available)]
+                search_counts = sorted({min(count, direct_total) for count in desired_counts})
+                reference_token_id = int(condition.get("reference_token_id", -1))
+                reference_objectives = [("reference", "reference_nll")]
+                for length in effective_reference_lengths:
+                    if length <= 1:
+                        continue
+                    key = f"reference_token_nll_{length}"
+                    if stale.output.extras and key in stale.output.extras:
+                        reference_objectives.append((f"reference{length}", f"reference_nll_{length}"))
 
-            if direct_total <= direct_oracle_max_blocks:
-                for direct_count in search_counts:
-                    best_splice_mask: np.ndarray | None = None
-                    best_splice_eval: _Evaluation | None = None
-                    best_sparse_mask: np.ndarray | None = None
-                    best_sparse_eval: _Evaluation | None = None
-                    best_reference_mask: np.ndarray | None = None
-                    best_reference_eval: _Evaluation | None = None
-                    best_reference_nll = math.inf
-                    best_sequence: dict[str, tuple[float, np.ndarray, _Evaluation]] = {}
-                    best_sequence_kl: dict[str, tuple[float, np.ndarray, _Evaluation]] = {}
-                    best_confidence_mask: np.ndarray | None = None
-                    best_confidence_eval: _Evaluation | None = None
-                    best_confidence = -math.inf
-                    for chosen in combinations(direct_indices, direct_count):
-                        mask = np.zeros_like(direct_available)
-                        for index in chosen:
-                            mask[index] = True
-                        splice_eval = evaluate(mask)
+                if direct_total <= direct_oracle_max_blocks:
+                    for direct_count in search_counts:
+                        best_splice_mask: np.ndarray | None = None
+                        best_splice_eval: _Evaluation | None = None
+                        best_sparse_mask: np.ndarray | None = None
+                        best_sparse_eval: _Evaluation | None = None
+                        best_reference_mask: np.ndarray | None = None
+                        best_reference_eval: _Evaluation | None = None
+                        best_reference_nll = math.inf
+                        best_sequence: dict[str, tuple[float, np.ndarray, _Evaluation]] = {}
+                        best_sequence_kl: dict[str, tuple[float, np.ndarray, _Evaluation]] = {}
+                        best_confidence_mask: np.ndarray | None = None
+                        best_confidence_eval: _Evaluation | None = None
+                        best_confidence = -math.inf
+                        for chosen in combinations(direct_indices, direct_count):
+                            mask = np.zeros_like(direct_available)
+                            for index in chosen:
+                                mask[index] = True
+                            splice_eval = evaluate(mask)
+                            if (
+                                best_splice_eval is None
+                                or splice_eval.logits_kl < best_splice_eval.logits_kl - 1e-15
+                            ):
+                                best_splice_mask = mask.copy()
+                                best_splice_eval = splice_eval
+                            sparse_eval = evaluate_sparse(mask)
+                            if (
+                                best_sparse_eval is None
+                                or sparse_eval.logits_kl < best_sparse_eval.logits_kl - 1e-15
+                            ):
+                                best_sparse_mask = mask.copy()
+                                best_sparse_eval = sparse_eval
+                            reference_nll, _, max_probability = _logit_selection_metrics(
+                                sparse_eval.output.logits,
+                                reference_token_id=reference_token_id,
+                            )
+                            if np.isfinite(reference_nll) and reference_nll < best_reference_nll:
+                                best_reference_nll = reference_nll
+                                best_reference_mask = mask.copy()
+                                best_reference_eval = sparse_eval
+                            for label, objective in reference_objectives[1:]:
+                                score = _sparse_objective_score(
+                                    sparse_eval,
+                                    reference_token_id=reference_token_id,
+                                    objective=objective,
+                                )
+                                previous = best_sequence.get(label)
+                                if np.isfinite(score) and (previous is None or score < previous[0]):
+                                    best_sequence[label] = (score, mask.copy(), sparse_eval)
+                                length = int(objective.rsplit("_", 1)[1])
+                                sequence_kl = float(
+                                    (sparse_eval.output.extras or {}).get(
+                                        f"reference_token_kl_{length}",
+                                        math.nan,
+                                    )
+                                )
+                                previous_kl = best_sequence_kl.get(label)
+                                if np.isfinite(sequence_kl) and (
+                                    previous_kl is None or sequence_kl < previous_kl[0]
+                                ):
+                                    best_sequence_kl[label] = (
+                                        sequence_kl,
+                                        mask.copy(),
+                                        sparse_eval,
+                                    )
+                            if max_probability > best_confidence:
+                                best_confidence = max_probability
+                                best_confidence_mask = mask.copy()
+                                best_confidence_eval = sparse_eval
                         if (
-                            best_splice_eval is None
-                            or splice_eval.logits_kl < best_splice_eval.logits_kl - 1e-15
+                            best_splice_mask is None
+                            or best_splice_eval is None
+                            or best_sparse_mask is None
+                            or best_sparse_eval is None
                         ):
-                            best_splice_mask = mask.copy()
-                            best_splice_eval = splice_eval
-                        sparse_eval = evaluate_sparse(mask)
-                        if (
-                            best_sparse_eval is None
-                            or sparse_eval.logits_kl < best_sparse_eval.logits_kl - 1e-15
-                        ):
-                            best_sparse_mask = mask.copy()
-                            best_sparse_eval = sparse_eval
-                        reference_nll, _, max_probability = _logit_selection_metrics(
-                            sparse_eval.output.logits,
-                            reference_token_id=reference_token_id,
-                        )
-                        if np.isfinite(reference_nll) and reference_nll < best_reference_nll:
-                            best_reference_nll = reference_nll
-                            best_reference_mask = mask.copy()
-                            best_reference_eval = sparse_eval
-                        for label, objective in reference_objectives[1:]:
-                            score = _sparse_objective_score(
-                                sparse_eval,
+                            continue
+                        budget = direct_count / total_eligible
+                        exhaustive_rows = [
+                            ("direct_splice_oracle", best_splice_mask, best_splice_eval),
+                            ("sparse_delta_oracle", best_sparse_mask, best_sparse_eval),
+                        ]
+                        if best_reference_mask is not None and best_reference_eval is not None:
+                            exhaustive_rows.append(
+                                (
+                                    "sparse_reference_objective_oracle",
+                                    best_reference_mask,
+                                    best_reference_eval,
+                                )
+                            )
+                        if best_confidence_mask is not None and best_confidence_eval is not None:
+                            exhaustive_rows.append(
+                                (
+                                    "sparse_confidence_objective_oracle",
+                                    best_confidence_mask,
+                                    best_confidence_eval,
+                                )
+                            )
+                        for label, (_, sequence_mask, sequence_eval) in best_sequence.items():
+                            exhaustive_rows.append(
+                                (
+                                    f"sparse_{label}_objective_oracle",
+                                    sequence_mask,
+                                    sequence_eval,
+                                )
+                            )
+                        for label, (_, sequence_mask, sequence_eval) in best_sequence_kl.items():
+                            length_label = label.removeprefix("reference")
+                            exhaustive_rows.append(
+                                (
+                                    f"sparse_sequence{length_label}_delta_oracle",
+                                    sequence_mask,
+                                    sequence_eval,
+                                )
+                            )
+                        exhaustive_probe_count = math.comb(direct_total, direct_count)
+                        for selector, mask, evaluation in exhaustive_rows:
+                            records.append(
+                                _record(
+                                    condition,
+                                    selector=selector,
+                                    requested_budget_fraction=budget,
+                                    mask=mask,
+                                    eligible=eligible,
+                                    evaluation=evaluation,
+                                    stale_kl=stale.logits_kl,
+                                    selection_metadata={
+                                        "search_probe_count": exhaustive_probe_count,
+                                        "selection_objective": (
+                                            "logits_kl"
+                                            if selector in {"direct_splice_oracle", "sparse_delta_oracle"}
+                                            else (
+                                                f"reference_sequence_kl_{selector.removeprefix('sparse_sequence').removesuffix('_delta_oracle')}"
+                                                if selector.startswith("sparse_sequence")
+                                                else (
+                                                    "reference_nll"
+                                                    if selector.startswith("sparse_reference")
+                                                    else "confidence"
+                                                )
+                                            )
+                                        ),
+                                        "joint_budget_selection": False,
+                                    },
+                                )
+                            )
+                            mask_rows.extend(_mask_rows(condition, selector, budget, mask))
+
+                max_direct_count = max(search_counts, default=0)
+
+                def to_search_points(
+                    path_by_count: dict[int, tuple[np.ndarray, _Evaluation]],
+                    *,
+                    objective: str,
+                ) -> dict[int, _SearchPoint]:
+                    points: dict[int, _SearchPoint] = {}
+                    for count, (mask, evaluation) in path_by_count.items():
+                        points[count] = _SearchPoint(
+                            mask=mask.copy(),
+                            evaluation=evaluation,
+                            score=_sparse_objective_score(
+                                evaluation,
                                 reference_token_id=reference_token_id,
                                 objective=objective,
-                            )
-                            previous = best_sequence.get(label)
-                            if np.isfinite(score) and (previous is None or score < previous[0]):
-                                best_sequence[label] = (score, mask.copy(), sparse_eval)
-                            length = int(objective.rsplit("_", 1)[1])
-                            sequence_kl = float(
-                                (sparse_eval.output.extras or {}).get(
-                                    f"reference_token_kl_{length}",
-                                    math.nan,
-                                )
-                            )
-                            previous_kl = best_sequence_kl.get(label)
-                            if np.isfinite(sequence_kl) and (
-                                previous_kl is None or sequence_kl < previous_kl[0]
-                            ):
-                                best_sequence_kl[label] = (
-                                    sequence_kl,
-                                    mask.copy(),
-                                    sparse_eval,
-                                )
-                        if max_probability > best_confidence:
-                            best_confidence = max_probability
-                            best_confidence_mask = mask.copy()
-                            best_confidence_eval = sparse_eval
-                    if (
-                        best_splice_mask is None
-                        or best_splice_eval is None
-                        or best_sparse_mask is None
-                        or best_sparse_eval is None
-                    ):
-                        continue
-                    budget = direct_count / total_eligible
-                    exhaustive_rows = [
-                        ("direct_splice_oracle", best_splice_mask, best_splice_eval),
-                        ("sparse_delta_oracle", best_sparse_mask, best_sparse_eval),
-                    ]
-                    if best_reference_mask is not None and best_reference_eval is not None:
-                        exhaustive_rows.append(
-                            (
-                                "sparse_reference_objective_oracle",
-                                best_reference_mask,
-                                best_reference_eval,
+                            ),
+                            probe_count=sum(direct_total - step for step in range(count)),
+                        )
+                    return points
+
+                def objective_probe_length(objective: str) -> int:
+                    if objective.startswith("reference_nll_"):
+                        return int(objective.rsplit("_", 1)[1])
+                    return 1
+
+                fixed_paths: dict[str, tuple[str, dict[int, _SearchPoint]]] = {}
+                reference_path_groups: dict[
+                    str, tuple[str, dict[str, dict[int, _SearchPoint]]]
+                ] = {}
+                for label, objective in reference_objectives:
+                    selector_prefix = f"sparse_{label}"
+                    greedy_raw = _greedy_sparse_objective_masks(
+                        evaluate=evaluate_sparse,
+                        candidate_mask=direct_available,
+                        max_cells=max_direct_count,
+                        reference_token_id=reference_token_id,
+                        objective=objective,
+                    )
+                    greedy_points = to_search_points(greedy_raw, objective=objective)
+                    paths: dict[str, dict[int, _SearchPoint]] = {
+                        f"{selector_prefix}_greedy": greedy_points,
+                    }
+                    for beam_width in sparse_beam_widths:
+                        paths[f"{selector_prefix}_beam{beam_width}"] = (
+                            _beam_sparse_objective_masks(
+                                evaluate=evaluate_sparse,
+                                candidate_mask=direct_available,
+                                max_cells=max_direct_count,
+                                reference_token_id=reference_token_id,
+                                objective=objective,
+                                beam_width=beam_width,
                             )
                         )
-                    if best_confidence_mask is not None and best_confidence_eval is not None:
-                        exhaustive_rows.append(
-                            (
-                                "sparse_confidence_objective_oracle",
-                                best_confidence_mask,
-                                best_confidence_eval,
+                    if sparse_swap_rounds > 0:
+                        paths[f"{selector_prefix}_swap"] = (
+                            _swap_refine_sparse_objective_masks(
+                                evaluate=evaluate_sparse,
+                                greedy_path=greedy_raw,
+                                candidate_mask=direct_available,
+                                reference_token_id=reference_token_id,
+                                objective=objective,
+                                max_rounds=sparse_swap_rounds,
                             )
                         )
-                    for label, (_, sequence_mask, sequence_eval) in best_sequence.items():
-                        exhaustive_rows.append(
-                            (
-                                f"sparse_{label}_objective_oracle",
-                                sequence_mask,
-                                sequence_eval,
-                            )
-                        )
-                    for label, (_, sequence_mask, sequence_eval) in best_sequence_kl.items():
-                        length_label = label.removeprefix("reference")
-                        exhaustive_rows.append(
-                            (
-                                f"sparse_sequence{length_label}_delta_oracle",
-                                sequence_mask,
-                                sequence_eval,
-                            )
-                        )
-                    exhaustive_probe_count = math.comb(direct_total, direct_count)
-                    for selector, mask, evaluation in exhaustive_rows:
+                    reference_path_groups[label] = (objective, paths)
+                    fixed_paths.update(
+                        {
+                            selector: (objective, path_by_count)
+                            for selector, path_by_count in paths.items()
+                        }
+                    )
+
+                confidence_greedy_raw = _greedy_sparse_objective_masks(
+                    evaluate=evaluate_sparse,
+                    candidate_mask=direct_available,
+                    max_cells=max_direct_count,
+                    reference_token_id=reference_token_id,
+                    objective="confidence",
+                )
+                fixed_paths["sparse_confidence_greedy"] = (
+                    "confidence",
+                    to_search_points(confidence_greedy_raw, objective="confidence"),
+                )
+
+                for selector, (objective, path_by_count) in fixed_paths.items():
+                    probe_length = objective_probe_length(objective)
+                    for direct_count in search_counts:
+                        point = path_by_count.get(direct_count)
+                        if point is None:
+                            continue
+                        budget = direct_count / total_eligible
                         records.append(
                             _record(
                                 condition,
                                 selector=selector,
                                 requested_budget_fraction=budget,
-                                mask=mask,
+                                mask=point.mask,
                                 eligible=eligible,
-                                evaluation=evaluation,
+                                evaluation=point.evaluation,
                                 stale_kl=stale.logits_kl,
                                 selection_metadata={
-                                    "search_probe_count": exhaustive_probe_count,
-                                    "selection_objective": (
-                                        "logits_kl"
-                                        if selector in {"direct_splice_oracle", "sparse_delta_oracle"}
-                                        else (
-                                            f"reference_sequence_kl_{selector.removeprefix('sparse_sequence').removesuffix('_delta_oracle')}"
-                                            if selector.startswith("sparse_sequence")
-                                            else (
-                                                "reference_nll"
-                                                if selector.startswith("sparse_reference")
-                                                else "confidence"
-                                            )
-                                        )
+                                    "search_probe_count": point.probe_count,
+                                    "search_reference_token_evaluations": (
+                                        point.probe_count * probe_length
+                                        if objective.startswith("reference_nll")
+                                        else 0
                                     ),
+                                    "selection_objective": objective,
+                                    "selection_score": point.score,
+                                    "reference_probe_length": probe_length,
                                     "joint_budget_selection": False,
+                                    "search_beam_width": (
+                                        int(selector.rsplit("beam", 1)[1])
+                                        if "beam" in selector
+                                        else 1
+                                    ),
+                                    "search_swap_rounds": (
+                                        sparse_swap_rounds if selector.endswith("swap") else 0
+                                    ),
                                 },
                             )
                         )
-                        mask_rows.extend(_mask_rows(condition, selector, budget, mask))
+                        mask_rows.extend(_mask_rows(condition, selector, budget, point.mask))
 
-            max_direct_count = max(search_counts, default=0)
-
-            def to_search_points(
-                path_by_count: dict[int, tuple[np.ndarray, _Evaluation]],
-                *,
-                objective: str,
-            ) -> dict[int, _SearchPoint]:
-                points: dict[int, _SearchPoint] = {}
-                for count, (mask, evaluation) in path_by_count.items():
-                    points[count] = _SearchPoint(
-                        mask=mask.copy(),
-                        evaluation=evaluation,
-                        score=_sparse_objective_score(
-                            evaluation,
+                for _, (objective, paths) in reference_path_groups.items():
+                    probe_length = objective_probe_length(objective)
+                    for selector, path_by_count in paths.items():
+                        stale_objective_score = _sparse_objective_score(
+                            stale,
                             reference_token_id=reference_token_id,
                             objective=objective,
-                        ),
-                        probe_count=sum(direct_total - step for step in range(count)),
-                    )
-                return points
-
-            def objective_probe_length(objective: str) -> int:
-                if objective.startswith("reference_nll_"):
-                    return int(objective.rsplit("_", 1)[1])
-                return 1
-
-            fixed_paths: dict[str, tuple[str, dict[int, _SearchPoint]]] = {}
-            reference_path_groups: dict[
-                str, tuple[str, dict[str, dict[int, _SearchPoint]]]
-            ] = {}
-            for label, objective in reference_objectives:
-                selector_prefix = f"sparse_{label}"
-                greedy_raw = _greedy_sparse_objective_masks(
-                    evaluate=evaluate_sparse,
-                    candidate_mask=direct_available,
-                    max_cells=max_direct_count,
-                    reference_token_id=reference_token_id,
-                    objective=objective,
-                )
-                greedy_points = to_search_points(greedy_raw, objective=objective)
-                paths: dict[str, dict[int, _SearchPoint]] = {
-                    f"{selector_prefix}_greedy": greedy_points,
-                }
-                for beam_width in sparse_beam_widths:
-                    paths[f"{selector_prefix}_beam{beam_width}"] = (
-                        _beam_sparse_objective_masks(
-                            evaluate=evaluate_sparse,
-                            candidate_mask=direct_available,
-                            max_cells=max_direct_count,
-                            reference_token_id=reference_token_id,
-                            objective=objective,
-                            beam_width=beam_width,
                         )
-                    )
-                if sparse_swap_rounds > 0:
-                    paths[f"{selector_prefix}_swap"] = (
-                        _swap_refine_sparse_objective_masks(
-                            evaluate=evaluate_sparse,
-                            greedy_path=greedy_raw,
-                            candidate_mask=direct_available,
-                            reference_token_id=reference_token_id,
-                            objective=objective,
-                            max_rounds=sparse_swap_rounds,
-                        )
-                    )
-                reference_path_groups[label] = (objective, paths)
-                fixed_paths.update(
-                    {
-                        selector: (objective, path_by_count)
-                        for selector, path_by_count in paths.items()
-                    }
-                )
-
-            confidence_greedy_raw = _greedy_sparse_objective_masks(
-                evaluate=evaluate_sparse,
-                candidate_mask=direct_available,
-                max_cells=max_direct_count,
-                reference_token_id=reference_token_id,
-                objective="confidence",
-            )
-            fixed_paths["sparse_confidence_greedy"] = (
-                "confidence",
-                to_search_points(confidence_greedy_raw, objective="confidence"),
-            )
-
-            for selector, (objective, path_by_count) in fixed_paths.items():
-                probe_length = objective_probe_length(objective)
-                for direct_count in search_counts:
-                    point = path_by_count.get(direct_count)
-                    if point is None:
-                        continue
-                    budget = direct_count / total_eligible
-                    records.append(
-                        _record(
-                            condition,
-                            selector=selector,
-                            requested_budget_fraction=budget,
-                            mask=point.mask,
-                            eligible=eligible,
-                            evaluation=point.evaluation,
-                            stale_kl=stale.logits_kl,
-                            selection_metadata={
-                                "search_probe_count": point.probe_count,
-                                "search_reference_token_evaluations": (
-                                    point.probe_count * probe_length
-                                    if objective.startswith("reference_nll")
-                                    else 0
-                                ),
-                                "selection_objective": objective,
-                                "selection_score": point.score,
-                                "reference_probe_length": probe_length,
-                                "joint_budget_selection": False,
-                                "search_beam_width": (
-                                    int(selector.rsplit("beam", 1)[1])
-                                    if "beam" in selector
-                                    else 1
-                                ),
-                                "search_swap_rounds": (
-                                    sparse_swap_rounds if selector.endswith("swap") else 0
-                                ),
-                            },
-                        )
-                    )
-                    mask_rows.extend(_mask_rows(condition, selector, budget, point.mask))
-
-            for _, (objective, paths) in reference_path_groups.items():
-                probe_length = objective_probe_length(objective)
-                for selector, path_by_count in paths.items():
-                    stale_objective_score = _sparse_objective_score(
-                        stale,
-                        reference_token_id=reference_token_id,
-                        objective=objective,
-                    )
-                    for cost_penalty in sparse_cost_penalties:
-                        for stale_margin in sparse_stale_margins:
-                            joint = _joint_sparse_search_point(
-                                stale=stale,
-                                path=path_by_count,
-                                reference_token_id=reference_token_id,
-                                objective=objective,
-                                direct_total=direct_total,
-                                cost_penalty=cost_penalty,
-                                stale_margin=stale_margin,
-                            )
-                            selected_count = int(np.count_nonzero(joint.mask))
-                            penalty_label = f"{cost_penalty:g}".replace(".", "p")
-                            margin_label = f"{stale_margin:g}".replace(".", "p")
-                            joint_selector = f"{selector}_joint_p{penalty_label}"
-                            if stale_margin > 0.0:
-                                joint_selector += f"_m{margin_label}"
-                            budget = selected_count / total_eligible
-                            raw_selected_score = _sparse_objective_score(
-                                joint.evaluation,
-                                reference_token_id=reference_token_id,
-                                objective=objective,
-                            )
-                            objective_improvement = stale_objective_score - raw_selected_score
-                            records.append(
-                                _record(
-                                    condition,
-                                    selector=joint_selector,
-                                    requested_budget_fraction=budget,
-                                    mask=joint.mask,
-                                    eligible=eligible,
-                                    evaluation=joint.evaluation,
-                                    stale_kl=stale.logits_kl,
-                                    selection_metadata={
-                                        "search_probe_count": joint.probe_count,
-                                        "search_reference_token_evaluations": (
-                                            joint.probe_count * probe_length
-                                        ),
-                                        "selection_objective": objective,
-                                        "selection_score": joint.score,
-                                        "selection_raw_score": raw_selected_score,
-                                        "selection_stale_score": stale_objective_score,
-                                        "selection_objective_improvement_vs_stale": (
-                                            objective_improvement
-                                        ),
-                                        "selection_cost_penalty": cost_penalty,
-                                        "selection_stale_margin": stale_margin,
-                                        "reference_probe_length": probe_length,
-                                        "joint_budget_selection": True,
-                                        "selected_stale_action": selected_count == 0,
-                                        "safety_gate_passed": (
-                                            selected_count > 0
-                                            and objective_improvement >= stale_margin - 1e-15
-                                        ),
-                                        "search_beam_width": (
-                                            int(selector.rsplit("beam", 1)[1])
-                                            if "beam" in selector
-                                            else 1
-                                        ),
-                                        "search_swap_rounds": (
-                                            sparse_swap_rounds if selector.endswith("swap") else 0
-                                        ),
-                                    },
+                        for cost_penalty in sparse_cost_penalties:
+                            for stale_margin in sparse_stale_margins:
+                                joint = _joint_sparse_search_point(
+                                    stale=stale,
+                                    path=path_by_count,
+                                    reference_token_id=reference_token_id,
+                                    objective=objective,
+                                    direct_total=direct_total,
+                                    cost_penalty=cost_penalty,
+                                    stale_margin=stale_margin,
                                 )
-                            )
-                            mask_rows.extend(
-                                _mask_rows(condition, joint_selector, budget, joint.mask)
-                            )
+                                selected_count = int(np.count_nonzero(joint.mask))
+                                penalty_label = f"{cost_penalty:g}".replace(".", "p")
+                                margin_label = f"{stale_margin:g}".replace(".", "p")
+                                joint_selector = f"{selector}_joint_p{penalty_label}"
+                                if stale_margin > 0.0:
+                                    joint_selector += f"_m{margin_label}"
+                                budget = selected_count / total_eligible
+                                raw_selected_score = _sparse_objective_score(
+                                    joint.evaluation,
+                                    reference_token_id=reference_token_id,
+                                    objective=objective,
+                                )
+                                objective_improvement = stale_objective_score - raw_selected_score
+                                records.append(
+                                    _record(
+                                        condition,
+                                        selector=joint_selector,
+                                        requested_budget_fraction=budget,
+                                        mask=joint.mask,
+                                        eligible=eligible,
+                                        evaluation=joint.evaluation,
+                                        stale_kl=stale.logits_kl,
+                                        selection_metadata={
+                                            "search_probe_count": joint.probe_count,
+                                            "search_reference_token_evaluations": (
+                                                joint.probe_count * probe_length
+                                            ),
+                                            "selection_objective": objective,
+                                            "selection_score": joint.score,
+                                            "selection_raw_score": raw_selected_score,
+                                            "selection_stale_score": stale_objective_score,
+                                            "selection_objective_improvement_vs_stale": (
+                                                objective_improvement
+                                            ),
+                                            "selection_cost_penalty": cost_penalty,
+                                            "selection_stale_margin": stale_margin,
+                                            "reference_probe_length": probe_length,
+                                            "joint_budget_selection": True,
+                                            "selected_stale_action": selected_count == 0,
+                                            "safety_gate_passed": (
+                                                selected_count > 0
+                                                and objective_improvement >= stale_margin - 1e-15
+                                            ),
+                                            "search_beam_width": (
+                                                int(selector.rsplit("beam", 1)[1])
+                                                if "beam" in selector
+                                                else 1
+                                            ),
+                                            "search_swap_rounds": (
+                                                sparse_swap_rounds if selector.endswith("swap") else 0
+                                            ),
+                                        },
+                                    )
+                                )
+                                mask_rows.extend(
+                                    _mask_rows(condition, joint_selector, budget, joint.mask)
+                                )
 
     frontier_rows: list[dict[str, Any]] = []
     if compute_cache_surgery_oracles:
@@ -921,7 +974,7 @@ def _explore_condition(
                 stale_kl=stale.logits_kl,
             )
         )
-    return records, frontier_rows, mask_rows
+    return records, frontier_rows, mask_rows, feature_rows
 
 
 def _cell_scores(

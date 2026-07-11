@@ -163,6 +163,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip splice baselines and frontier probes for sparse runtime benchmarks",
     )
+    blockwise.add_argument(
+        "--skip-structured-sparse-search",
+        action="store_true",
+        help="Keep static sparse selectors but skip exhaustive, greedy, beam, swap, and joint searches",
+    )
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -375,6 +380,7 @@ def main(argv: list[str] | None = None) -> None:
             reference_probe_lengths=tuple(args.reference_probe_lengths),
             sparse_stale_margins=tuple(args.sparse_stale_margins),
             compute_cache_surgery_oracles=not args.skip_cache_surgery_oracles,
+            compute_structured_sparse_search=not args.skip_structured_sparse_search,
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
