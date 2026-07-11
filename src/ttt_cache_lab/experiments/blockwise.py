@@ -206,6 +206,40 @@ def _explore_condition(
 
     empty = np.zeros_like(eligible)
     stale = evaluate(empty)
+    sparse_probe = getattr(backend, "probe_blockwise_lora_delta", None)
+    sparse_score_fn = getattr(backend, "blockwise_lora_delta_scores", None)
+    sparse_cache: dict[bytes, _Evaluation] = {}
+
+    def evaluate_sparse(mask: np.ndarray) -> _Evaluation:
+        if not callable(sparse_probe):
+            raise RuntimeError("Backend does not implement block-sparse LoRA delta repair")
+        key = np.ascontiguousarray(mask, dtype=np.uint8).tobytes()
+        cached = sparse_cache.get(key)
+        if cached is not None:
+            return cached
+        output = sparse_probe(
+            baseline=baseline,
+            block_mask=mask,
+            block_size=block_size,
+        )
+        value = _Evaluation(
+            output=output,
+            logits_kl=kl_divergence(full.logits, output.logits),
+            top1_agreement=top1_agreement(full.logits, output.logits),
+        )
+        sparse_cache[key] = value
+        return value
+
+    sparse_scores: dict[str, np.ndarray] | None = None
+    if callable(sparse_score_fn) and callable(sparse_probe):
+        try:
+            sparse_scores = sparse_score_fn(
+                baseline=baseline,
+                stale=stale.output,
+                block_size=block_size,
+            )
+        except ValueError:
+            sparse_scores = None
     records = [
         _record(
             condition,
@@ -256,6 +290,59 @@ def _explore_condition(
                 )
             )
             mask_rows.extend(_mask_rows(condition, selector, count / total_eligible, mask))
+
+    if sparse_scores is not None:
+        direct_available = np.asarray(sparse_scores["available"], dtype=bool) & eligible
+        direct_total = int(np.count_nonzero(direct_available))
+        sparse_selectors = {
+            "sparse_attention_mass": "stale_attention_mass",
+            "sparse_input_bound": "input_weight_bound",
+            "sparse_attention_input_bound": "attention_input_bound",
+            "sparse_predicted_delta_norm": "predicted_delta_norm",
+            "sparse_attention_predicted_delta": "attention_predicted_delta",
+        }
+        if direct_total > 0:
+            for selector, score_name in sparse_selectors.items():
+                scores = np.asarray(sparse_scores[score_name], dtype=np.float64)
+                for count in desired_counts:
+                    direct_count = min(count, direct_total)
+                    mask = _top_mask(scores, direct_available, direct_count)
+                    evaluation = evaluate_sparse(mask)
+                    records.append(
+                        _record(
+                            condition,
+                            selector=selector,
+                            requested_budget_fraction=count / total_eligible,
+                            mask=mask,
+                            eligible=eligible,
+                            evaluation=evaluation,
+                            stale_kl=stale.logits_kl,
+                        )
+                    )
+                    mask_rows.extend(
+                        _mask_rows(condition, selector, count / total_eligible, mask)
+                    )
+            all_direct = direct_available.copy()
+            all_direct_evaluation = evaluate_sparse(all_direct)
+            records.append(
+                _record(
+                    condition,
+                    selector="sparse_all_direct",
+                    requested_budget_fraction=direct_total / total_eligible,
+                    mask=all_direct,
+                    eligible=eligible,
+                    evaluation=all_direct_evaluation,
+                    stale_kl=stale.logits_kl,
+                )
+            )
+            mask_rows.extend(
+                _mask_rows(
+                    condition,
+                    "sparse_all_direct",
+                    direct_total / total_eligible,
+                    all_direct,
+                )
+            )
 
     greedy_limit = min(max(desired_counts), oracle_max_cells, total_eligible)
     candidate_mask = _candidate_pool(
@@ -488,6 +575,7 @@ def _record(
     selected = int(np.count_nonzero(mask))
     eligible_count = int(np.count_nonzero(eligible))
     structure = _mask_structure(mask)
+    extras = evaluation.output.extras or {}
     return {
         **condition,
         "selector": selector,
@@ -500,6 +588,18 @@ def _record(
         "stale_logits_kl": stale_kl,
         "kl_gain_vs_stale": stale_kl - evaluation.logits_kl,
         "beneficial_vs_stale": evaluation.logits_kl <= stale_kl + 1e-15,
+        "cache_mode": str(extras.get("cache_mode", "unknown")),
+        "strategy_flops": float(extras.get("strategy_flops", 0.0)),
+        "cache_maintenance_latency": float(
+            extras.get("cache_maintenance_latency", 0.0)
+        ),
+        "decode_latency": float(extras.get("decode_latency", 0.0)),
+        "selected_direct_cells": int(extras.get("selected_direct_cells", 0)),
+        "available_direct_cells": int(extras.get("available_direct_cells", 0)),
+        "selected_direct_fraction": float(
+            extras.get("selected_direct_fraction", 0.0)
+        ),
+        "residual_cache_bytes": int(extras.get("residual_cache_bytes", 0)),
         "mask_hash": hashlib.sha256(np.ascontiguousarray(mask, dtype=np.uint8)).hexdigest()[:16],
         **structure,
     }
