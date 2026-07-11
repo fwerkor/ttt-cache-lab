@@ -25,7 +25,6 @@ class ModuleKind(StrEnum):
     LORA_ATTN = "lora.attn"
     LORA_ALL_LATE = "lora.all_late"
     LORA_MLP = "lora.mlp"
-    LORA_MOE_ROUTER = "lora.moe_router"
     LORA_MOE_SHARED_EXPERT = "lora.moe_shared_expert"
     UNKNOWN = "unknown"
 
@@ -96,8 +95,6 @@ def parse_update_target(raw: str, *, num_layers: int | None = None) -> UpdateTar
         "lora.all": ModuleKind.LORA_ALL_LATE,
         "lora.all_late": ModuleKind.LORA_ALL_LATE,
         "lora.mlp": ModuleKind.LORA_MLP,
-        "lora.moe_router": ModuleKind.LORA_MOE_ROUTER,
-        "lora.router": ModuleKind.LORA_MOE_ROUTER,
         "lora.moe_shared": ModuleKind.LORA_MOE_SHARED_EXPERT,
         "lora.moe_shared_expert": ModuleKind.LORA_MOE_SHARED_EXPERT,
         "lora.shared_expert": ModuleKind.LORA_MOE_SHARED_EXPERT,

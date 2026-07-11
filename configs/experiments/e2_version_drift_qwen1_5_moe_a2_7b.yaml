@@ -21,7 +21,7 @@ updates:
   - lora.q_middle
   - lora.k_middle
   - lora.v_middle
-  - lora.moe_router_middle
+  - moe.router_middle
   - lora.moe_shared_expert_middle
   - moe.routed_experts_middle
   step_count: 1

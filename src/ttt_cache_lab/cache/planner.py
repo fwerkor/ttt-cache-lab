@@ -266,7 +266,6 @@ class CachePlanner:
             ModuleKind.LORA_ATTN,
             ModuleKind.LORA_ALL_LATE,
             ModuleKind.LORA_MLP,
-            ModuleKind.LORA_MOE_ROUTER,
             ModuleKind.LORA_MOE_SHARED_EXPERT,
         }:
             return self._refresh_decision(
@@ -410,7 +409,6 @@ class CachePlanner:
             ModuleKind.LORA_ATTN: 1.0,
             ModuleKind.LORA_ALL_LATE: 1.0,
             ModuleKind.LORA_MLP: 1.0,
-            ModuleKind.LORA_MOE_ROUTER: 1.2,
             ModuleKind.LORA_MOE_SHARED_EXPERT: 1.0,
             ModuleKind.NORM: 1.5,
         }.get(target.kind, 2.0)

@@ -2133,8 +2133,8 @@ class HuggingFaceBackend:
         *,
         filters: tuple[str, ...] | None = None,
     ) -> bool:
-        if kind in {ModuleKind.MOE_ROUTER, ModuleKind.LORA_MOE_ROUTER}:
-            return name.endswith(".mlp.gate")
+        if kind is ModuleKind.MOE_ROUTER:
+            return name.endswith(".mlp.gate") or name.endswith(".mlp.gate.weight")
         if kind in {ModuleKind.MOE_SHARED_EXPERT, ModuleKind.LORA_MOE_SHARED_EXPERT}:
             return ".mlp.shared_expert." in name
         if kind is ModuleKind.MOE_ROUTED_EXPERTS:
@@ -2201,7 +2201,6 @@ class HuggingFaceBackend:
                 "down_proj",
             ),
             ModuleKind.LORA_MLP: ("mlp", "gate_proj", "up_proj", "down_proj", "mlp.c_fc", "mlp.c_proj"),
-            ModuleKind.LORA_MOE_ROUTER: tuple(),
             ModuleKind.LORA_MOE_SHARED_EXPERT: tuple(),
             ModuleKind.UNKNOWN: tuple(),
         }

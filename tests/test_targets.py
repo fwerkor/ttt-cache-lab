@@ -31,7 +31,6 @@ def test_parse_moe_targets() -> None:
     assert router.layer == 12
     assert parse_update_target("moe.shared_expert_late", num_layers=24).kind is ModuleKind.MOE_SHARED_EXPERT
     assert parse_update_target("moe.routed_experts:layer3").kind is ModuleKind.MOE_ROUTED_EXPERTS
-    assert parse_update_target("lora.moe_router_early", num_layers=24).kind is ModuleKind.LORA_MOE_ROUTER
     assert parse_update_target("lora.moe_shared_expert_middle", num_layers=24).kind is ModuleKind.LORA_MOE_SHARED_EXPERT
 
 

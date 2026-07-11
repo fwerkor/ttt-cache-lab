@@ -320,7 +320,6 @@ class ToyBackend:
             ModuleKind.LORA_ATTN: 0.65,
             ModuleKind.LORA_ALL_LATE: 0.9,
             ModuleKind.LORA_MLP: 0.5,
-            ModuleKind.LORA_MOE_ROUTER: 0.7,
             ModuleKind.LORA_MOE_SHARED_EXPERT: 0.5,
             ModuleKind.NORM: 1.2,
             ModuleKind.OUTPUT_HEAD: 0.05,

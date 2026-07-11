@@ -120,6 +120,6 @@ They are intentionally excluded from default parallel launchers.
 - Ascend scripts resolve `model.modelscope_model_id` to a local snapshot before model loading.
 - Delta correction uses cached LoRA projection inputs and cached-version A/B snapshots; it does not read the full-reference cache.
 - Native decoder-layer restart is implemented for Llama/Qwen/Mistral-like, nested Gemma 3 text, and GPT-2-like model layouts. Unsupported layouts fail explicitly.
-- Qwen2-MoE targets distinguish router, shared-expert, and fused routed-expert parameters; the fused routed-expert target currently uses controlled direct parameter perturbation because it is not an `nn.Linear` LoRA injection point.
+- Qwen2-MoE targets distinguish router, shared-expert, and fused routed-expert parameters. Router and fused routed-expert targets use controlled direct parameter updates because neither is an `nn.Linear` LoRA injection point; shared experts use ordinary LoRA linears.
 - aLoRA-style prefix reuse disables LoRA before the configured invocation marker, caches that base prefix, and recomputes only the post-marker suffix under the active adapter.
 - Multi-NPU sharding logic is covered by unit tests, but throughput, HCCL behavior, and memory headroom must still be validated on the target 8×910B machine.

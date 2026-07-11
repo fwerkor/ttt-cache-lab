@@ -48,7 +48,7 @@ def test_qwen_moe_module_matching_separates_sparse_components() -> None:
     routed = "model.layers.12.mlp.experts.gate_up_proj"
 
     assert backend._module_matches_target(router, ModuleKind.MOE_ROUTER)
-    assert backend._module_matches_target(router, ModuleKind.LORA_MOE_ROUTER)
+    assert backend._module_matches_target(f"{router}.weight", ModuleKind.MOE_ROUTER)
     assert not backend._module_matches_target(shared_gate, ModuleKind.MOE_ROUTER)
 
     assert backend._module_matches_target(shared, ModuleKind.MOE_SHARED_EXPERT)
