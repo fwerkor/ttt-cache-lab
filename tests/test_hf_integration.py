@@ -69,7 +69,7 @@ def tiny_llama_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         vocab_size=len(vocab),
         hidden_size=16,
         intermediate_size=32,
-        num_hidden_layers=2,
+        num_hidden_layers=3,
         num_attention_heads=2,
         num_key_value_heads=2,
         max_position_embeddings=64,
@@ -268,6 +268,37 @@ def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
     assert repeated_partial.extras is not None
     assert repeated_partial.extras["partial_mode"] == "native_llama_like_layer_restart"
     assert len(repeated_partial.extras["hidden_states"]) == backend.num_layers + 1
+
+    window_decision = StrategyDecision(
+        StrategyName.WINDOWED_RECOMPUTE,
+        CacheAction.PARTIAL_RECOMPUTE,
+        CacheBlockState.VALID_APPROX,
+        1,
+        "integration",
+        last_recomputed_layer=2,
+    )
+    windowed = backend.apply_cache_strategy(
+        baseline=reused,
+        full=full,
+        updated=baseline,
+        decision=window_decision,
+    )
+    assert windowed.extras is not None
+    assert windowed.extras["partial_mode"] == "native_llama_like_finite_window_restart"
+    assert windowed.extras["partial_start_layer"] == 1
+    assert windowed.extras["partial_end_layer"] == 2
+    assert windowed.extras["partial_window_layers"] == 1
+    assert full.extras is not None
+    baseline_layers = backend._past_as_layers(reused.extras["past_key_values"])
+    full_layers = backend._past_as_layers(full.extras["past_key_values"])
+    window_layers = backend._past_as_layers(windowed.extras["past_key_values"])
+    for layer_id in range(backend.num_layers):
+        expected = full_layers[layer_id] if layer_id == 1 else baseline_layers[layer_id]
+        for actual_tensor, expected_tensor in zip(window_layers[layer_id], expected, strict=True):
+            if actual_tensor is None or expected_tensor is None:
+                assert actual_tensor is expected_tensor
+            else:
+                assert torch.allclose(actual_tensor, expected_tensor, rtol=1e-5, atol=1e-6)
 
 
 def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llama_dir: Path) -> None:

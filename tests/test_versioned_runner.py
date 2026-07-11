@@ -373,6 +373,76 @@ def test_versioned_runner_records_failure_map_provenance(tmp_path: Path) -> None
     assert len(record.failure_map_sha256) == 64
 
 
+def test_versioned_runner_records_finite_recompute_window(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-windowed-recompute",
+            "experiment_id": "unit_windowed_recompute",
+            "seed": 9,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 6, "hidden_size": 16, "vocab_size": 32},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k:1"], "update_norm": 0.1},
+            "cache": {
+                "strategies": ["full_recompute", "windowed_recompute", "layerwise_recompute"],
+                "recompute_window_size": 2,
+            },
+            "metrics": {"compute_flops_metrics": True},
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [1],
+        }
+    )
+    records = VersionedExperimentRunner(config).run().records
+    by_strategy = {record.cache_strategy: record for record in records}
+    windowed = by_strategy["windowed_recompute"]
+    suffix = by_strategy["layerwise_recompute"]
+    assert windowed.first_invalid_layer == 1
+    assert windowed.last_recomputed_layer == 3
+    assert windowed.recompute_window_size == 2
+    assert windowed.recompute_fraction == 2 / 6
+    assert windowed.flops_fraction == 2 / 6
+    assert suffix.last_recomputed_layer is None
+    assert suffix.recompute_fraction == 5 / 6
+    assert windowed.strategy_flops < suffix.strategy_flops
+
+
+def test_versioned_runner_writes_layerwise_propagation_sidecar(tmp_path: Path) -> None:
+    config = VersionedExperimentConfig.model_validate(
+        {
+            "name": "unit-propagation",
+            "experiment_id": "unit_propagation",
+            "seed": 9,
+            "output_dir": tmp_path,
+            "model": {"backend": "toy", "num_layers": 4, "hidden_size": 16, "vocab_size": 32},
+            "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
+            "updates": {"targets": ["lora.k:1"], "update_norm": 0.1},
+            "cache": {"strategies": ["full_recompute"]},
+            "metrics": {
+                "compute_layerwise_propagation_metrics": True,
+                "propagation_probe_tokens": 8,
+            },
+            "adapter": {"update_mode": "random", "lora_rank": 4},
+            "version_steps": [0, 1, 2],
+        }
+    )
+    artifacts = VersionedExperimentRunner(config).run()
+    assert artifacts.propagation_jsonl_path is not None
+    assert artifacts.propagation_jsonl_path.exists()
+    assert artifacts.propagation_csv_path is not None
+    assert artifacts.propagation_csv_path.exists()
+
+    from ttt_cache_lab.experiments.propagation import read_propagation_records
+
+    records = read_propagation_records(artifacts.propagation_jsonl_path)
+    assert len(records) == 3 * 4
+    assert {record.layer_id for record in records} == {0, 1, 2, 3}
+    assert {record.probe_token_count for record in records} == {8}
+    zero_gap = [record for record in records if record.version_gap == 0]
+    assert zero_gap
+    assert all(record.hidden_relative_error == 0.0 for record in zero_gap)
+    assert any(record.hidden_relative_error > 0.0 for record in records if record.version_gap > 0)
+
+
 def test_versioned_runner_records_attention_shift_and_action_flops(tmp_path: Path) -> None:
     config = VersionedExperimentConfig.model_validate(
         {

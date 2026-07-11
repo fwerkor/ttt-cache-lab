@@ -583,7 +583,13 @@ class HuggingFaceBackend:
             return full
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             first = decision.first_invalid_layer or 0
-            return full * max(0, self.num_layers - first) / max(1, self.num_layers)
+            end = min(
+                self.num_layers,
+                decision.last_recomputed_layer
+                if decision.last_recomputed_layer is not None
+                else self.num_layers,
+            )
+            return full * max(0, end - first) / max(1, self.num_layers)
         if decision.action is CacheAction.DELTA_CORRECT:
             if self._last_correction_flops > 0.0:
                 return self._last_correction_flops
@@ -1088,17 +1094,27 @@ class HuggingFaceBackend:
         old_past = baseline.extras.get("past_key_values")
         if not isinstance(state, _PromptState) or not isinstance(hidden_states, tuple) or old_past is None:
             return None
-        split_layer = decision.first_invalid_layer
+        start_layer = decision.first_invalid_layer
         layer_container, family = self._decoder_layers()
-        if layer_container is None or split_layer < 0 or split_layer > len(layer_container):
+        if layer_container is None or start_layer < 0 or start_layer > len(layer_container):
             return None
+        end_layer = min(
+            len(layer_container),
+            decision.last_recomputed_layer
+            if decision.last_recomputed_layer is not None
+            else len(layer_container),
+        )
+        if end_layer <= start_layer:
+            raise ValueError("Partial recompute requires a non-empty layer interval")
         old_layers = self._past_as_layers(old_past)
         if len(old_layers) != len(layer_container) or len(hidden_states) < len(layer_container) + 1:
             return None
 
         replacements: list[tuple[int, Any]] = []
         try:
-            for layer_index in range(split_layer):
+            for layer_index in range(len(layer_container)):
+                if start_layer <= layer_index < end_layer:
+                    continue
                 original = layer_container[layer_index]
                 cached_hidden = hidden_states[layer_index + 1]
                 cached_past = old_layers[layer_index]
@@ -1136,20 +1152,26 @@ class HuggingFaceBackend:
             )
         latency = maintenance_s + decode_s
         recomputed_hidden_states = tuple(hidden.detach() for hidden in prefill.hidden_states)
-        expected_suffix_states = len(layer_container) - split_layer + 1
+        expected_window_states = end_layer - start_layer + 1
         if len(recomputed_hidden_states) == len(layer_container) + 1:
             merged_hidden_states = recomputed_hidden_states
-        elif len(recomputed_hidden_states) == expected_suffix_states:
-            merged_hidden_states = hidden_states[: split_layer + 1] + recomputed_hidden_states[1:]
+        elif len(recomputed_hidden_states) == expected_window_states:
+            merged_hidden_states = (
+                hidden_states[: start_layer + 1]
+                + recomputed_hidden_states[1:]
+                + hidden_states[end_layer + 1 :]
+            )
         else:
             raise RuntimeError(
                 "Native partial recompute returned an unexpected hidden-state history: "
-                f"got {len(recomputed_hidden_states)}, expected {expected_suffix_states} suffix states "
+                f"got {len(recomputed_hidden_states)}, expected {expected_window_states} window states "
                 f"or {len(layer_container) + 1} full states."
             )
 
         lora_cache = dict(baseline.extras.get("lora_cache", {}))
         lora_cache.update(self._snapshot_lora_cache())
+        finite_window = end_layer < len(layer_container)
+        window_layers = end_layer - start_layer
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
@@ -1170,9 +1192,16 @@ class HuggingFaceBackend:
                 "decode_latency": decode_s,
                 "generated_tokens": generated_tokens,
                 "generated_text": generated_text,
-                "partial_mode": f"native_{family}_layer_restart",
+                "partial_start_layer": start_layer,
+                "partial_end_layer": end_layer,
+                "partial_window_layers": window_layers,
+                "partial_mode": (
+                    f"native_{family}_finite_window_restart"
+                    if finite_window
+                    else f"native_{family}_layer_restart"
+                ),
                 "strategy_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1]))
-                * max(0, self.num_layers - split_layer)
+                * window_layers
                 / max(1, self.num_layers),
                 "full_recompute_flops": self._full_prefill_flops(int(state.prefix_ids.shape[1])),
                 **self._attention_metadata(),

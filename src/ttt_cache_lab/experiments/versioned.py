@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,11 @@ from ttt_cache_lab.experiments.metrics import (
     output_throughput,
 )
 from ttt_cache_lab.experiments.planner_runtime import build_planner_runtime
+from ttt_cache_lab.experiments.propagation import (
+    PropagationRecord,
+    collect_propagation_records,
+    write_propagation_records,
+)
 from ttt_cache_lab.experiments.provenance import baseline_provenance, planner_provenance
 from ttt_cache_lab.experiments.results import ExperimentArtifacts, ExperimentRecord, write_records
 from ttt_cache_lab.experiments.run_metadata import (
@@ -86,6 +91,7 @@ class VersionedExperimentRunner:
                 name,
                 refresh_period=self.config.cache.refresh_period,
                 update_norm_threshold=self.config.cache.update_norm_threshold,
+                recompute_window_size=self.config.cache.recompute_window_size,
                 version_gap_threshold=self.config.cache.version_gap_threshold,
                 error_proxy_threshold=self.config.cache.error_proxy_threshold,
                 latency_budget_fraction=self.config.cache.latency_budget_fraction,
@@ -115,6 +121,7 @@ class VersionedExperimentRunner:
         max_version = max(self.config.version_steps or [cached_version])
         target_steps = set(self.config.version_steps)
         records: list[ExperimentRecord] = []
+        propagation_records: list[PropagationRecord] = []
 
         for sample_id, sample in enumerate(data):
             sample = backend.prepare_sample(sample, context_length=self.config.data.context_length)
@@ -212,6 +219,18 @@ class VersionedExperimentRunner:
                     )
 
                 if cached_version in target_steps:
+                    self._append_propagation_records(
+                        propagation_records,
+                        reference=cached_output,
+                        current=cached_output,
+                        sample_id=sample_id,
+                        sample=sample,
+                        target=target,
+                        target_name=target_name,
+                        adapter_version=cached_version,
+                        cached_version=cached_version,
+                        accumulated_update_norm=accumulated_update_norm,
+                    )
                     self._record_step(
                         records,
                         backend=backend,
@@ -239,6 +258,18 @@ class VersionedExperimentRunner:
                     if step not in target_steps:
                         continue
                     full = backend.full_recompute(sample.prompt, current)
+                    self._append_propagation_records(
+                        propagation_records,
+                        reference=cached_output,
+                        current=full,
+                        sample_id=sample_id,
+                        sample=sample,
+                        target=target,
+                        target_name=target_name,
+                        adapter_version=step,
+                        cached_version=cached_version,
+                        accumulated_update_norm=accumulated_update_norm,
+                    )
                     self._record_step(
                         records,
                         backend=backend,
@@ -264,12 +295,71 @@ class VersionedExperimentRunner:
                         merge_existing=self.config.resume,
                         metadata_path=metadata_path,
                     )
+                    if self.config.metrics.compute_layerwise_propagation_metrics:
+                        write_propagation_records(
+                            propagation_records,
+                            self.config.output_dir,
+                            merge_existing=self.config.resume,
+                        )
 
-        return write_records(
+        artifacts = write_records(
             records,
             self.config.output_dir,
             merge_existing=self.config.resume,
             metadata_path=metadata_path,
+        )
+        if not self.config.metrics.compute_layerwise_propagation_metrics:
+            return artifacts
+        propagation = write_propagation_records(
+            propagation_records,
+            self.config.output_dir,
+            merge_existing=self.config.resume,
+        )
+        return replace(
+            artifacts,
+            propagation_jsonl_path=propagation.jsonl_path,
+            propagation_csv_path=propagation.csv_path,
+        )
+
+    def _append_propagation_records(
+        self,
+        records: list[PropagationRecord],
+        *,
+        reference: BackendOutput,
+        current: BackendOutput,
+        sample_id: int,
+        sample: TaskSample,
+        target: UpdateTarget,
+        target_name: str,
+        adapter_version: int,
+        cached_version: int,
+        accumulated_update_norm: float,
+    ) -> None:
+        if not self.config.metrics.compute_layerwise_propagation_metrics:
+            return
+        records.extend(
+            collect_propagation_records(
+                reference,
+                current,
+                sample_id=sample_id,
+                dataset_sample_id=str(sample.metadata.get("dataset_sample_id", sample_id)),
+                task_name=self.config.data.task,
+                model_name=(
+                    self.config.model.model_name_or_path
+                    or self.config.model.modelscope_model_id
+                    or "toy"
+                ),
+                update_target=target_name,
+                target_layer=target.layer,
+                adapter_version=adapter_version,
+                cached_version=cached_version,
+                context_length=self.config.data.context_length,
+                synthetic_difficulty=self.config.data.synthetic_difficulty,
+                seed=self.config.seed,
+                configured_update_norm=self.config.updates.update_norm,
+                accumulated_update_norm=accumulated_update_norm,
+                probe_tokens=self.config.metrics.propagation_probe_tokens,
+            )
         )
 
     def _prepare_backend_for_target(self, backend: ModelBackend, target: UpdateTarget) -> None:
@@ -475,6 +565,7 @@ class VersionedExperimentRunner:
             elif strategy.name not in {
                 StrategyName.NO_ADAPTATION,
                 StrategyName.ALORA_PREFIX_REUSE,
+                StrategyName.WINDOWED_RECOMPUTE,
             } and decision.action in {
                 CacheAction.FULL_RECOMPUTE,
                 CacheAction.REUSE_EXACT,
@@ -556,6 +647,21 @@ class VersionedExperimentRunner:
                     action=str(decision.action),
                     cache_state=str(decision.state),
                     first_invalid_layer=decision.first_invalid_layer,
+                    last_recomputed_layer=(
+                        min(backend.num_layers, decision.last_recomputed_layer)
+                        if decision.last_recomputed_layer is not None
+                        else None
+                    ),
+                    recompute_window_size=(
+                        max(
+                            0,
+                            min(backend.num_layers, decision.last_recomputed_layer)
+                            - decision.first_invalid_layer,
+                        )
+                        if decision.first_invalid_layer is not None
+                        and decision.last_recomputed_layer is not None
+                        else 0
+                    ),
                     task_score=task_score,
                     logits_kl=logits_kl_value,
                     top1_agreement=top1,
@@ -816,6 +922,7 @@ class VersionedExperimentRunner:
                 f"Measured oracle selected {selected.action}: latency={cost:.6g}, "
                 f"KL={selected_kl:.6g}, top1={selected_top1:.3f}, task={selected_score:.3f}."
             ),
+            last_recomputed_layer=selected.last_recomputed_layer,
             recompute_fraction=selected.recompute_fraction,
         )
         return decision, output
@@ -845,6 +952,9 @@ def write_version_summary(input_csv: Path, output_csv: Path) -> None:
             "task_name",
             "update_target",
             "cache_strategy",
+            "first_invalid_layer",
+            "last_recomputed_layer",
+            "recompute_window_size",
             "adapter_version",
             "cached_version",
             "version_gap",

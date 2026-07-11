@@ -22,6 +22,7 @@ class StrategyName(StrEnum):
     PERIODIC_REFRESH = "periodic_refresh"
     THRESHOLD_REFRESH = "threshold_refresh"
     LAYERWISE_RECOMPUTE = "layerwise_recompute"
+    WINDOWED_RECOMPUTE = "windowed_recompute"
     DELTA_CORRECTION = "delta_correction"
     BASE_CACHE_REUSE = "base_cache_reuse"
     ADAPTER_SPECIFIC_CACHE = "adapter_specific_cache"
@@ -46,6 +47,7 @@ class StrategyDecision:
     state: CacheBlockState
     first_invalid_layer: int | None
     reason: str
+    last_recomputed_layer: int | None = None
     recompute_fraction: float = 0.0
     reject_reuse: bool = False
 
@@ -193,6 +195,36 @@ class LayerwiseRecomputeStrategy(CacheStrategy):
             CacheBlockState.INVALID,
             target.layer,
             "Recompute from the first affected layer onward.",
+        )
+
+
+class WindowedRecomputeStrategy(CacheStrategy):
+    name = StrategyName.WINDOWED_RECOMPUTE
+
+    def __init__(self, window_size: int = 4) -> None:
+        if window_size <= 0:
+            raise ValueError("window_size must be positive")
+        self.window_size = window_size
+
+    def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
+        del step, update_norm
+        if target.layer is None:
+            return StrategyDecision(
+                self.name,
+                CacheAction.FULL_RECOMPUTE,
+                CacheBlockState.INVALID,
+                None,
+                "No affected-layer boundary is available; windowed recompute becomes full recompute.",
+                recompute_fraction=1.0,
+            )
+        end_layer = target.layer + self.window_size
+        return StrategyDecision(
+            self.name,
+            CacheAction.PARTIAL_RECOMPUTE,
+            CacheBlockState.VALID_APPROX,
+            target.layer,
+            f"Recompute a finite {self.window_size}-layer window and reuse the later stale prefix cache.",
+            last_recomputed_layer=end_layer,
         )
 
 
@@ -499,6 +531,7 @@ def build_strategy(
     *,
     refresh_period: int = 4,
     update_norm_threshold: float = 0.05,
+    recompute_window_size: int = 4,
     version_gap_threshold: int = 8,
     error_proxy_threshold: float = 0.25,
     latency_budget_fraction: float = 1.0,
@@ -523,6 +556,8 @@ def build_strategy(
         return ThresholdRefreshStrategy(update_norm_threshold=update_norm_threshold)
     if parsed is StrategyName.LAYERWISE_RECOMPUTE:
         return LayerwiseRecomputeStrategy()
+    if parsed is StrategyName.WINDOWED_RECOMPUTE:
+        return WindowedRecomputeStrategy(window_size=recompute_window_size)
     if parsed in {
         StrategyName.ADAPTIVE,
         StrategyName.ADAPTIVE_NO_VERSION,

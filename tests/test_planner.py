@@ -52,6 +52,28 @@ def test_layerwise_strategy_requires_layer_boundary() -> None:
     assert decision.recompute_fraction == 1.0
 
 
+def test_windowed_recompute_records_exclusive_end_layer() -> None:
+    from ttt_cache_lab.cache.strategies import build_strategy
+
+    decision = build_strategy("windowed_recompute", recompute_window_size=3).decide(
+        parse_update_target("lora.k:2"), step=4, update_norm=0.01
+    )
+    assert decision.action is CacheAction.PARTIAL_RECOMPUTE
+    assert decision.state is CacheBlockState.VALID_APPROX
+    assert decision.first_invalid_layer == 2
+    assert decision.last_recomputed_layer == 5
+
+
+def test_windowed_recompute_requires_layer_boundary() -> None:
+    from ttt_cache_lab.cache.strategies import build_strategy
+
+    decision = build_strategy("windowed_recompute").decide(
+        parse_update_target("lora.k"), step=1, update_norm=0.01
+    )
+    assert decision.action is CacheAction.FULL_RECOMPUTE
+    assert decision.recompute_fraction == 1.0
+
+
 def test_norm_update_full_recompute() -> None:
     decision = CachePlanner().plan(parse_update_target("norm:1"), update_norm=0.01)
     assert decision.action is CacheAction.REJECT_UPDATE

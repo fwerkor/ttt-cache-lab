@@ -69,8 +69,13 @@ def estimate_recompute_fraction(decision: StrategyDecision, *, num_layers: int) 
     if decision.action is CacheAction.PARTIAL_RECOMPUTE:
         if decision.first_invalid_layer is None:
             return 1.0
-        remaining = max(0, num_layers - decision.first_invalid_layer)
-        return max(0.0, min(1.0, remaining / max(1, num_layers)))
+        end_layer = (
+            min(num_layers, decision.last_recomputed_layer)
+            if decision.last_recomputed_layer is not None
+            else num_layers
+        )
+        recomputed = max(0, end_layer - decision.first_invalid_layer)
+        return max(0.0, min(1.0, recomputed / max(1, num_layers)))
     if decision.action is CacheAction.DELTA_CORRECT:
         return decision.recompute_fraction or 0.15
     if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:
@@ -108,12 +113,16 @@ def is_false_safe(
     top1_threshold: float,
     task_drop_threshold: float,
 ) -> bool:
+    approximate_partial = (
+        decision.action is CacheAction.PARTIAL_RECOMPUTE
+        and decision.last_recomputed_layer is not None
+    )
     if decision.action not in {
         CacheAction.REUSE_STALE,
         CacheAction.REUSE_FROZEN,
         CacheAction.DELTA_CORRECT,
         CacheAction.ALORA_SUFFIX_RECOMPUTE,
-    }:
+    } and not approximate_partial:
         return False
     logits_kl = kl_divergence(full.logits, approx.logits)
     top1 = top1_agreement(full.logits, approx.logits)

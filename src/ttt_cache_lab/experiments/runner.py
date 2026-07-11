@@ -56,6 +56,7 @@ class ExperimentRunner:
                 name,
                 refresh_period=self.config.cache.refresh_period,
                 update_norm_threshold=self.config.cache.update_norm_threshold,
+                recompute_window_size=self.config.cache.recompute_window_size,
                 version_gap_threshold=self.config.cache.version_gap_threshold,
                 error_proxy_threshold=self.config.cache.error_proxy_threshold,
                 latency_budget_fraction=self.config.cache.latency_budget_fraction,
@@ -202,6 +203,21 @@ class ExperimentRunner:
                             action=str(decision.action),
                             cache_state=str(decision.state),
                             first_invalid_layer=decision.first_invalid_layer,
+                            last_recomputed_layer=(
+                                min(backend.num_layers, decision.last_recomputed_layer)
+                                if decision.last_recomputed_layer is not None
+                                else None
+                            ),
+                            recompute_window_size=(
+                                max(
+                                    0,
+                                    min(backend.num_layers, decision.last_recomputed_layer)
+                                    - decision.first_invalid_layer,
+                                )
+                                if decision.first_invalid_layer is not None
+                                and decision.last_recomputed_layer is not None
+                                else 0
+                            ),
                             task_score=task_score,
                             logits_kl=logits_kl_value,
                             top1_agreement=top1,

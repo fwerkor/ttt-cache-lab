@@ -23,6 +23,8 @@ class ExperimentRecord:
     relative_error: float
     latency_units: float
     reason: str
+    last_recomputed_layer: int | None = None
+    recompute_window_size: int = 0
     timing_warmup_runs: int = 0
     timing_runs: int = 1
     latency_mean: float = 0.0
@@ -122,6 +124,9 @@ class ExperimentRecord:
             self.evaluation_partition,
             self.update_target,
             self.cache_strategy,
+            self.first_invalid_layer,
+            self.last_recomputed_layer,
+            self.recompute_window_size,
             self.adapter_id,
             self.adapter_version,
             self.cached_version,
@@ -142,6 +147,8 @@ class ExperimentArtifacts:
     csv_path: Path
     records: list[ExperimentRecord]
     metadata_path: Path | None = None
+    propagation_jsonl_path: Path | None = None
+    propagation_csv_path: Path | None = None
 
 
 def write_records(

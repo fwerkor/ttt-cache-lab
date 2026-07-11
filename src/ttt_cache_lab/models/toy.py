@@ -151,17 +151,37 @@ class ToyBackend:
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             if decision.first_invalid_layer is None:
                 raise ValueError("Partial recompute requires an explicit first-invalid layer")
-            layer = decision.first_invalid_layer
+            start = decision.first_invalid_layer
+            end = min(
+                self.num_layers,
+                decision.last_recomputed_layer
+                if decision.last_recomputed_layer is not None
+                else self.num_layers,
+            )
+            if end <= start:
+                raise ValueError("Partial recompute requires a non-empty layer interval")
             cache = baseline.cache_tensor.copy()
             hidden = baseline.hidden_tensor.copy()
-            cache[layer:] = full.cache_tensor[layer:]
-            hidden[layer:] = full.hidden_tensor[layer:]
+            cache[start:end] = full.cache_tensor[start:end]
+            hidden[start:end] = full.hidden_tensor[start:end]
+            fraction = (end - start) / max(1, self.num_layers - start)
+            logits = baseline.logits + fraction * (full.logits - baseline.logits)
             return BackendOutput(
-                logits=0.9 * full.logits + 0.1 * updated.logits,
+                logits=logits,
                 cache_tensor=cache,
                 hidden_tensor=hidden,
                 parameter_version=updated.parameter_version,
-                extras=self._attention_extras(cache),
+                extras={
+                    "partial_start_layer": start,
+                    "partial_end_layer": end,
+                    "partial_window_layers": end - start,
+                    "partial_mode": (
+                        "toy_suffix_recompute"
+                        if end == self.num_layers
+                        else "toy_finite_window_recompute"
+                    ),
+                    **self._attention_extras(cache),
+                },
             )
         return full
 
@@ -179,7 +199,13 @@ class ToyBackend:
             if decision.first_invalid_layer is None:
                 raise ValueError("Partial recompute requires an explicit first-invalid layer")
             first = decision.first_invalid_layer
-            fraction = max(0.1, (self.num_layers - first) / self.num_layers)
+            end = min(
+                self.num_layers,
+                decision.last_recomputed_layer
+                if decision.last_recomputed_layer is not None
+                else self.num_layers,
+            )
+            fraction = max(0.1, max(0, end - first) / self.num_layers)
             return 10.0 * base * fraction
         if decision.action is CacheAction.DELTA_CORRECT:
             return 2.0 * base
@@ -199,7 +225,13 @@ class ToyBackend:
             return full
         if decision.action is CacheAction.PARTIAL_RECOMPUTE:
             first = decision.first_invalid_layer or 0
-            return max(0, self.num_layers - first) * per_layer
+            end = min(
+                self.num_layers,
+                decision.last_recomputed_layer
+                if decision.last_recomputed_layer is not None
+                else self.num_layers,
+            )
+            return max(0, end - first) * per_layer
         if decision.action is CacheAction.DELTA_CORRECT:
             return 4.0 * tokens * hidden * max(1, hidden // 8)
         if decision.action is CacheAction.ALORA_SUFFIX_RECOMPUTE:

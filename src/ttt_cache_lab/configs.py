@@ -88,6 +88,7 @@ class CacheConfig(BaseModel):
     strategies: list[str] = Field(default_factory=lambda: ["full_recompute", "stale_reuse"])
     refresh_period: int = 4
     update_norm_threshold: float = 0.05
+    recompute_window_size: int = Field(default=4, ge=1)
     version_gap_threshold: int = Field(default=8, ge=0)
     error_proxy_threshold: float = Field(default=0.25, ge=0.0)
     latency_budget_fraction: float = Field(default=1.0, gt=0.0)
@@ -105,6 +106,8 @@ class MetricsConfig(BaseModel):
     compute_tensor_metrics: bool = True
     compute_task_metrics: bool = True
     compute_attention_metrics: bool = False
+    compute_layerwise_propagation_metrics: bool = False
+    propagation_probe_tokens: int = Field(default=32, ge=1)
     compute_flops_metrics: bool = True
 
 
