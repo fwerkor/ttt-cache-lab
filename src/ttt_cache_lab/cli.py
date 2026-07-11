@@ -385,6 +385,7 @@ def main(argv: list[str] | None = None) -> None:
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
         console.print(f"Wrote {blockwise_artifacts.masks_csv}")
+        console.print(f"Wrote {blockwise_artifacts.features_csv}")
         console.print(f"Wrote {blockwise_artifacts.report_markdown}")
         return
     if args.command == "statistics":
