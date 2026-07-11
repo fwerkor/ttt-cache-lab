@@ -670,7 +670,15 @@ class HuggingFaceBackend:
         self._last_updated_parameter_count = 0
         self._last_applied_update_rms = 0.0
 
-    def setup_lora(self, target: UpdateTarget, *, rank: int, alpha: float, freeze_base_model: bool = True) -> int:
+    def setup_lora(
+        self,
+        target: UpdateTarget,
+        *,
+        rank: int,
+        alpha: float,
+        freeze_base_model: bool = True,
+        reinitialize: bool = False,
+    ) -> int:
         from torch import nn
 
         from ttt_cache_lab.models.lora import is_lora_linear, make_lora_linear
@@ -700,13 +708,22 @@ class HuggingFaceBackend:
             if is_lora_linear(module):
                 if not getattr(module, "lora_name", ""):
                     module.lora_name = module_name
+                if reinitialize and hasattr(module, "reset_lora"):
+                    module.reset_lora(seed=self._stable_lora_seed(target.raw, module_name))
                 if id(module) not in seen_active:
                     self._activate_lora_module(module)
                     seen_active.add(id(module))
                     replaced += 1
                 continue
             if isinstance(module, nn.Linear):
-                wrapped = make_lora_linear(self.torch, nn, module, rank=rank, alpha=alpha)
+                wrapped = make_lora_linear(
+                    self.torch,
+                    nn,
+                    module,
+                    rank=rank,
+                    alpha=alpha,
+                    seed=self._stable_lora_seed(target.raw, module_name),
+                )
                 wrapped.lora_name = module_name
                 wrapped.to(module.weight.device)
                 setattr(parent, child_name, wrapped)
@@ -715,6 +732,10 @@ class HuggingFaceBackend:
                 seen_active.add(id(wrapped))
                 replaced += 1
         return replaced
+
+    def _stable_lora_seed(self, target_raw: str, module_name: str) -> int:
+        payload = f"{self.seed}|{target_raw}|{module_name}".encode()
+        return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % (2**63 - 1)
 
     def prepare_update_target(
         self,
@@ -729,6 +750,7 @@ class HuggingFaceBackend:
             rank=rank,
             alpha=alpha,
             freeze_base_model=freeze_base_model,
+            reinitialize=True,
         )
 
     def train_lora_step(
@@ -821,6 +843,16 @@ class HuggingFaceBackend:
 
     def snapshot_adapter_state(self) -> tuple[tuple[Any, Any], ...]:
         return tuple((module.lora_a.detach().clone(), module.lora_b.detach().clone()) for module in self._lora_modules)
+
+    def adapter_state_fingerprint(self) -> str:
+        digest = hashlib.sha256()
+        for module in self._lora_modules:
+            digest.update(str(getattr(module, "lora_name", "")).encode("utf-8"))
+            for tensor in (module.lora_a, module.lora_b):
+                array = tensor.detach().float().cpu().contiguous().numpy()
+                digest.update(str(tuple(array.shape)).encode("utf-8"))
+                digest.update(array.tobytes())
+        return digest.hexdigest()[:16]
 
     def load_adapter_state(self, state: tuple[tuple[Any, Any], ...], *, version: int) -> None:
         if len(state) != len(self._lora_modules):

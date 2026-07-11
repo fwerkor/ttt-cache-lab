@@ -112,6 +112,10 @@ def run_blockwise_exploration(
                 backend.restore_after_update()
                 _prepare_target(backend, config, target)
                 baseline = backend.prefill(sample.prompt)
+                fingerprint = getattr(backend, "adapter_state_fingerprint", None)
+                initial_adapter_fingerprint = (
+                    str(fingerprint()) if callable(fingerprint) else "unavailable"
+                )
                 updater = build_updater(
                     backend,
                     mode=config.adapter.update_mode,
@@ -138,6 +142,9 @@ def run_blockwise_exploration(
                     )
                     current = result.output
                     accumulated_update_norm += result.update_norm
+                final_adapter_fingerprint = (
+                    str(fingerprint()) if callable(fingerprint) else "unavailable"
+                )
                 full = backend.full_recompute(sample.prompt, current)
                 base_condition = {
                     "sample_id": sample_id,
@@ -149,6 +156,8 @@ def run_blockwise_exploration(
                     "version_gap": version_gap,
                     "configured_update_norm": config.updates.update_norm,
                     "accumulated_update_norm": accumulated_update_norm,
+                    "initial_adapter_fingerprint": initial_adapter_fingerprint,
+                    "final_adapter_fingerprint": final_adapter_fingerprint,
                     "context_length": config.data.context_length,
                     "seed": config.seed,
                 }

@@ -7,7 +7,15 @@ class LoraLinearMixin:
     """Marker mixin used only for isinstance-free duck typing in tests/docs."""
 
 
-def make_lora_linear(torch: Any, nn: Any, base: Any, *, rank: int, alpha: float) -> Any:
+def make_lora_linear(
+    torch: Any,
+    nn: Any,
+    base: Any,
+    *,
+    rank: int,
+    alpha: float,
+    seed: int | None = None,
+) -> Any:
     class LoraLinear(nn.Module, LoraLinearMixin):  # type: ignore[misc]
         def __init__(self, base_module: Any) -> None:
             super().__init__()
@@ -25,7 +33,7 @@ def make_lora_linear(torch: Any, nn: Any, base: Any, *, rank: int, alpha: float)
             self.cached_lora_input = None
             self.lora_enabled = True
             self.lora_name = ""
-            nn.init.kaiming_uniform_(self.lora_a, a=5**0.5)
+            self.reset_lora(seed=seed)
 
         def forward(self, x: Any) -> Any:
             if self.capture_lora_input and self.lora_enabled:
@@ -37,9 +45,25 @@ def make_lora_linear(torch: Any, nn: Any, base: Any, *, rank: int, alpha: float)
             lora_out = torch.nn.functional.linear(lora_hidden, self.lora_b)
             return base_out + lora_out * self.scaling
 
-        def reset_lora(self) -> None:
+        def reset_lora(self, *, seed: int | None = None) -> None:
             with torch.no_grad():
-                nn.init.kaiming_uniform_(self.lora_a, a=5**0.5)
+                if seed is None:
+                    nn.init.kaiming_uniform_(self.lora_a, a=5**0.5)
+                else:
+                    generator = torch.Generator(device="cpu")
+                    generator.manual_seed(int(seed))
+                    initialized = torch.empty(
+                        self.lora_a.shape,
+                        dtype=torch.float32,
+                        device="cpu",
+                    )
+                    nn.init.kaiming_uniform_(initialized, a=5**0.5, generator=generator)
+                    self.lora_a.copy_(
+                        initialized.to(
+                            device=self.lora_a.device,
+                            dtype=self.lora_a.dtype,
+                        )
+                    )
                 self.lora_b.zero_()
             self.cached_lora_input = None
             self.capture_lora_input = False

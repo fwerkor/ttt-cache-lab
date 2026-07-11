@@ -483,6 +483,49 @@ def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: P
     assert len(metrics["reference_token_kl_values"]) == 2
 
 
+def test_lora_target_initialization_is_reproducible_and_updates_accumulate(
+    tiny_llama_dir: Path,
+) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha beta",
+            metadata={"max_generation_tokens": 2},
+        ),
+        context_length=16,
+    )
+    target = parse_update_target("lora.k:1", num_layers=backend.num_layers)
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    initial_fingerprint = backend.adapter_state_fingerprint()
+
+    backend.train_lora_step(
+        sample,
+        target,
+        rank=2,
+        alpha=4.0,
+        learning_rate=0.05,
+        target_update_norm=0.02,
+    )
+    first_update_fingerprint = backend.adapter_state_fingerprint()
+    backend.train_lora_step(
+        sample,
+        target,
+        rank=2,
+        alpha=4.0,
+        learning_rate=0.05,
+        target_update_norm=0.02,
+    )
+    second_update_fingerprint = backend.adapter_state_fingerprint()
+
+    assert first_update_fingerprint != initial_fingerprint
+    assert second_update_fingerprint != first_update_fingerprint
+
+    backend.restore_after_update()
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    assert backend.adapter_state_fingerprint() == initial_fingerprint
+
+
 def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     backend.configure_metrics(capture_attention=True)
