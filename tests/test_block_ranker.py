@@ -302,6 +302,93 @@ def test_reference_candidate_router_learns_one_probe_choice() -> None:
     assert policy["material_weighted_recovery"] == pytest.approx(0.7)
 
 
+
+def test_baseline_reference_router_uses_non_attention_features() -> None:
+    feature_rows: list[dict[str, Any]] = []
+    record_rows: list[dict[str, str]] = []
+    for sample in range(4):
+        target = "lora.v_middle"
+        rows = [_feature_row(target, sample, block) for block in range(4)]
+        for row in rows:
+            row["stale_attention_mass"] = str(1000.0 * (sample + 1))
+            row["attention_input_bound"] = str(2000.0 * (sample + 1))
+            row["attention_predicted_delta"] = str(3000.0 * (sample + 1))
+        feature_rows.extend(rows)
+        condition = {
+            key: str(value)
+            for key, value in _condition(target, sample).items()
+        }
+        record_rows.extend(
+            [
+                {
+                    **condition,
+                    "selector": "stale",
+                    "selected_cells": "0",
+                    "logits_kl": "0.10",
+                    "reference_token_nll": "1.0",
+                },
+                {
+                    **condition,
+                    "selector": "sparse_predicted_delta_norm",
+                    "selected_cells": "2",
+                    "logits_kl": "0.02",
+                    "reference_token_nll": "0.5",
+                },
+                {
+                    **condition,
+                    "selector": "sparse_input_bound",
+                    "selected_cells": "1",
+                    "logits_kl": "0.08",
+                    "reference_token_nll": "0.8",
+                },
+            ]
+        )
+    pool = {
+        "lora.v_middle": {
+            "candidates": [
+                {
+                    "candidate_selector": "sparse_predicted_delta_norm",
+                    "candidate_count": 2,
+                },
+                {
+                    "candidate_selector": "sparse_input_bound",
+                    "candidate_count": 1,
+                },
+            ]
+        }
+    }
+    policies = _reference_candidate_router_policies(
+        feature_rows,
+        record_rows,
+        pool,
+        ridge_values=(1.0,),
+        min_stale_kl=0.01,
+        feature_mode="baseline_only",
+    )
+    policy = policies["lora.v_middle"]
+    ranker = {
+        "models": {
+            "lora.v_middle": {
+                "baseline_reference_candidate_router_policy": policy,
+            }
+        }
+    }
+    query = [_feature_row("lora.v_middle", 9, block) for block in range(4)]
+    selected, scores = route_reference_candidate(
+        ranker,
+        update_target="lora.v_middle",
+        feature_rows=query,
+        policy_name="baseline_reference_candidate_router_policy",
+    )
+
+    assert policy["feature_mode"] == "baseline_only"
+    assert selected == {
+        "candidate_selector": "sparse_predicted_delta_norm",
+        "candidate_count": 2,
+    }
+    assert scores.shape == (2,)
+
+
 def test_confidence_probe_policy_rejects_low_confidence_harm() -> None:
     rows: list[dict[str, str]] = []
     for sample, confidence_gain, candidate_kl in (

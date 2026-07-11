@@ -68,6 +68,7 @@ def run_blockwise_exploration(
     compute_cache_surgery_oracles: bool = True,
     compute_structured_sparse_search: bool = True,
     sparse_policy_only: bool = False,
+    sparse_policy_variant: str = "reference",
     sparse_ranker_path: Path | None = None,
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
@@ -108,6 +109,10 @@ def run_blockwise_exploration(
     )
     if sparse_policy_only and sparse_ranker is None:
         raise ValueError("sparse_policy_only requires a fitted sparse ranker")
+    if sparse_policy_variant not in {"reference", "baseline_reference"}:
+        raise ValueError(
+            "sparse_policy_variant must be 'reference' or 'baseline_reference'"
+        )
     backend = build_backend(config.model, seed=config.seed)
     backend.configure_metrics(capture_attention=True)
     splice = getattr(backend, "probe_blockwise_cache_splice", None)
@@ -230,6 +235,7 @@ def run_blockwise_exploration(
                         compute_cache_surgery_oracles=compute_cache_surgery_oracles,
                         compute_structured_sparse_search=compute_structured_sparse_search,
                         sparse_policy_only=sparse_policy_only,
+                        sparse_policy_variant=sparse_policy_variant,
                         sparse_ranker=sparse_ranker,
                         sparse_ranker_path=sparse_ranker_path,
                     )
@@ -278,6 +284,7 @@ def _explore_condition(
     compute_cache_surgery_oracles: bool,
     compute_structured_sparse_search: bool,
     sparse_policy_only: bool,
+    sparse_policy_variant: str,
     sparse_ranker: dict[str, Any] | None,
     sparse_ranker_path: Path | None,
 ) -> tuple[
@@ -1084,14 +1091,21 @@ def _explore_condition(
                         )
 
                 if isinstance(target_model, dict):
-                    router_policy = target_model.get(
-                        "reference_candidate_router_policy"
+                    baseline_reference_variant = (
+                        sparse_policy_variant == "baseline_reference"
                     )
+                    router_policy_name = (
+                        "baseline_reference_candidate_router_policy"
+                        if baseline_reference_variant
+                        else "reference_candidate_router_policy"
+                    )
+                    router_policy = target_model.get(router_policy_name)
                     if isinstance(router_policy, dict):
                         _, router_scores = route_reference_candidate(
                             sparse_ranker,
                             update_target=str(condition["update_target"]),
                             feature_rows=condition_feature_rows,
+                            policy_name=router_policy_name,
                         )
                         raw_candidates = router_policy.get("candidates", [])
                         candidate_order = np.argsort(-router_scores)
@@ -1100,8 +1114,12 @@ def _explore_condition(
                         score_margin = float(
                             router_scores[first_index] - router_scores[second_index]
                         )
-                        second_probe_margin = float(
-                            router_policy.get("second_probe_score_margin", 0.0)
+                        second_probe_margin = (
+                            0.0
+                            if baseline_reference_variant
+                            else float(
+                                router_policy.get("second_probe_score_margin", 0.0)
+                            )
                         )
                         probe_indices = [first_index]
                         if score_margin < second_probe_margin:
@@ -1109,9 +1127,12 @@ def _explore_condition(
                         reference_token_id = int(
                             condition.get("reference_token_id", -1)
                         )
-                        stale_nll, stale_entropy, stale_max_probability = (
+                        gate_output = (
+                            baseline if baseline_reference_variant else stale.output
+                        )
+                        gate_nll, gate_entropy, gate_max_probability = (
                             _logit_selection_metrics(
-                                stale.output.logits,
+                                gate_output.logits,
                                 reference_token_id=reference_token_id,
                             )
                         )
@@ -1119,12 +1140,24 @@ def _explore_condition(
                             router_policy.get("reference_nll_margin", 0.0)
                         )
                         selected_mask = np.zeros_like(direct_available)
-                        selected_evaluation = stale
-                        selected_nll = stale_nll
+                        selected_evaluation = (
+                            _Evaluation(
+                                output=full,
+                                logits_kl=0.0,
+                                top1_agreement=1.0,
+                            )
+                            if baseline_reference_variant
+                            else stale
+                        )
+                        selected_nll = gate_nll
                         selected_count = 0
-                        selected_selector = "stale"
-                        selected_entropy = stale_entropy
-                        selected_max_probability = stale_max_probability
+                        selected_selector = (
+                            "full_recompute"
+                            if baseline_reference_variant
+                            else "stale"
+                        )
+                        selected_entropy = gate_entropy
+                        selected_max_probability = gate_max_probability
                         planner_probe_latency = 0.0
                         planner_probe_flops = 0.0
                         evaluated_masks: set[bytes] = set()
@@ -1220,13 +1253,17 @@ def _explore_condition(
                                     candidate_max_probability
                                 )
                         accepted = selected_count > 0
-                        nll_improvement = stale_nll - selected_nll
+                        nll_improvement = gate_nll - selected_nll
                         stale_extras = stale.output.extras or {}
                         selected_budget = selected_count / total_eligible
                         records.append(
                             _record(
                                 condition,
-                                selector="sparse_reference_router_policy",
+                                selector=(
+                                    "sparse_baseline_reference_router_policy"
+                                    if baseline_reference_variant
+                                    else "sparse_reference_router_policy"
+                                ),
                                 requested_budget_fraction=selected_budget,
                                 mask=selected_mask,
                                 eligible=eligible,
@@ -1234,7 +1271,9 @@ def _explore_condition(
                                 stale_kl=stale.logits_kl,
                                 selection_metadata={
                                     "selection_objective": (
-                                        "distilled_adaptive_reference_router"
+                                        "distilled_baseline_reference_router"
+                                        if baseline_reference_variant
+                                        else "distilled_adaptive_reference_router"
                                     ),
                                     "search_probe_count": len(evaluated_masks),
                                     "search_reference_token_evaluations": len(
@@ -1244,7 +1283,7 @@ def _explore_condition(
                                     "selected_stale_action": not accepted,
                                     "safety_gate_passed": accepted,
                                     "selection_stale_margin": reference_margin,
-                                    "selection_stale_score": stale_nll,
+                                    "selection_stale_score": gate_nll,
                                     "selection_raw_score": selected_nll,
                                     "selection_objective_improvement_vs_stale": (
                                         nll_improvement
@@ -1256,19 +1295,42 @@ def _explore_condition(
                                     "candidate_output_max_probability": (
                                         selected_max_probability
                                     ),
-                                    "stale_output_entropy": stale_entropy,
+                                    "stale_output_entropy": gate_entropy,
                                     "stale_output_max_probability": (
-                                        stale_max_probability
+                                        gate_max_probability
+                                    ),
+                                    "reference_gate_source": (
+                                        "baseline_old_parameters"
+                                        if baseline_reference_variant
+                                        else "stale_current_parameters"
+                                    ),
+                                    "selected_full_recompute_fallback": bool(
+                                        baseline_reference_variant and not accepted
                                     ),
                                     "candidate_logits_kl": (
                                         selected_evaluation.logits_kl
                                     ),
                                     "planner_probe_latency": planner_probe_latency,
                                     "end_to_end_planner_latency": (
-                                        float(
-                                            stale_extras.get("decode_latency", 0.0)
+                                        planner_probe_latency
+                                        + (
+                                            float(
+                                                condition.get(
+                                                    "full_recompute_strategy_latency",
+                                                    0.0,
+                                                )
+                                            )
+                                            if baseline_reference_variant and not accepted
+                                            else (
+                                                0.0
+                                                if baseline_reference_variant
+                                                else float(
+                                                    stale_extras.get(
+                                                        "decode_latency", 0.0
+                                                    )
+                                                )
+                                            )
                                         )
-                                        + planner_probe_latency
                                     ),
                                     "planner_probe_flops": planner_probe_flops,
                                     "router_scores": json.dumps(
@@ -1321,7 +1383,11 @@ def _explore_condition(
                         mask_rows.extend(
                             _mask_rows(
                                 condition,
-                                "sparse_reference_router_policy",
+                                (
+                                    "sparse_baseline_reference_router_policy"
+                                    if baseline_reference_variant
+                                    else "sparse_reference_router_policy"
+                                ),
                                 selected_budget,
                                 selected_mask,
                             )

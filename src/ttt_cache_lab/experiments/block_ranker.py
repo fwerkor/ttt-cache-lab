@@ -80,6 +80,10 @@ ROUTER_BLOCK_FEATURE_NAMES = (
     "predicted_delta_norm",
     "attention_predicted_delta",
 )
+BASELINE_REFERENCE_SELECTOR_NAMES = (
+    "sparse_input_bound",
+    "sparse_predicted_delta_norm",
+)
 
 
 def fit_block_ranker(
@@ -134,6 +138,22 @@ def fit_block_ranker(
         ridge_values=REFERENCE_ROUTER_RIDGE_VALUES,
         min_stale_kl=REFERENCE_POOL_MIN_STALE_KL,
     )
+    baseline_reference_candidate_pool_policies = _reference_candidate_pool_policies(
+        record_rows,
+        pool_size=REFERENCE_POOL_SIZE,
+        min_stale_kl=REFERENCE_POOL_MIN_STALE_KL,
+        selector_names=BASELINE_REFERENCE_SELECTOR_NAMES,
+    )
+    baseline_reference_candidate_router_policies = (
+        _reference_candidate_router_policies(
+            feature_rows,
+            record_rows,
+            baseline_reference_candidate_pool_policies,
+            ridge_values=REFERENCE_ROUTER_RIDGE_VALUES,
+            min_stale_kl=REFERENCE_POOL_MIN_STALE_KL,
+            feature_mode="baseline_only",
+        )
+    )
     models: dict[str, Any] = {}
     for target, items in sorted(grouped.items()):
         x = np.stack([item["x"] for item in items], axis=0)
@@ -178,6 +198,12 @@ def fit_block_ranker(
             ),
             "reference_candidate_router_policy": (
                 reference_candidate_router_policies.get(target)
+            ),
+            "baseline_reference_candidate_pool_policy": (
+                baseline_reference_candidate_pool_policies.get(target)
+            ),
+            "baseline_reference_candidate_router_policy": (
+                baseline_reference_candidate_router_policies.get(target)
             ),
         }
 
@@ -254,19 +280,31 @@ def route_reference_candidate(
     *,
     update_target: str,
     feature_rows: list[dict[str, Any]],
+    policy_name: str = "reference_candidate_router_policy",
 ) -> tuple[dict[str, Any], np.ndarray]:
     """Route one condition to a single distilled sparse-repair candidate."""
     model = ranker.get("models", {}).get(update_target)
     if not isinstance(model, dict):
         raise ValueError(f"Block ranker has no model for update target {update_target!r}")
-    policy = model.get("reference_candidate_router_policy")
+    policy = model.get(policy_name)
     if not isinstance(policy, dict):
-        raise ValueError(f"Block ranker has no reference router for {update_target!r}")
+        raise ValueError(
+            f"Block ranker has no {policy_name!r} for {update_target!r}"
+        )
     expected_cells = int(policy.get("expected_direct_cells", 0))
-    vector = _reference_router_feature_vector(
-        feature_rows,
-        expected_cells=expected_cells,
-    )
+    feature_mode = str(policy.get("feature_mode", "full"))
+    if feature_mode == "full":
+        vector = _reference_router_feature_vector(
+            feature_rows,
+            expected_cells=expected_cells,
+        )
+    elif feature_mode == "baseline_only":
+        vector = _baseline_reference_router_feature_vector(
+            feature_rows,
+            expected_cells=expected_cells,
+        )
+    else:
+        raise ValueError(f"Unsupported reference router feature mode {feature_mode!r}")
     mean = np.asarray(policy["mean"], dtype=np.float64)
     scale = np.asarray(policy["scale"], dtype=np.float64)
     intercept = np.asarray(policy["intercept"], dtype=np.float64)
@@ -803,16 +841,19 @@ def _reference_candidate_pool_policies(
     *,
     pool_size: int = REFERENCE_POOL_SIZE,
     min_stale_kl: float = REFERENCE_POOL_MIN_STALE_KL,
+    selector_names: tuple[str, ...] = STATIC_SELECTOR_NAMES,
 ) -> dict[str, dict[str, Any]]:
     """Distill a small static candidate set for reference-guided selection."""
     if pool_size < 1:
         raise ValueError("reference candidate pool size must be positive")
     if min_stale_kl < 0.0:
         raise ValueError("minimum stale KL must be nonnegative")
+    if not selector_names:
+        raise ValueError("reference candidate selectors must not be empty")
 
     grouped: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
-        if row.get("selector") == "stale" or row.get("selector") in STATIC_SELECTOR_NAMES:
+        if row.get("selector") == "stale" or row.get("selector") in selector_names:
             grouped[_condition_key(row)].append(row)
 
     policies: dict[str, dict[str, Any]] = {}
@@ -850,7 +891,7 @@ def _reference_candidate_pool_policies(
             keyed = {
                 (str(row["selector"]), int(row.get("selected_cells", 0))): row
                 for row in candidates
-                if row.get("selector") in STATIC_SELECTOR_NAMES
+                if row.get("selector") in selector_names
                 and int(row.get("selected_cells", 0)) > 0
                 and np.isfinite(float(row.get("reference_token_nll", "nan")))
             }
@@ -951,10 +992,13 @@ def _reference_candidate_router_policies(
     *,
     ridge_values: tuple[float, ...] = REFERENCE_ROUTER_RIDGE_VALUES,
     min_stale_kl: float = REFERENCE_POOL_MIN_STALE_KL,
+    feature_mode: str = "full",
 ) -> dict[str, dict[str, Any]]:
     """Fit a one-probe router over the distilled candidate pool."""
     if not ridge_values or any(value < 0.0 for value in ridge_values):
         raise ValueError("reference router ridge values must be nonnegative")
+    if feature_mode not in {"full", "baseline_only"}:
+        raise ValueError(f"Unsupported reference router feature mode {feature_mode!r}")
     features_by_condition: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
     records_by_condition: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
     for row in feature_rows:
@@ -1035,11 +1079,14 @@ def _reference_candidate_router_policies(
         items = [item for item in items if item["expected_cells"] == expected_cells]
         if len(items) < 2:
             continue
+        vector_fn = (
+            _reference_router_feature_vector
+            if feature_mode == "full"
+            else _baseline_reference_router_feature_vector
+        )
         x = np.stack(
             [
-                _reference_router_feature_vector(
-                    item["feature_rows"], expected_cells=expected_cells
-                )
+                vector_fn(item["feature_rows"], expected_cells=expected_cells)
                 for item in items
             ],
             axis=0,
@@ -1110,6 +1157,7 @@ def _reference_candidate_router_policies(
         )
         policies[target] = {
             "candidates": candidates,
+            "feature_mode": feature_mode,
             "objective": objective,
             "ridge": ridge,
             "expected_direct_cells": expected_cells,
@@ -1315,6 +1363,69 @@ def _fit_standardized_multioutput_ridge(
     penalty[0, 0] = 0.0
     coefficients = np.linalg.pinv(design.T @ design + penalty) @ design.T @ y
     return mean, scale, coefficients[0], coefficients[1:]
+
+
+def _baseline_reference_router_feature_vector(
+    feature_rows: list[dict[str, Any]],
+    *,
+    expected_cells: int,
+) -> np.ndarray:
+    """Build a router vector without post-update attention or stale logits."""
+    if expected_cells <= 0 or len(feature_rows) != expected_cells:
+        raise ValueError(
+            "Baseline reference router requires exactly "
+            f"{expected_cells} direct cells, received {len(feature_rows)}"
+        )
+    ordered = sorted(
+        feature_rows,
+        key=lambda row: (int(row.get("layer", 0)), int(row.get("token_block", 0))),
+    )
+    names = ("input_weight_bound", "predicted_delta_norm")
+    raw = np.stack(
+        [
+            np.asarray(
+                [math.log1p(max(float(row.get(name, 0.0)), 0.0)) for name in names],
+                dtype=np.float64,
+            )
+            for row in ordered
+        ],
+        axis=0,
+    )
+    ranks = np.empty_like(raw)
+    denominator = max(expected_cells - 1, 1)
+    for feature_index in range(raw.shape[1]):
+        order = np.argsort(-raw[:, feature_index], kind="mergesort")
+        feature_ranks = np.empty(expected_cells, dtype=np.float64)
+        feature_ranks[order] = np.arange(expected_cells, dtype=np.float64)
+        ranks[:, feature_index] = 1.0 - feature_ranks / denominator
+    positions = np.asarray(
+        [float(row.get("token_center_fraction", 0.0)) for row in ordered],
+        dtype=np.float64,
+    )
+    aggregates: list[float] = []
+    for feature_index in range(raw.shape[1]):
+        values = raw[:, feature_index]
+        aggregates.extend(
+            [
+                float(np.mean(values)),
+                float(np.std(values)),
+                float(np.max(values)),
+                float(np.median(values)),
+                float(np.mean(np.sort(values)[-min(2, len(values)) :])),
+                float(np.max(values) - np.median(values)),
+            ]
+        )
+    context_length = max(float(ordered[0].get("context_length", 1.0)), 1.0)
+    return np.concatenate(
+        [
+            raw.reshape(-1),
+            ranks.reshape(-1),
+            positions,
+            positions * positions,
+            np.asarray(aggregates, dtype=np.float64),
+            np.asarray([math.log2(context_length)], dtype=np.float64),
+        ]
+    )
 
 
 def _reference_router_feature_vector(
