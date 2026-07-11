@@ -43,6 +43,9 @@ class BoundaryRecord:
     attention_kl: float
     attention_js: float
     attention_l1: float
+    attention_argmax_agreement: float
+    attention_top4_overlap: float
+    attention_top8_overlap: float
     attention_topk_overlap: float
     attention_output_relative_error: float
     attention_output_cosine_distance: float
@@ -115,6 +118,9 @@ def collect_boundary_record(
     attention_kl = 0.0
     attention_js = 0.0
     attention_l1 = 0.0
+    attention_argmax_agreement = 0.0
+    attention_top4_overlap = 0.0
+    attention_top8_overlap = 0.0
     attention_topk_overlap = 0.0
     attention_output_relative_error = 0.0
     attention_output_cosine_distance = 0.0
@@ -130,9 +136,15 @@ def collect_boundary_record(
         full_attention = _layer_array(full, "attention_summary", clamped_boundary)
         approx_attention = _layer_array(approx, "attention_summary", clamped_boundary)
         if full_attention is not None and approx_attention is not None:
-            attention_kl, attention_js, attention_l1, attention_topk_overlap = (
-                _distribution_metrics(full_attention, approx_attention, topk=topk)
-            )
+            (
+                attention_kl,
+                attention_js,
+                attention_l1,
+                attention_argmax_agreement,
+                attention_top4_overlap,
+                attention_top8_overlap,
+                attention_topk_overlap,
+            ) = _distribution_metrics(full_attention, approx_attention, topk=topk)
             metric_available = True
 
         full_attention_output = _layer_array(
@@ -148,17 +160,30 @@ def collect_boundary_record(
             ) = _vector_metrics(full_attention_output, approx_attention_output)
             metric_available = True
 
-        full_hidden = _hidden_layers(full)
-        approx_hidden = _hidden_layers(approx)
-        if clamped_boundary < min(len(full_hidden), len(approx_hidden)):
+        full_attention_input = _layer_array(
+            full, "attention_input_summary", clamped_boundary
+        )
+        approx_attention_input = _layer_array(
+            approx, "attention_input_summary", clamped_boundary
+        )
+        if full_attention_input is not None and approx_attention_input is not None:
             boundary_input_hidden_relative_error, _ = _vector_metrics(
-                full_hidden[clamped_boundary], approx_hidden[clamped_boundary]
+                full_attention_input, approx_attention_input
             )
             metric_available = True
         next_index = clamped_boundary + 1
-        if next_index < min(len(full_hidden), len(approx_hidden)):
+        full_next_attention_input = _layer_array(
+            full, "attention_input_summary", next_index
+        )
+        approx_next_attention_input = _layer_array(
+            approx, "attention_input_summary", next_index
+        )
+        if (
+            full_next_attention_input is not None
+            and approx_next_attention_input is not None
+        ):
             boundary_next_hidden_relative_error, _ = _vector_metrics(
-                full_hidden[next_index], approx_hidden[next_index]
+                full_next_attention_input, approx_next_attention_input
             )
             metric_available = True
 
@@ -207,6 +232,9 @@ def collect_boundary_record(
         attention_kl=attention_kl,
         attention_js=attention_js,
         attention_l1=attention_l1,
+        attention_argmax_agreement=attention_argmax_agreement,
+        attention_top4_overlap=attention_top4_overlap,
+        attention_top8_overlap=attention_top8_overlap,
         attention_topk_overlap=attention_topk_overlap,
         attention_output_relative_error=attention_output_relative_error,
         attention_output_cosine_distance=attention_output_cosine_distance,
@@ -251,6 +279,9 @@ def read_boundary_records(path: Path) -> list[BoundaryRecord]:
             payload = json.loads(stripped)
             if not isinstance(payload, dict):
                 raise ValueError(f"Boundary record {line_number} in {path} is not an object")
+            payload.setdefault("attention_argmax_agreement", 0.0)
+            payload.setdefault("attention_top4_overlap", 0.0)
+            payload.setdefault("attention_top8_overlap", 0.0)
             records.append(BoundaryRecord(**payload))
     return records
 
@@ -264,15 +295,6 @@ def _layer_array(output: BackendOutput, name: str, layer: int) -> np.ndarray | N
     if array.ndim < 2 or layer < 0 or layer >= array.shape[0]:
         return None
     return np.asarray(array[layer], dtype=np.float64)
-
-
-def _hidden_layers(output: BackendOutput) -> list[Any]:
-    extras = output.extras or {}
-    hidden_states = extras.get("hidden_states")
-    if isinstance(hidden_states, tuple) and hidden_states:
-        return list(hidden_states)
-    array = output.hidden_tensor
-    return [array[index] for index in range(len(array))]
 
 
 def _cache_layers(output: BackendOutput) -> list[tuple[Any, Any]]:
@@ -298,12 +320,12 @@ def _distribution_metrics(
     candidate: np.ndarray,
     *,
     topk: int,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     left = np.asarray(reference, dtype=np.float64).reshape(-1)
     right = np.asarray(candidate, dtype=np.float64).reshape(-1)
     size = min(left.size, right.size)
     if size == 0:
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     left = np.clip(left[:size], 0.0, None)
     right = np.clip(right[:size], 0.0, None)
     epsilon = 1e-12
@@ -320,11 +342,26 @@ def _distribution_metrics(
         + 0.5 * np.sum(right * np.log(right / midpoint))
     )
     l1 = float(np.sum(np.abs(left - right)))
-    k = max(1, min(topk, size))
+    argmax_agreement = float(int(np.argmax(left) == np.argmax(right)))
+    top4_overlap = _topk_overlap(left, right, 4)
+    top8_overlap = _topk_overlap(left, right, 8)
+    configured_overlap = _topk_overlap(left, right, topk)
+    return (
+        kl,
+        js,
+        l1,
+        argmax_agreement,
+        top4_overlap,
+        top8_overlap,
+        configured_overlap,
+    )
+
+
+def _topk_overlap(left: np.ndarray, right: np.ndarray, topk: int) -> float:
+    k = max(1, min(topk, left.size, right.size))
     left_top = set(np.argpartition(left, -k)[-k:].tolist())
     right_top = set(np.argpartition(right, -k)[-k:].tolist())
-    overlap = len(left_top & right_top) / k
-    return kl, js, l1, overlap
+    return len(left_top & right_top) / k
 
 
 def _vector_metrics(reference: Any, candidate: Any) -> tuple[float, float]:

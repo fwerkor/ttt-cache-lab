@@ -164,6 +164,7 @@ class HuggingFaceBackend:
         self._alora_base_cache: dict[str, tuple[Any, np.ndarray]] = {}
         self._capture_attention_metrics = False
         self._last_attention_summary: np.ndarray | None = None
+        self._last_attention_input_summary: np.ndarray | None = None
         self._last_attention_output_summary: np.ndarray | None = None
         self._last_correction_flops = 0.0
         self._last_low_rank_cache_bytes = 0
@@ -866,6 +867,7 @@ class HuggingFaceBackend:
         generated: list[Any] = []
         first_logits = None
         self._last_attention_summary = None
+        self._last_attention_input_summary = None
         self._last_attention_output_summary = None
         start = time.perf_counter()
         for generation_step in range(max_new_tokens):
@@ -880,11 +882,13 @@ class HuggingFaceBackend:
                 if current_implementation != "eager" and current_implementation != "transformers_default":
                     set_attention_implementation("eager")
                     previous_attention_implementation = current_implementation
-            attention_output_handles: list[Any] = []
+            attention_handles: list[Any] = []
+            captured_attention_inputs: dict[int, np.ndarray] = {}
             captured_attention_outputs: dict[int, np.ndarray] = {}
             if capture_attention:
-                attention_output_handles = self._register_attention_output_hooks(
-                    captured_attention_outputs
+                attention_handles = self._register_attention_hooks(
+                    captured_attention_inputs,
+                    captured_attention_outputs,
                 )
             try:
                 result = self.model(
@@ -894,7 +898,7 @@ class HuggingFaceBackend:
                     output_attentions=capture_attention,
                 )
             finally:
-                for handle in attention_output_handles:
+                for handle in attention_handles:
                     handle.remove()
                 if previous_attention_implementation is not None and set_attention_implementation is not None:
                     set_attention_implementation(previous_attention_implementation)
@@ -903,7 +907,10 @@ class HuggingFaceBackend:
                 first_logits = logits
             if capture_attention:
                 self._last_attention_summary = self._summarize_attentions(getattr(result, "attentions", None))
-                self._last_attention_output_summary = self._stack_attention_outputs(
+                self._last_attention_input_summary = self._stack_attention_vectors(
+                    captured_attention_inputs
+                )
+                self._last_attention_output_summary = self._stack_attention_vectors(
                     captured_attention_outputs
                 )
             next_token = self.torch.argmax(logits, dim=-1, keepdim=True)
@@ -938,12 +945,16 @@ class HuggingFaceBackend:
         metadata: dict[str, np.ndarray] = {}
         if self._last_attention_summary is not None:
             metadata["attention_summary"] = self._last_attention_summary
+        if self._last_attention_input_summary is not None:
+            metadata["attention_input_summary"] = self._last_attention_input_summary
         if self._last_attention_output_summary is not None:
             metadata["attention_output_summary"] = self._last_attention_output_summary
         return metadata
 
-    def _register_attention_output_hooks(
-        self, captured: dict[int, np.ndarray]
+    def _register_attention_hooks(
+        self,
+        captured_inputs: dict[int, np.ndarray],
+        captured_outputs: dict[int, np.ndarray],
     ) -> list[Any]:
         layers, _ = self._decoder_layers()
         if layers is None:
@@ -953,6 +964,23 @@ class HuggingFaceBackend:
             attention = getattr(layer, "self_attn", None) or getattr(layer, "attn", None)
             if attention is None or not hasattr(attention, "register_forward_hook"):
                 continue
+
+            def capture_input(
+                _module: Any,
+                args: tuple[Any, ...],
+                kwargs: dict[str, Any],
+                *,
+                index: int = layer_index,
+            ) -> None:
+                tensor = kwargs.get("hidden_states")
+                if tensor is None and args:
+                    tensor = args[0]
+                if tensor is None or not hasattr(tensor, "detach"):
+                    return
+                value = tensor.detach().float()
+                if value.ndim >= 3:
+                    value = value[:, -1, :]
+                captured_inputs[index] = value.reshape(-1).cpu().numpy()
 
             def capture_output(
                 _module: Any,
@@ -967,12 +995,15 @@ class HuggingFaceBackend:
                 value = tensor.detach().float()
                 if value.ndim >= 3:
                     value = value[:, -1, :]
-                captured[index] = value.reshape(-1).cpu().numpy()
+                captured_outputs[index] = value.reshape(-1).cpu().numpy()
 
+            handles.append(
+                attention.register_forward_pre_hook(capture_input, with_kwargs=True)
+            )
             handles.append(attention.register_forward_hook(capture_output))
         return handles
 
-    def _stack_attention_outputs(self, captured: dict[int, np.ndarray]) -> np.ndarray | None:
+    def _stack_attention_vectors(self, captured: dict[int, np.ndarray]) -> np.ndarray | None:
         if len(captured) != self.num_layers:
             return None
         ordered = [captured[index] for index in range(self.num_layers)]

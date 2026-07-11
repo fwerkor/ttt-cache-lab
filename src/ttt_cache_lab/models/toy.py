@@ -247,6 +247,7 @@ class ToyBackend:
         probabilities /= np.sum(probabilities, axis=-1, keepdims=True)
         return {
             "attention_summary": probabilities,
+            "attention_input_summary": cache[:, 0, :],
             "attention_output_summary": cache.mean(axis=1),
         }
 

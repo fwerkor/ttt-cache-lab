@@ -310,9 +310,11 @@ def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llam
 
     assert output.extras is not None
     attention_summary = output.extras["attention_summary"]
+    attention_input_summary = output.extras["attention_input_summary"]
     attention_output_summary = output.extras["attention_output_summary"]
     assert attention_summary.shape[0] == backend.num_layers
     assert attention_summary.shape[1] > 0
+    assert attention_input_summary.shape == (backend.num_layers, backend.hidden_size)
     assert attention_output_summary.shape == (backend.num_layers, backend.hidden_size)
     assert backend._attention_implementation() == original_implementation
 

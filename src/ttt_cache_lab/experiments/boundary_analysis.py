@@ -13,6 +13,9 @@ METRIC_FIELDS = (
     "attention_kl",
     "attention_js",
     "attention_l1",
+    "attention_argmax_disagreement",
+    "attention_top4_distance",
+    "attention_top8_distance",
     "attention_topk_distance",
     "attention_output_relative_error",
     "attention_output_cosine_distance",
@@ -26,6 +29,9 @@ METRIC_FIELDS = (
 
 PREDICTOR_FEATURES = (
     "attention_js",
+    "attention_argmax_disagreement",
+    "attention_top4_distance",
+    "attention_top8_distance",
     "attention_topk_distance",
     "attention_output_relative_error",
     "attention_output_cosine_distance",
@@ -96,6 +102,15 @@ def _enrich(
         if not _boolean(row, "has_stale_rejoin") or not _boolean(row, "metric_available"):
             continue
         item: dict[str, str | int | float | bool] = dict(row)
+        item["attention_argmax_disagreement"] = 1.0 - _number(
+            row, "attention_argmax_agreement"
+        )
+        item["attention_top4_distance"] = 1.0 - _number(
+            row, "attention_top4_overlap"
+        )
+        item["attention_top8_distance"] = 1.0 - _number(
+            row, "attention_top8_overlap"
+        )
         item["attention_topk_distance"] = 1.0 - _number(row, "attention_topk_overlap")
         reference = stale.get(_boundary_key(row))
         stale_kl = _number(reference, "logits_kl") if reference is not None else math.nan
