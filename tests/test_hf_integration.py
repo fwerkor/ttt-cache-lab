@@ -455,11 +455,20 @@ def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: P
     token_ids = backend.tokenizer(sample.answer, add_special_tokens=False)["input_ids"]
     assert len(token_ids) >= 2
 
+    profile_metrics = backend.score_reference_sequence(
+        baseline=baseline,
+        past=baseline.extras["past_key_values"],
+        reference_token_ids=token_ids,
+        probe_lengths=(1, 2),
+        return_profile=True,
+    )
+    reference_profile = profile_metrics.pop("_reference_log_probabilities")
     metrics = backend.score_reference_sequence(
         baseline=baseline,
         past=baseline.extras["past_key_values"],
         reference_token_ids=token_ids,
         probe_lengths=(1, 2),
+        reference_log_probabilities=reference_profile,
     )
     logits = torch.tensor(baseline.logits[0], dtype=torch.float32)
     expected_first_nll = float(-torch.log_softmax(logits, dim=-1)[token_ids[0]])
@@ -467,7 +476,11 @@ def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: P
     assert metrics["reference_probe_tokens"] == 2
     assert metrics["reference_token_nll_1"] == pytest.approx(expected_first_nll, rel=1e-5)
     assert np.isfinite(metrics["reference_token_nll_2"])
+    assert metrics["reference_token_kl_1"] == pytest.approx(0.0, abs=1e-6)
+    assert metrics["reference_token_kl_2"] == pytest.approx(0.0, abs=1e-6)
+    assert metrics["reference_sequence_kl"] == pytest.approx(0.0, abs=1e-6)
     assert len(metrics["reference_token_nll_values"]) == 2
+    assert len(metrics["reference_token_kl_values"]) == 2
 
 
 def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llama_dir: Path) -> None:

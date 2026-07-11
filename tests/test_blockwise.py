@@ -191,6 +191,55 @@ def test_joint_search_uses_cost_penalty_and_can_select_stale() -> None:
         cost_penalty=0.0,
     )
 
+    safety_gated = _joint_sparse_search_point(
+        stale=stale,
+        path=path,
+        reference_token_id=0,
+        objective="reference_nll",
+        direct_total=2,
+        cost_penalty=0.0,
+        stale_margin=0.02,
+    )
+
     assert int(np.count_nonzero(unpenalized.mask)) == 2
     assert int(np.count_nonzero(penalized.mask)) == 1
     assert int(np.count_nonzero(stale_selected.mask)) == 0
+    assert int(np.count_nonzero(safety_gated.mask)) == 2
+
+
+def test_joint_search_rejects_improvement_below_stale_margin() -> None:
+    stale = _evaluation([0.0, 0.0])
+    slightly_better = _evaluation([0.01, 0.0])
+    path = {
+        1: _SearchPoint(
+            mask=np.asarray([[True]], dtype=bool),
+            evaluation=slightly_better,
+            score=_logit_selection_metrics(
+                slightly_better.output.logits,
+                reference_token_id=0,
+            )[0],
+            probe_count=1,
+        )
+    }
+
+    accepted = _joint_sparse_search_point(
+        stale=stale,
+        path=path,
+        reference_token_id=0,
+        objective="reference_nll",
+        direct_total=1,
+        cost_penalty=0.0,
+        stale_margin=0.0,
+    )
+    rejected = _joint_sparse_search_point(
+        stale=stale,
+        path=path,
+        reference_token_id=0,
+        objective="reference_nll",
+        direct_total=1,
+        cost_penalty=0.0,
+        stale_margin=0.01,
+    )
+
+    assert int(np.count_nonzero(accepted.mask)) == 1
+    assert int(np.count_nonzero(rejected.mask)) == 0

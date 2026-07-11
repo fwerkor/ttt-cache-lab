@@ -58,6 +58,7 @@ def run_blockwise_exploration(
     sparse_cost_penalties: tuple[float, ...] = (0.0, 0.001, 0.005, 0.01),
     sparse_swap_rounds: int = 4,
     reference_probe_lengths: tuple[int, ...] = (1,),
+    sparse_stale_margins: tuple[float, ...] = (0.0,),
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
         raise ValueError("block sizes must be positive")
@@ -85,6 +86,10 @@ def run_blockwise_exploration(
         raise ValueError("reference probe lengths must be positive")
     if len(set(reference_probe_lengths)) != len(reference_probe_lengths):
         raise ValueError("reference probe lengths must be unique")
+    if any(margin < 0.0 for margin in sparse_stale_margins):
+        raise ValueError("sparse stale margins must be nonnegative")
+    if len(set(sparse_stale_margins)) != len(sparse_stale_margins):
+        raise ValueError("sparse stale margins must be unique")
 
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -171,6 +176,7 @@ def run_blockwise_exploration(
                         sparse_cost_penalties=sparse_cost_penalties,
                         sparse_swap_rounds=sparse_swap_rounds,
                         reference_probe_lengths=reference_probe_lengths,
+                        sparse_stale_margins=sparse_stale_margins,
                     )
                     records.extend(condition_records)
                     frontier_rows.extend(condition_frontier)
@@ -210,6 +216,7 @@ def _explore_condition(
     sparse_cost_penalties: tuple[float, ...],
     sparse_swap_rounds: int,
     reference_probe_lengths: tuple[int, ...],
+    sparse_stale_margins: tuple[float, ...],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     old_layers = _past_layers(baseline)
     new_layers = _past_layers(full)
@@ -235,6 +242,28 @@ def _explore_condition(
         )
     )
     sequence_scorer = getattr(backend, "score_reference_sequence", None)
+    full_reference_log_probabilities = None
+    if (
+        callable(sequence_scorer)
+        and full.extras
+        and effective_reference_lengths
+        and max(effective_reference_lengths) > 1
+    ):
+        full_past = full.extras.get("past_key_values")
+        if full_past is not None:
+            full_reference_metrics = sequence_scorer(
+                baseline=baseline,
+                past=full_past,
+                reference_token_ids=reference_token_ids,
+                probe_lengths=effective_reference_lengths,
+                return_profile=True,
+            )
+            if isinstance(full_reference_metrics, dict):
+                full_reference_log_probabilities = full_reference_metrics.pop(
+                    "_reference_log_probabilities",
+                    None,
+                )
+                full.extras.update(full_reference_metrics)
 
     def enrich_reference_metrics(output: BackendOutput) -> None:
         if (
@@ -252,6 +281,7 @@ def _explore_condition(
             past=past,
             reference_token_ids=reference_token_ids,
             probe_lengths=effective_reference_lengths,
+            reference_log_probabilities=full_reference_log_probabilities,
         )
         if isinstance(metrics, dict):
             output.extras.update(metrics)
@@ -446,6 +476,7 @@ def _explore_condition(
                     best_reference_eval: _Evaluation | None = None
                     best_reference_nll = math.inf
                     best_sequence: dict[str, tuple[float, np.ndarray, _Evaluation]] = {}
+                    best_sequence_kl: dict[str, tuple[float, np.ndarray, _Evaluation]] = {}
                     best_confidence_mask: np.ndarray | None = None
                     best_confidence_eval: _Evaluation | None = None
                     best_confidence = -math.inf
@@ -484,6 +515,22 @@ def _explore_condition(
                             previous = best_sequence.get(label)
                             if np.isfinite(score) and (previous is None or score < previous[0]):
                                 best_sequence[label] = (score, mask.copy(), sparse_eval)
+                            length = int(objective.rsplit("_", 1)[1])
+                            sequence_kl = float(
+                                (sparse_eval.output.extras or {}).get(
+                                    f"reference_token_kl_{length}",
+                                    math.nan,
+                                )
+                            )
+                            previous_kl = best_sequence_kl.get(label)
+                            if np.isfinite(sequence_kl) and (
+                                previous_kl is None or sequence_kl < previous_kl[0]
+                            ):
+                                best_sequence_kl[label] = (
+                                    sequence_kl,
+                                    mask.copy(),
+                                    sparse_eval,
+                                )
                         if max_probability > best_confidence:
                             best_confidence = max_probability
                             best_confidence_mask = mask.copy()
@@ -524,6 +571,15 @@ def _explore_condition(
                                 sequence_eval,
                             )
                         )
+                    for label, (_, sequence_mask, sequence_eval) in best_sequence_kl.items():
+                        length_label = label.removeprefix("reference")
+                        exhaustive_rows.append(
+                            (
+                                f"sparse_sequence{length_label}_delta_oracle",
+                                sequence_mask,
+                                sequence_eval,
+                            )
+                        )
                     exhaustive_probe_count = math.comb(direct_total, direct_count)
                     for selector, mask, evaluation in exhaustive_rows:
                         records.append(
@@ -541,9 +597,13 @@ def _explore_condition(
                                         "logits_kl"
                                         if selector in {"direct_splice_oracle", "sparse_delta_oracle"}
                                         else (
-                                            "reference_nll"
-                                            if selector.startswith("sparse_reference")
-                                            else "confidence"
+                                            f"reference_sequence_kl_{selector.removeprefix('sparse_sequence').removesuffix('_delta_oracle')}"
+                                            if selector.startswith("sparse_sequence")
+                                            else (
+                                                "reference_nll"
+                                                if selector.startswith("sparse_reference")
+                                                else "confidence"
+                                            )
                                         )
                                     ),
                                     "joint_budget_selection": False,
@@ -680,53 +740,79 @@ def _explore_condition(
             for _, (objective, paths) in reference_path_groups.items():
                 probe_length = objective_probe_length(objective)
                 for selector, path_by_count in paths.items():
+                    stale_objective_score = _sparse_objective_score(
+                        stale,
+                        reference_token_id=reference_token_id,
+                        objective=objective,
+                    )
                     for cost_penalty in sparse_cost_penalties:
-                        joint = _joint_sparse_search_point(
-                            stale=stale,
-                            path=path_by_count,
-                            reference_token_id=reference_token_id,
-                            objective=objective,
-                            direct_total=direct_total,
-                            cost_penalty=cost_penalty,
-                        )
-                        selected_count = int(np.count_nonzero(joint.mask))
-                        penalty_label = f"{cost_penalty:g}".replace(".", "p")
-                        joint_selector = f"{selector}_joint_p{penalty_label}"
-                        budget = selected_count / total_eligible
-                        records.append(
-                            _record(
-                                condition,
-                                selector=joint_selector,
-                                requested_budget_fraction=budget,
-                                mask=joint.mask,
-                                eligible=eligible,
-                                evaluation=joint.evaluation,
-                                stale_kl=stale.logits_kl,
-                                selection_metadata={
-                                    "search_probe_count": joint.probe_count,
-                                    "search_reference_token_evaluations": (
-                                        joint.probe_count * probe_length
-                                    ),
-                                    "selection_objective": objective,
-                                    "selection_score": joint.score,
-                                    "selection_cost_penalty": cost_penalty,
-                                    "reference_probe_length": probe_length,
-                                    "joint_budget_selection": True,
-                                    "selected_stale_action": selected_count == 0,
-                                    "search_beam_width": (
-                                        int(selector.rsplit("beam", 1)[1])
-                                        if "beam" in selector
-                                        else 1
-                                    ),
-                                    "search_swap_rounds": (
-                                        sparse_swap_rounds if selector.endswith("swap") else 0
-                                    ),
-                                },
+                        for stale_margin in sparse_stale_margins:
+                            joint = _joint_sparse_search_point(
+                                stale=stale,
+                                path=path_by_count,
+                                reference_token_id=reference_token_id,
+                                objective=objective,
+                                direct_total=direct_total,
+                                cost_penalty=cost_penalty,
+                                stale_margin=stale_margin,
                             )
-                        )
-                        mask_rows.extend(
-                            _mask_rows(condition, joint_selector, budget, joint.mask)
-                        )
+                            selected_count = int(np.count_nonzero(joint.mask))
+                            penalty_label = f"{cost_penalty:g}".replace(".", "p")
+                            margin_label = f"{stale_margin:g}".replace(".", "p")
+                            joint_selector = f"{selector}_joint_p{penalty_label}"
+                            if stale_margin > 0.0:
+                                joint_selector += f"_m{margin_label}"
+                            budget = selected_count / total_eligible
+                            raw_selected_score = _sparse_objective_score(
+                                joint.evaluation,
+                                reference_token_id=reference_token_id,
+                                objective=objective,
+                            )
+                            objective_improvement = stale_objective_score - raw_selected_score
+                            records.append(
+                                _record(
+                                    condition,
+                                    selector=joint_selector,
+                                    requested_budget_fraction=budget,
+                                    mask=joint.mask,
+                                    eligible=eligible,
+                                    evaluation=joint.evaluation,
+                                    stale_kl=stale.logits_kl,
+                                    selection_metadata={
+                                        "search_probe_count": joint.probe_count,
+                                        "search_reference_token_evaluations": (
+                                            joint.probe_count * probe_length
+                                        ),
+                                        "selection_objective": objective,
+                                        "selection_score": joint.score,
+                                        "selection_raw_score": raw_selected_score,
+                                        "selection_stale_score": stale_objective_score,
+                                        "selection_objective_improvement_vs_stale": (
+                                            objective_improvement
+                                        ),
+                                        "selection_cost_penalty": cost_penalty,
+                                        "selection_stale_margin": stale_margin,
+                                        "reference_probe_length": probe_length,
+                                        "joint_budget_selection": True,
+                                        "selected_stale_action": selected_count == 0,
+                                        "safety_gate_passed": (
+                                            selected_count > 0
+                                            and objective_improvement >= stale_margin - 1e-15
+                                        ),
+                                        "search_beam_width": (
+                                            int(selector.rsplit("beam", 1)[1])
+                                            if "beam" in selector
+                                            else 1
+                                        ),
+                                        "search_swap_rounds": (
+                                            sparse_swap_rounds if selector.endswith("swap") else 0
+                                        ),
+                                    },
+                                )
+                            )
+                            mask_rows.extend(
+                                _mask_rows(condition, joint_selector, budget, joint.mask)
+                            )
 
     greedy_limit = min(max(desired_counts), oracle_max_cells, total_eligible)
     candidate_mask = _candidate_pool(
@@ -1057,9 +1143,12 @@ def _joint_sparse_search_point(
     objective: str,
     direct_total: int,
     cost_penalty: float,
+    stale_margin: float = 0.0,
 ) -> _SearchPoint:
     if direct_total <= 0:
         raise ValueError("direct_total must be positive")
+    if stale_margin < 0.0:
+        raise ValueError("stale_margin must be nonnegative")
     empty = np.zeros_like(next(iter(path.values())).mask) if path else np.zeros((1, 1), dtype=bool)
     stale_score = _sparse_objective_score(
         stale,
@@ -1073,8 +1162,11 @@ def _joint_sparse_search_point(
         probe_count=max((point.probe_count for point in path.values()), default=0),
     )
     best_penalized = stale_score
+    acceptance_threshold = stale_score - stale_margin
     for count, point in path.items():
         penalized = point.score + cost_penalty * count / direct_total
+        if penalized > acceptance_threshold - 1e-15:
+            continue
         selected_best = int(np.count_nonzero(best.mask))
         if penalized < best_penalized - 1e-15 or (
             abs(penalized - best_penalized) <= 1e-15 and count < selected_best
@@ -1188,7 +1280,11 @@ def _record(
     sequence_metrics = {
         key: value
         for key, value in extras.items()
-        if key.startswith("reference_token_nll_") and isinstance(value, int | float)
+        if (
+            key.startswith("reference_token_nll_")
+            or key.startswith("reference_token_kl_")
+        )
+        and isinstance(value, int | float)
     }
     return {
         **condition,
@@ -1203,6 +1299,7 @@ def _record(
         "output_entropy": output_entropy,
         "output_max_probability": output_max_probability,
         "reference_sequence_nll": float(extras.get("reference_sequence_nll", math.nan)),
+        "reference_sequence_kl": float(extras.get("reference_sequence_kl", math.nan)),
         "reference_probe_tokens": int(extras.get("reference_probe_tokens", 0)),
         "reference_probe_latency": float(extras.get("reference_probe_latency", 0.0)),
         **sequence_metrics,

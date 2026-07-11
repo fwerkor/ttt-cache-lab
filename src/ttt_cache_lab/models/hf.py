@@ -1518,8 +1518,10 @@ class HuggingFaceBackend:
         past: Any,
         reference_token_ids: list[int] | tuple[int, ...],
         probe_lengths: tuple[int, ...],
+        reference_log_probabilities: Any | None = None,
+        return_profile: bool = False,
     ) -> dict[str, Any]:
-        """Return teacher-forced prefix NLLs for an arbitrary repaired cache."""
+        """Return teacher-forced prefix NLLs and optional full-reference KLs."""
         if not baseline.extras:
             raise ValueError("Reference scoring requires cached prompt state")
         if not probe_lengths or any(length <= 0 for length in probe_lengths):
@@ -1556,12 +1558,30 @@ class HuggingFaceBackend:
                 dim=-1,
                 index=target_ids.unsqueeze(-1),
             ).squeeze(-1)
-            prefix_nll = self.torch.cumsum(token_nll, dim=1) / self.torch.arange(
+            prefix_denominator = self.torch.arange(
                 1,
                 max_tokens + 1,
                 device=token_nll.device,
                 dtype=token_nll.dtype,
             ).unsqueeze(0)
+            prefix_nll = self.torch.cumsum(token_nll, dim=1) / prefix_denominator
+            token_kl = None
+            prefix_kl = None
+            if reference_log_probabilities is not None:
+                reference = reference_log_probabilities[:, :max_tokens, :].to(
+                    device=log_probabilities.device,
+                    dtype=log_probabilities.dtype,
+                )
+                if reference.shape != log_probabilities.shape:
+                    raise ValueError(
+                        "reference_log_probabilities shape does not match sequence probe logits"
+                    )
+                reference_probabilities = self.torch.exp(reference)
+                token_kl = self.torch.sum(
+                    reference_probabilities * (reference - log_probabilities),
+                    dim=-1,
+                )
+                prefix_kl = self.torch.cumsum(token_kl, dim=1) / prefix_denominator
         synchronize(self.torch, self.devices)
         latency = time.perf_counter() - start
         metrics: dict[str, Any] = {
@@ -1572,11 +1592,22 @@ class HuggingFaceBackend:
                 float(value) for value in token_nll[0].detach().cpu().tolist()
             ],
         }
+        if prefix_kl is not None and token_kl is not None:
+            metrics["reference_sequence_kl"] = float(prefix_kl[0, -1].detach().cpu())
+            metrics["reference_token_kl_values"] = [
+                float(value) for value in token_kl[0].detach().cpu().tolist()
+            ]
+        if return_profile:
+            metrics["_reference_log_probabilities"] = log_probabilities.detach()
         for length in sorted(set(probe_lengths)):
             if length <= max_tokens:
                 metrics[f"reference_token_nll_{length}"] = float(
                     prefix_nll[0, length - 1].detach().cpu()
                 )
+                if prefix_kl is not None:
+                    metrics[f"reference_token_kl_{length}"] = float(
+                        prefix_kl[0, length - 1].detach().cpu()
+                    )
         return metrics
 
     def probe_blockwise_cache_splice(

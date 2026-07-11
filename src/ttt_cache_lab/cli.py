@@ -152,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     blockwise.add_argument("--sparse-swap-rounds", type=int, default=4)
     blockwise.add_argument("--reference-probe-lengths", type=int, nargs="+", default=[1])
+    blockwise.add_argument(
+        "--sparse-stale-margins",
+        type=float,
+        nargs="+",
+        default=[0.0],
+    )
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -362,6 +368,7 @@ def main(argv: list[str] | None = None) -> None:
             sparse_cost_penalties=tuple(args.sparse_cost_penalties),
             sparse_swap_rounds=args.sparse_swap_rounds,
             reference_probe_lengths=tuple(args.reference_probe_lengths),
+            sparse_stale_margins=tuple(args.sparse_stale_margins),
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
