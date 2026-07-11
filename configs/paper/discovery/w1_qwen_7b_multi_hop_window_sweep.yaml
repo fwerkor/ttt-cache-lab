@@ -40,7 +40,12 @@ base:
     strategies:
     - full_recompute
     - stale_reuse
-    - windowed_recompute
+    - windowed_recompute_1
+    - windowed_recompute_2
+    - windowed_recompute_4
+    - windowed_recompute_8
+    - windowed_recompute_16
+    - windowed_recompute_32
     - layerwise_recompute
     recompute_window_size: 4
     refresh_period: 4
@@ -84,5 +89,3 @@ axes:
   - [lora.mlp_middle]
   - [lora.k_late]
   - [lora.mlp_late]
-- path: cache.recompute_window_size
-  values: [1, 2, 4, 8, 16, 32]

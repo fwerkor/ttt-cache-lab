@@ -384,8 +384,12 @@ def test_versioned_runner_records_finite_recompute_window(tmp_path: Path) -> Non
             "data": {"task": "passkey", "num_samples": 1, "context_length": 64, "answer_length": 2},
             "updates": {"targets": ["lora.k:1"], "update_norm": 0.1},
             "cache": {
-                "strategies": ["full_recompute", "windowed_recompute", "layerwise_recompute"],
-                "recompute_window_size": 2,
+                "strategies": [
+                    "full_recompute",
+                    "windowed_recompute_1",
+                    "windowed_recompute_2",
+                    "layerwise_recompute",
+                ],
             },
             "metrics": {"compute_flops_metrics": True},
             "adapter": {"update_mode": "random", "lora_rank": 4},
@@ -394,16 +398,23 @@ def test_versioned_runner_records_finite_recompute_window(tmp_path: Path) -> Non
     )
     records = VersionedExperimentRunner(config).run().records
     by_strategy = {record.cache_strategy: record for record in records}
-    windowed = by_strategy["windowed_recompute"]
+    window_one = by_strategy["windowed_recompute_1"]
+    window_two = by_strategy["windowed_recompute_2"]
     suffix = by_strategy["layerwise_recompute"]
-    assert windowed.first_invalid_layer == 1
-    assert windowed.last_recomputed_layer == 3
-    assert windowed.recompute_window_size == 2
-    assert windowed.recompute_fraction == 2 / 6
-    assert windowed.flops_fraction == 2 / 6
+    assert window_one.first_invalid_layer == 1
+    assert window_one.last_recomputed_layer == 2
+    assert window_one.recompute_window_size == 1
+    assert window_one.recompute_fraction == 1 / 6
+    assert window_one.flops_fraction == 1 / 6
+    assert window_two.first_invalid_layer == 1
+    assert window_two.last_recomputed_layer == 3
+    assert window_two.recompute_window_size == 2
+    assert window_two.recompute_fraction == 2 / 6
+    assert window_two.flops_fraction == 2 / 6
     assert suffix.last_recomputed_layer is None
     assert suffix.recompute_fraction == 5 / 6
-    assert windowed.strategy_flops < suffix.strategy_flops
+    assert window_one.strategy_flops < window_two.strategy_flops < suffix.strategy_flops
+    assert len({record.accumulated_raw_update_norm for record in records}) == 1
 
 
 def test_versioned_runner_writes_layerwise_propagation_sidecar(tmp_path: Path) -> None:

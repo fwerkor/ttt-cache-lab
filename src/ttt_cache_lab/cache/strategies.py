@@ -23,6 +23,12 @@ class StrategyName(StrEnum):
     THRESHOLD_REFRESH = "threshold_refresh"
     LAYERWISE_RECOMPUTE = "layerwise_recompute"
     WINDOWED_RECOMPUTE = "windowed_recompute"
+    WINDOWED_RECOMPUTE_1 = "windowed_recompute_1"
+    WINDOWED_RECOMPUTE_2 = "windowed_recompute_2"
+    WINDOWED_RECOMPUTE_4 = "windowed_recompute_4"
+    WINDOWED_RECOMPUTE_8 = "windowed_recompute_8"
+    WINDOWED_RECOMPUTE_16 = "windowed_recompute_16"
+    WINDOWED_RECOMPUTE_32 = "windowed_recompute_32"
     DELTA_CORRECTION = "delta_correction"
     BASE_CACHE_REUSE = "base_cache_reuse"
     ADAPTER_SPECIFIC_CACHE = "adapter_specific_cache"
@@ -198,13 +204,32 @@ class LayerwiseRecomputeStrategy(CacheStrategy):
         )
 
 
+_WINDOW_STRATEGY_NAMES = {
+    1: StrategyName.WINDOWED_RECOMPUTE_1,
+    2: StrategyName.WINDOWED_RECOMPUTE_2,
+    4: StrategyName.WINDOWED_RECOMPUTE_4,
+    8: StrategyName.WINDOWED_RECOMPUTE_8,
+    16: StrategyName.WINDOWED_RECOMPUTE_16,
+    32: StrategyName.WINDOWED_RECOMPUTE_32,
+}
+
+
+def is_windowed_strategy_name(name: StrategyName) -> bool:
+    return name is StrategyName.WINDOWED_RECOMPUTE or name in _WINDOW_STRATEGY_NAMES.values()
+
+
 class WindowedRecomputeStrategy(CacheStrategy):
     name = StrategyName.WINDOWED_RECOMPUTE
 
-    def __init__(self, window_size: int = 4) -> None:
+    def __init__(self, window_size: int = 4, *, fixed_name: bool = False) -> None:
         if window_size <= 0:
             raise ValueError("window_size must be positive")
         self.window_size = window_size
+        self.name = (
+            _WINDOW_STRATEGY_NAMES[window_size]
+            if fixed_name
+            else StrategyName.WINDOWED_RECOMPUTE
+        )
 
     def decide(self, target: UpdateTarget, *, step: int, update_norm: float) -> StrategyDecision:
         del step, update_norm
@@ -558,6 +583,11 @@ def build_strategy(
         return LayerwiseRecomputeStrategy()
     if parsed is StrategyName.WINDOWED_RECOMPUTE:
         return WindowedRecomputeStrategy(window_size=recompute_window_size)
+    if parsed in _WINDOW_STRATEGY_NAMES.values():
+        window_size = next(
+            size for size, strategy_name in _WINDOW_STRATEGY_NAMES.items() if strategy_name is parsed
+        )
+        return WindowedRecomputeStrategy(window_size=window_size, fixed_name=True)
     if parsed in {
         StrategyName.ADAPTIVE,
         StrategyName.ADAPTIVE_NO_VERSION,

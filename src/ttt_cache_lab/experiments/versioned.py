@@ -9,7 +9,13 @@ from typing import Any
 
 from ttt_cache_lab.cache.blocks import CacheBlockMetadata, VersionedCacheEntry, VersionedCacheManager
 from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState, CacheSemantics
-from ttt_cache_lab.cache.strategies import CacheStrategy, StrategyDecision, StrategyName, build_strategy
+from ttt_cache_lab.cache.strategies import (
+    CacheStrategy,
+    StrategyDecision,
+    StrategyName,
+    build_strategy,
+    is_windowed_strategy_name,
+)
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
@@ -562,17 +568,22 @@ class VersionedExperimentRunner:
                 cached.cached_raw_update_norm = accumulated_raw_update_norm
                 cached.blocks = new_blocks
                 cached.refresh_count = new_refresh_count
-            elif strategy.name not in {
-                StrategyName.NO_ADAPTATION,
-                StrategyName.ALORA_PREFIX_REUSE,
-                StrategyName.WINDOWED_RECOMPUTE,
-            } and decision.action in {
-                CacheAction.FULL_RECOMPUTE,
-                CacheAction.REUSE_EXACT,
-                CacheAction.PARTIAL_RECOMPUTE,
-                CacheAction.DELTA_CORRECT,
-                CacheAction.REJECT_UPDATE,
-            }:
+            elif (
+                strategy.name
+                not in {
+                    StrategyName.NO_ADAPTATION,
+                    StrategyName.ALORA_PREFIX_REUSE,
+                }
+                and not is_windowed_strategy_name(strategy.name)
+                and decision.action
+                in {
+                    CacheAction.FULL_RECOMPUTE,
+                    CacheAction.REUSE_EXACT,
+                    CacheAction.PARTIAL_RECOMPUTE,
+                    CacheAction.DELTA_CORRECT,
+                    CacheAction.REJECT_UPDATE,
+                }
+            ):
                 cached.output = approx
                 cached.cached_version = adapter_version
                 cached.cached_update_norm = accumulated_update_norm

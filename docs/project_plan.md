@@ -304,7 +304,7 @@ layers [s, e)       : recompute under the current parameters
 layers [e, L)       : reuse the cached-version K/V
 ```
 
-The exclusive end layer `e` is swept through window sizes 1, 2, 4, 8, 16, and 32. Compare `windowed_recompute` with stale reuse, suffix `layerwise_recompute`, and full recompute. The first-stage matrix uses Qwen2.5-1.5B at 4K and Qwen2.5-7B at 8K, eight calibrated samples, Q/K/V/MLP updates at early, middle, and late positions, and version gaps 1, 4, and 16.
+The exclusive end layer `e` is evaluated through window sizes 1, 2, 4, 8, 16, and 32. All six windows are distinct strategies inside the same run (`windowed_recompute_1` through `windowed_recompute_32`), so they share one model load, one sample, and exactly the same parameter-update trajectory. The sweep expands only update targets; it must not retrain the adapter independently for each window. Compare the paired windows with stale reuse, suffix `layerwise_recompute`, and full recompute. The first-stage matrix uses Qwen2.5-1.5B at 4K and Qwen2.5-7B at 8K, eight calibrated samples, Q/K/V/MLP updates at early, middle, and late positions, and version gaps 1, 4, and 16.
 
 Primary outputs:
 

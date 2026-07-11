@@ -64,6 +64,17 @@ def test_windowed_recompute_records_exclusive_end_layer() -> None:
     assert decision.last_recomputed_layer == 5
 
 
+def test_fixed_windowed_recompute_strategy_has_unique_identity() -> None:
+    from ttt_cache_lab.cache.strategies import build_strategy
+
+    strategy = build_strategy("windowed_recompute_8")
+    decision = strategy.decide(parse_update_target("lora.k:2"), step=1, update_norm=0.01)
+    assert str(strategy.name) == "windowed_recompute_8"
+    assert str(decision.strategy) == "windowed_recompute_8"
+    assert decision.first_invalid_layer == 2
+    assert decision.last_recomputed_layer == 10
+
+
 def test_windowed_recompute_requires_layer_boundary() -> None:
     from ttt_cache_lab.cache.strategies import build_strategy
 

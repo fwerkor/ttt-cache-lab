@@ -29,7 +29,7 @@ def generate_window_analysis(
     window_rows = [
         row
         for row in enriched
-        if row.get("cache_strategy") == "windowed_recompute"
+        if row.get("cache_strategy", "").startswith("windowed_recompute")
         and _number(row, "version_gap") > 0.0
         and _window_size(row) > 0
     ]

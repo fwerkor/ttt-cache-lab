@@ -163,13 +163,17 @@ def test_discovery_gate_configs_cover_window_and_propagation_axes() -> None:
     sweep_paths = sorted(Path("configs/paper/discovery").glob("w1_*_sweep.yaml"))
     assert len(sweep_paths) == 2
     sweeps = [VersionedSweepConfig.from_yaml(path) for path in sweep_paths]
-    assert all(len(sweep.expand()) == 48 for sweep in sweeps)
-    assert all("windowed_recompute" in sweep.base.cache.strategies for sweep in sweeps)
-    assert all(
-        {int(value) for axis in sweep.axes if axis.path == "cache.recompute_window_size" for value in axis.values}
-        == {1, 2, 4, 8, 16, 32}
-        for sweep in sweeps
-    )
+    assert all(len(sweep.expand()) == 8 for sweep in sweeps)
+    paired_windows = {
+        "windowed_recompute_1",
+        "windowed_recompute_2",
+        "windowed_recompute_4",
+        "windowed_recompute_8",
+        "windowed_recompute_16",
+        "windowed_recompute_32",
+    }
+    assert all(paired_windows.issubset(set(sweep.base.cache.strategies)) for sweep in sweeps)
+    assert all({axis.path for axis in sweep.axes} == {"updates.targets"} for sweep in sweeps)
 
     propagation_paths = sorted(Path("configs/paper/discovery").glob("w2_*.yaml"))
     assert len(propagation_paths) == 2
