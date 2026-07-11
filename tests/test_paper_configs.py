@@ -67,6 +67,65 @@ def test_needle_absence_uses_answer_prefix_scoring() -> None:
     assert all(config.data.scorer == "prefix_match" for config in configs)
 
 
+def test_controlled_calibration_uses_frozen_model_specific_viability_cells() -> None:
+    expected = {
+        "qwen_1_5b": {
+            "context_length": 4096,
+            "difficulties": {
+                "multi_needle": "medium",
+                "needle_absent": "hard",
+                "multi_hop_tracing": "easy",
+                "aggregation": "easy",
+                "common_words": "easy",
+                "variable_tracking": "easy",
+            },
+        },
+        "qwen_7b": {
+            "context_length": 8192,
+            "difficulties": {
+                "multi_needle": "hard",
+                "needle_absent": "hard",
+                "multi_hop_tracing": "medium",
+                "aggregation": "medium",
+                "common_words": "hard",
+                "variable_tracking": "medium",
+            },
+        },
+        "qwen_14b": {
+            "context_length": 16384,
+            "difficulties": {
+                "multi_needle": "hard",
+                "needle_absent": "hard",
+                "multi_hop_tracing": "medium",
+                "aggregation": "hard",
+                "common_words": "hard",
+                "variable_tracking": "hard",
+            },
+        },
+        "qwen_32b": {
+            "context_length": 16384,
+            "difficulties": {
+                "multi_needle": "hard",
+                "needle_absent": "hard",
+                "multi_hop_tracing": "hard",
+                "aggregation": "hard",
+                "common_words": "hard",
+                "variable_tracking": "hard",
+            },
+        },
+    }
+    for model_key, model_expected in expected.items():
+        paths = sorted(Path("configs/paper/calibration").glob(f"e3_{model_key}_*.yaml"))
+        configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
+        assert all(
+            config.data.context_length == model_expected["context_length"]
+            for config in configs
+        )
+        assert {
+            config.data.task: config.data.synthetic_difficulty for config in configs
+        } == model_expected["difficulties"]
+
+
 def test_longbench_v2_partitions_are_disjoint_for_qwen_7b() -> None:
     validation = VersionedExperimentConfig.from_yaml(
         Path("configs/paper/validation/e4_qwen_7b_longbench_v2_validation.yaml")

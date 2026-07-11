@@ -35,11 +35,22 @@ The controlled suite isolates cache-consistency mechanisms:
 - `multi_needle`: retrieve a selected value among multiple needles;
 - `needle_absent`: reject a missing record instead of hallucinating a value;
 - `multi_hop_tracing`: follow a dispersed pointer chain;
-- `aggregation`: count events associated with a target group;
+- `aggregation`: compare the frequencies of two event labels inside an explicitly delimited ledger;
 - `common_words`: compute an intersection across long lists;
 - `variable_tracking`: recover the final value after dispersed state updates.
 
 The framework also retains `passkey` and `key_value` for smoke tests. Controlled samples are generated deterministically from `data.selection_seed`; model/update seeds never change sample membership. `answer_length` controls the generated reference value, while the decode budget is independently set by `max_generation_tokens` (16 by default) so instruction-style response prefixes do not truncate the answer or leak the reference tokenizer length.
+
+E3 uses model-calibrated contexts and semantic difficulty rather than forcing the same 16K hard task onto every scale. The frozen calibration matrix is:
+
+| Model | Context | Multi-needle | Needle absent | Multi-hop | Aggregation | Common words | Variable tracking |
+|---|---:|---|---|---|---|---|---|
+| Qwen2.5-1.5B-Instruct | 4K | medium | hard | easy | easy | easy | easy |
+| Qwen2.5-7B-Instruct | 8K | hard | hard | medium | medium | hard | medium |
+| Qwen2.5-14B-Instruct | 16K | hard | hard | medium | hard | hard | hard |
+| Qwen2.5-32B-Instruct | 16K | hard | hard | hard | hard | hard | hard |
+
+These settings are selected only from baseline task-viability probes. They are fixed before versioned cache experiments and remain explicit record dimensions through `context_length` and `synthetic_difficulty`; results from different cells must not be pooled as if they were the same workload.
 
 ### 3.2 Real long-context tasks
 

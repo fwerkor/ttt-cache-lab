@@ -23,6 +23,7 @@ data:
   num_samples: 12
   context_length: 16384
   answer_length: 4
+  synthetic_difficulty: hard
   scorer: set_f1
   max_generation_tokens: 32
 updates:

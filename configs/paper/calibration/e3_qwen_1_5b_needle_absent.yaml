@@ -21,8 +21,9 @@ data:
   selection_seed: 2027
   sample_offset: 0
   num_samples: 48
-  context_length: 16384
+  context_length: 4096
   answer_length: 4
+  synthetic_difficulty: hard
   scorer: prefix_match
   max_generation_tokens: 32
 updates:
