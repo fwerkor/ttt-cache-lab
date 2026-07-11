@@ -25,6 +25,14 @@ METRIC_FIELDS = (
     "value_relative_error",
     "attention_weighted_key_relative_error",
     "attention_weighted_value_relative_error",
+    "suffix_attention_js_mean",
+    "suffix_attention_js_max",
+    "suffix_attention_output_relative_error_mean",
+    "suffix_attention_output_relative_error_max",
+    "suffix_attention_input_relative_error_mean",
+    "suffix_attention_input_relative_error_max",
+    "suffix_attention_input_relative_error_last",
+    "suffix_amplification_ratio",
 )
 
 PREDICTOR_FEATURES = (
@@ -35,10 +43,17 @@ PREDICTOR_FEATURES = (
     "attention_topk_distance",
     "attention_output_relative_error",
     "attention_output_cosine_distance",
-    "boundary_input_hidden_relative_error",
     "boundary_next_hidden_relative_error",
     "attention_weighted_key_relative_error",
     "attention_weighted_value_relative_error",
+    "suffix_attention_js_mean",
+    "suffix_attention_js_max",
+    "suffix_attention_output_relative_error_mean",
+    "suffix_attention_output_relative_error_max",
+    "suffix_attention_input_relative_error_mean",
+    "suffix_attention_input_relative_error_max",
+    "suffix_attention_input_relative_error_last",
+    "suffix_amplification_ratio",
     "recompute_fraction",
 )
 

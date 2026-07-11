@@ -55,6 +55,15 @@ class BoundaryRecord:
     value_relative_error: float
     attention_weighted_key_relative_error: float
     attention_weighted_value_relative_error: float
+    stale_suffix_layers: int
+    suffix_attention_js_mean: float
+    suffix_attention_js_max: float
+    suffix_attention_output_relative_error_mean: float
+    suffix_attention_output_relative_error_max: float
+    suffix_attention_input_relative_error_mean: float
+    suffix_attention_input_relative_error_max: float
+    suffix_attention_input_relative_error_last: float
+    suffix_amplification_ratio: float
     metric_available: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -130,6 +139,15 @@ def collect_boundary_record(
     value_relative_error = 0.0
     weighted_key_relative_error = 0.0
     weighted_value_relative_error = 0.0
+    stale_suffix_layers = max(0, model_num_layers - clamped_boundary)
+    suffix_attention_js_mean = 0.0
+    suffix_attention_js_max = 0.0
+    suffix_attention_output_relative_error_mean = 0.0
+    suffix_attention_output_relative_error_max = 0.0
+    suffix_attention_input_relative_error_mean = 0.0
+    suffix_attention_input_relative_error_max = 0.0
+    suffix_attention_input_relative_error_last = 0.0
+    suffix_amplification_ratio = 0.0
     metric_available = False
 
     if has_stale_rejoin:
@@ -186,6 +204,43 @@ def collect_boundary_record(
                 full_next_attention_input, approx_next_attention_input
             )
             metric_available = True
+
+        suffix_attention_js = _suffix_distribution_metric(
+            full,
+            approx,
+            name="attention_summary",
+            start_layer=clamped_boundary,
+            metric="js",
+        )
+        suffix_attention_outputs = _suffix_vector_relative_errors(
+            full,
+            approx,
+            name="attention_output_summary",
+            start_layer=clamped_boundary,
+        )
+        suffix_attention_inputs = _suffix_vector_relative_errors(
+            full,
+            approx,
+            name="attention_input_summary",
+            start_layer=clamped_boundary,
+        )
+        suffix_attention_js_mean, suffix_attention_js_max, _ = _summary_metrics(
+            suffix_attention_js
+        )
+        (
+            suffix_attention_output_relative_error_mean,
+            suffix_attention_output_relative_error_max,
+            _,
+        ) = _summary_metrics(suffix_attention_outputs)
+        (
+            suffix_attention_input_relative_error_mean,
+            suffix_attention_input_relative_error_max,
+            suffix_attention_input_relative_error_last,
+        ) = _summary_metrics(suffix_attention_inputs)
+        suffix_amplification_ratio = (
+            suffix_attention_input_relative_error_last
+            / max(attention_output_relative_error, 1e-12)
+        )
 
         baseline_cache = _cache_layers(baseline)
         full_cache = _cache_layers(full)
@@ -244,6 +299,25 @@ def collect_boundary_record(
         value_relative_error=value_relative_error,
         attention_weighted_key_relative_error=weighted_key_relative_error,
         attention_weighted_value_relative_error=weighted_value_relative_error,
+        stale_suffix_layers=stale_suffix_layers,
+        suffix_attention_js_mean=suffix_attention_js_mean,
+        suffix_attention_js_max=suffix_attention_js_max,
+        suffix_attention_output_relative_error_mean=(
+            suffix_attention_output_relative_error_mean
+        ),
+        suffix_attention_output_relative_error_max=(
+            suffix_attention_output_relative_error_max
+        ),
+        suffix_attention_input_relative_error_mean=(
+            suffix_attention_input_relative_error_mean
+        ),
+        suffix_attention_input_relative_error_max=(
+            suffix_attention_input_relative_error_max
+        ),
+        suffix_attention_input_relative_error_last=(
+            suffix_attention_input_relative_error_last
+        ),
+        suffix_amplification_ratio=suffix_amplification_ratio,
         metric_available=metric_available,
     )
 
@@ -282,6 +356,15 @@ def read_boundary_records(path: Path) -> list[BoundaryRecord]:
             payload.setdefault("attention_argmax_agreement", 0.0)
             payload.setdefault("attention_top4_overlap", 0.0)
             payload.setdefault("attention_top8_overlap", 0.0)
+            payload.setdefault("stale_suffix_layers", 0)
+            payload.setdefault("suffix_attention_js_mean", 0.0)
+            payload.setdefault("suffix_attention_js_max", 0.0)
+            payload.setdefault("suffix_attention_output_relative_error_mean", 0.0)
+            payload.setdefault("suffix_attention_output_relative_error_max", 0.0)
+            payload.setdefault("suffix_attention_input_relative_error_mean", 0.0)
+            payload.setdefault("suffix_attention_input_relative_error_max", 0.0)
+            payload.setdefault("suffix_attention_input_relative_error_last", 0.0)
+            payload.setdefault("suffix_amplification_ratio", 0.0)
             records.append(BoundaryRecord(**payload))
     return records
 
@@ -295,6 +378,61 @@ def _layer_array(output: BackendOutput, name: str, layer: int) -> np.ndarray | N
     if array.ndim < 2 or layer < 0 or layer >= array.shape[0]:
         return None
     return np.asarray(array[layer], dtype=np.float64)
+
+
+def _suffix_distribution_metric(
+    reference: BackendOutput,
+    candidate: BackendOutput,
+    *,
+    name: str,
+    start_layer: int,
+    metric: str,
+) -> list[float]:
+    reference_array = _extra_array(reference, name)
+    candidate_array = _extra_array(candidate, name)
+    if reference_array is None or candidate_array is None:
+        return []
+    layer_count = min(reference_array.shape[0], candidate_array.shape[0])
+    values: list[float] = []
+    for layer in range(start_layer, layer_count):
+        kl, js, l1, *_ = _distribution_metrics(
+            reference_array[layer], candidate_array[layer], topk=8
+        )
+        values.append({"kl": kl, "js": js, "l1": l1}[metric])
+    return values
+
+
+def _suffix_vector_relative_errors(
+    reference: BackendOutput,
+    candidate: BackendOutput,
+    *,
+    name: str,
+    start_layer: int,
+) -> list[float]:
+    reference_array = _extra_array(reference, name)
+    candidate_array = _extra_array(candidate, name)
+    if reference_array is None or candidate_array is None:
+        return []
+    layer_count = min(reference_array.shape[0], candidate_array.shape[0])
+    return [
+        _vector_metrics(reference_array[layer], candidate_array[layer])[0]
+        for layer in range(start_layer, layer_count)
+    ]
+
+
+def _summary_metrics(values: list[float]) -> tuple[float, float, float]:
+    if not values:
+        return 0.0, 0.0, 0.0
+    return float(np.mean(values)), float(np.max(values)), float(values[-1])
+
+
+def _extra_array(output: BackendOutput, name: str) -> np.ndarray | None:
+    extras = output.extras or {}
+    value = extras.get(name)
+    if value is None:
+        return None
+    array = np.asarray(value)
+    return array if array.ndim >= 2 else None
 
 
 def _cache_layers(output: BackendOutput) -> list[tuple[Any, Any]]:
