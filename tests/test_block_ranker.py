@@ -9,6 +9,7 @@ import pytest
 
 from ttt_cache_lab.experiments.block_ranker import (
     FEATURE_NAMES,
+    _one_probe_policies,
     fit_block_ranker,
     load_block_ranker,
     score_block_features,
@@ -126,6 +127,45 @@ def test_fit_and_score_target_specific_block_ranker(tmp_path: Path) -> None:
     )
     assert int(v_scores.argmax()) == 0
     assert v_count == 2
+
+
+def test_one_probe_policy_prefers_safe_candidate_and_conservative_margin() -> None:
+    rows: list[dict[str, str]] = []
+    for sample, nll_gain in ((0, 0.30), (1, 0.25)):
+        condition = {
+            key: str(value)
+            for key, value in _condition("lora.k_middle", sample).items()
+        }
+        rows.append(
+            {
+                **condition,
+                "selector": "stale",
+                "selected_cells": "0",
+                "logits_kl": "0.10",
+                "reference_token_nll": "1.0",
+                "cache_maintenance_latency": "0.0",
+                "decode_latency": "0.02",
+            }
+        )
+        rows.append(
+            {
+                **condition,
+                "selector": "sparse_input_bound",
+                "selected_cells": "2",
+                "logits_kl": "0.04",
+                "reference_token_nll": str(1.0 - nll_gain),
+                "cache_maintenance_latency": "0.01",
+                "decode_latency": "0.02",
+            }
+        )
+
+    policy = _one_probe_policies(rows)["lora.k_middle"]
+
+    assert policy["candidate_selector"] == "sparse_input_bound"
+    assert policy["candidate_count"] == 2
+    assert policy["reference_nll_margin"] == 0.2
+    assert policy["calibration_harmful"] == 0
+    assert policy["calibration_accepted"] == 2
 
 
 def test_load_block_ranker_rejects_schema_mismatch(tmp_path: Path) -> None:

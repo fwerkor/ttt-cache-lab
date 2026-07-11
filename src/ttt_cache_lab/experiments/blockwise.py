@@ -620,6 +620,135 @@ def _explore_condition(
                     )
                 )
 
+                models = sparse_ranker.get("models", {})
+                target_model = models.get(str(condition["update_target"]))
+                one_probe_policy = (
+                    target_model.get("one_probe_policy")
+                    if isinstance(target_model, dict)
+                    else None
+                )
+                if isinstance(one_probe_policy, dict):
+                    candidate_selector = str(
+                        one_probe_policy.get("candidate_selector", "")
+                    )
+                    candidate_score_name = sparse_selectors.get(candidate_selector)
+                    candidate_count = max(
+                        0,
+                        min(
+                            int(one_probe_policy.get("candidate_count", 0)),
+                            direct_total,
+                        ),
+                    )
+                    nll_margin = float(
+                        one_probe_policy.get("reference_nll_margin", 0.0)
+                    )
+                    if candidate_score_name is not None and candidate_count > 0:
+                        candidate_scores = np.asarray(
+                            sparse_scores[candidate_score_name], dtype=np.float64
+                        )
+                        candidate_mask = _top_mask(
+                            candidate_scores,
+                            direct_available,
+                            candidate_count,
+                        )
+                        candidate_evaluation = evaluate_sparse(candidate_mask)
+                        reference_token_id = int(
+                            condition.get("reference_token_id", -1)
+                        )
+                        stale_nll, _, _ = _logit_selection_metrics(
+                            stale.output.logits,
+                            reference_token_id=reference_token_id,
+                        )
+                        candidate_nll, _, _ = _logit_selection_metrics(
+                            candidate_evaluation.output.logits,
+                            reference_token_id=reference_token_id,
+                        )
+                        nll_improvement = stale_nll - candidate_nll
+                        accepted = bool(
+                            np.isfinite(nll_improvement)
+                            and nll_improvement > nll_margin
+                        )
+                        if accepted:
+                            selected_mask = candidate_mask
+                            selected_evaluation = candidate_evaluation
+                            selected_count = candidate_count
+                        else:
+                            selected_mask = np.zeros_like(direct_available)
+                            selected_evaluation = stale
+                            selected_count = 0
+                        candidate_extras = candidate_evaluation.output.extras or {}
+                        stale_extras = stale.output.extras or {}
+                        candidate_maintenance = float(
+                            candidate_extras.get("cache_maintenance_latency", 0.0)
+                        )
+                        candidate_decode = float(
+                            candidate_extras.get("decode_latency", 0.0)
+                        )
+                        candidate_latency = candidate_maintenance + candidate_decode
+                        stale_decode = float(stale_extras.get("decode_latency", 0.0))
+                        selected_budget = selected_count / total_eligible
+                        records.append(
+                            _record(
+                                condition,
+                                selector="sparse_one_probe_policy",
+                                requested_budget_fraction=selected_budget,
+                                mask=selected_mask,
+                                eligible=eligible,
+                                evaluation=selected_evaluation,
+                                stale_kl=stale.logits_kl,
+                                selection_metadata={
+                                    "selection_objective": "reference_nll_stale_gate",
+                                    "search_probe_count": 1,
+                                    "search_reference_token_evaluations": 1,
+                                    "joint_budget_selection": True,
+                                    "selected_stale_action": not accepted,
+                                    "safety_gate_passed": accepted,
+                                    "selection_stale_margin": nll_margin,
+                                    "selection_stale_score": stale_nll,
+                                    "selection_raw_score": candidate_nll,
+                                    "selection_objective_improvement_vs_stale": (
+                                        nll_improvement
+                                    ),
+                                    "sparse_ranker_path": str(sparse_ranker_path),
+                                    "candidate_selector": candidate_selector,
+                                    "candidate_selected_cells": candidate_count,
+                                    "candidate_reference_token_nll": candidate_nll,
+                                    "candidate_logits_kl": (
+                                        candidate_evaluation.logits_kl
+                                    ),
+                                    "candidate_cache_maintenance_latency": (
+                                        candidate_maintenance
+                                    ),
+                                    "candidate_decode_latency": candidate_decode,
+                                    "planner_probe_latency": candidate_latency,
+                                    "end_to_end_planner_latency": (
+                                        stale_decode + candidate_latency
+                                    ),
+                                    "candidate_strategy_flops": float(
+                                        candidate_extras.get("strategy_flops", 0.0)
+                                    ),
+                                    "one_probe_calibration_harmful": int(
+                                        one_probe_policy.get(
+                                            "calibration_harmful", 0
+                                        )
+                                    ),
+                                    "one_probe_calibration_mean_gain": float(
+                                        one_probe_policy.get(
+                                            "calibration_mean_gain", 0.0
+                                        )
+                                    ),
+                                },
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(
+                                condition,
+                                "sparse_one_probe_policy",
+                                selected_budget,
+                                selected_mask,
+                            )
+                        )
+
             all_direct = direct_available.copy()
             all_direct_evaluation = evaluate_sparse(all_direct)
             records.append(

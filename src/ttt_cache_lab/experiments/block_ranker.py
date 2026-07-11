@@ -22,6 +22,26 @@ FEATURE_NAMES = (
 )
 RANK_FEATURE_NAMES = FEATURE_NAMES[:5]
 RANK_FUSION_WEIGHTS = (0.0, 0.25, 0.5, 0.75, 1.0)
+STATIC_SELECTOR_NAMES = (
+    "sparse_attention_mass",
+    "sparse_input_bound",
+    "sparse_attention_input_bound",
+    "sparse_predicted_delta_norm",
+    "sparse_attention_predicted_delta",
+)
+ONE_PROBE_MARGINS = (
+    0.0,
+    1e-4,
+    5e-4,
+    1e-3,
+    2e-3,
+    5e-3,
+    1e-2,
+    2e-2,
+    5e-2,
+    1e-1,
+    2e-1,
+)
 
 
 def fit_block_ranker(
@@ -62,6 +82,7 @@ def fit_block_ranker(
         )
 
     default_budgets = _default_budgets(record_rows)
+    one_probe_policies = _one_probe_policies(record_rows)
     models: dict[str, Any] = {}
     for target, items in sorted(grouped.items()):
         x = np.stack([item["x"] for item in items], axis=0)
@@ -99,6 +120,7 @@ def fit_block_ranker(
             "training_cells": int(len(items)),
             "training_conditions": int(len(set(item["condition"] for item in items))),
             "default_count": int(default_budgets.get(target, 0)),
+            "one_probe_policy": one_probe_policies.get(target),
         }
 
     payload = {
@@ -460,6 +482,113 @@ def _default_budgets(rows: list[dict[str, str]]) -> dict[str, int]:
             ),
         )
     return defaults
+
+
+def _one_probe_policies(rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row.get("selector") == "stale" or row.get("selector") in STATIC_SELECTOR_NAMES:
+            grouped[_condition_key(row)].append(row)
+
+    targets = sorted({condition[1] for condition in grouped})
+    policies: dict[str, dict[str, Any]] = {}
+    for target in targets:
+        conditions = [condition for condition in grouped if condition[1] == target]
+        candidates: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        for selector in STATIC_SELECTOR_NAMES:
+            available_counts = sorted(
+                {
+                    int(row.get("selected_cells", 0))
+                    for condition in conditions
+                    for row in grouped[condition]
+                    if row.get("selector") == selector
+                }
+            )
+            for count in available_counts:
+                for margin in ONE_PROBE_MARGINS:
+                    gains: list[float] = []
+                    relative_gains: list[float] = []
+                    harms: list[float] = []
+                    accepted = 0
+                    latencies: list[float] = []
+                    complete = True
+                    for condition in conditions:
+                        stale_rows = [
+                            row
+                            for row in grouped[condition]
+                            if row.get("selector") == "stale"
+                        ]
+                        candidate_rows = [
+                            row
+                            for row in grouped[condition]
+                            if row.get("selector") == selector
+                            and int(row.get("selected_cells", 0)) == count
+                        ]
+                        if not stale_rows or not candidate_rows:
+                            complete = False
+                            break
+                        stale = stale_rows[0]
+                        candidate = candidate_rows[0]
+                        stale_nll = float(stale.get("reference_token_nll", "nan"))
+                        candidate_nll = float(
+                            candidate.get("reference_token_nll", "nan")
+                        )
+                        if not np.isfinite(stale_nll) or not np.isfinite(candidate_nll):
+                            complete = False
+                            break
+                        use_candidate = stale_nll - candidate_nll > margin
+                        stale_kl = float(stale["logits_kl"])
+                        selected_kl = (
+                            float(candidate["logits_kl"]) if use_candidate else stale_kl
+                        )
+                        gain = stale_kl - selected_kl
+                        gains.append(gain)
+                        relative_gains.append(gain / max(abs(stale_kl), 1e-12))
+                        harms.append(selected_kl - stale_kl)
+                        accepted += int(use_candidate)
+                        latencies.append(
+                            float(candidate.get("cache_maintenance_latency", 0.0))
+                            + float(candidate.get("decode_latency", 0.0))
+                        )
+                    if not complete or not gains:
+                        continue
+                    harmful = sum(harm > 1e-15 for harm in harms)
+                    worst_harm = max(harms)
+                    mean_gain = float(np.mean(gains))
+                    mean_relative_gain = float(np.mean(relative_gains))
+                    mean_latency = float(np.mean(latencies))
+                    # Safety first. On equivalent calibration behavior prefer a larger
+                    # margin, then fewer repaired blocks and lower probe latency.
+                    key = (
+                        -harmful,
+                        -worst_harm,
+                        mean_gain,
+                        mean_relative_gain,
+                        margin,
+                        -count,
+                        -mean_latency,
+                        selector,
+                    )
+                    candidates.append(
+                        (
+                            key,
+                            {
+                                "candidate_selector": selector,
+                                "candidate_count": count,
+                                "reference_nll_margin": margin,
+                                "calibration_conditions": len(conditions),
+                                "calibration_harmful": harmful,
+                                "calibration_worst_harm": worst_harm,
+                                "calibration_mean_gain": mean_gain,
+                                "calibration_mean_relative_gain": mean_relative_gain,
+                                "calibration_accepted": accepted,
+                                "calibration_mean_candidate_latency": mean_latency,
+                            },
+                        )
+                    )
+        if candidates:
+            policies[target] = max(candidates, key=lambda item: item[0])[1]
+    return policies
 
 
 def _condition_key(row: dict[str, Any]) -> tuple[str, ...]:
