@@ -152,6 +152,35 @@ def test_manual_decode_stops_at_eos_and_reports_actual_token_count(tiny_llama_di
     assert generated_tokens == 1
 
 
+def test_output_head_update_supports_tied_embeddings(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    backend.model.config.tie_word_embeddings = True
+    backend.model.tie_weights()
+    output_weight = backend.model.get_output_embeddings().weight
+    input_weight = backend.model.get_input_embeddings().weight
+    assert output_weight is input_weight
+
+    target = parse_update_target("output_head", num_layers=backend.num_layers)
+    selected = backend._select_parameters(target)
+    assert selected == [output_weight]
+
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 4},
+        ),
+        context_length=16,
+    )
+    baseline = backend.prefill(sample.prompt)
+    before = output_weight.detach().clone()
+    backend.simulate_update(baseline, target, update_norm=0.01)
+    applied = torch.linalg.vector_norm((output_weight.detach() - before).float()).item()
+    assert applied == pytest.approx(0.01, rel=1e-4, abs=1e-6)
+    backend.restore_after_update()
+    assert torch.allclose(output_weight.detach(), before, rtol=1e-5, atol=1e-6)
+
+
 def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     sample = backend.prepare_sample(

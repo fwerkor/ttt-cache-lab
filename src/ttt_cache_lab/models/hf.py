@@ -1615,6 +1615,19 @@ class HuggingFaceBackend:
         return "unknown"
 
     def _select_parameters(self, target: UpdateTarget) -> list[Any]:
+        if target.kind is ModuleKind.OUTPUT_HEAD:
+            get_output_embeddings = getattr(self.model, "get_output_embeddings", None)
+            if callable(get_output_embeddings):
+                output_embeddings = get_output_embeddings()
+                if output_embeddings is not None:
+                    parameters = [
+                        parameter
+                        for parameter in output_embeddings.parameters()
+                        if parameter.is_floating_point()
+                    ]
+                    if parameters:
+                        return parameters
+
         filters = self._target_filters(target.kind)
         selected = []
         for name, param in self.model.named_parameters():

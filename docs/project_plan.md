@@ -314,6 +314,8 @@ Rows:
 - Norm;
 - output head.
 
+For models with tied input/output embeddings, `output_head` updates the shared embedding/output matrix returned by `get_output_embeddings()`; it is not interpreted as a nonexistent independent `lm_head` parameter.
+
 Columns:
 
 - step/version gap 1;
