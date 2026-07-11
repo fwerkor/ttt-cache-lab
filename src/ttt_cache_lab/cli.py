@@ -6,6 +6,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig, VersionedSweepConfig
+from ttt_cache_lab.experiments.boundary_analysis import generate_boundary_analysis
 from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
 from ttt_cache_lab.experiments.failures import capture_run_failure
 from ttt_cache_lab.experiments.pareto import generate_pareto
@@ -115,6 +116,15 @@ def build_parser() -> argparse.ArgumentParser:
     propagation_analysis.add_argument("--input", required=True, type=Path)
     propagation_analysis.add_argument("--output-dir", required=True, type=Path)
     propagation_analysis.add_argument("--recovery-ratio", type=float, default=0.1)
+
+    boundary_analysis = subparsers.add_parser(
+        "boundary-analysis",
+        help="Evaluate rejoin-layer compatibility metrics and a held-out predictor",
+    )
+    boundary_analysis.add_argument("--boundary-input", required=True, type=Path)
+    boundary_analysis.add_argument("--summary-input", required=True, type=Path)
+    boundary_analysis.add_argument("--output-dir", required=True, type=Path)
+    boundary_analysis.add_argument("--ridge", type=float, default=1e-3)
 
     statistics = subparsers.add_parser(
         "statistics",
@@ -298,6 +308,18 @@ def main(argv: list[str] | None = None) -> None:
         )
         console.print(f"Wrote {layers}")
         console.print(f"Wrote {profiles}")
+        return
+    if args.command == "boundary-analysis":
+        boundary_artifacts = generate_boundary_analysis(
+            args.boundary_input,
+            args.summary_input,
+            args.output_dir,
+            ridge=args.ridge,
+        )
+        console.print(f"Wrote {boundary_artifacts.enriched_rows_path}")
+        console.print(f"Wrote {boundary_artifacts.metric_evaluation_path}")
+        console.print(f"Wrote {boundary_artifacts.group_selections_path}")
+        console.print(f"Wrote {boundary_artifacts.predictor_summary_path}")
         return
     if args.command == "statistics":
         outputs = generate_statistical_report(

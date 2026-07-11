@@ -1,0 +1,85 @@
+name: paper-w3-qwen-7b-boundary-predictor
+output_dir: runs/paper/discovery/w3_qwen_7b_boundary_predictor
+experiment_id: w3_boundary_predictor
+seed: 7
+resume: true
+checkpoint_each_target: true
+model:
+  backend: hf
+  model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  device: auto
+  torch_dtype: bfloat16
+  max_length: 8192
+  trust_remote_code: true
+  use_chat_template: true
+  parallelism: single
+  device_ids: []
+data:
+  source: synthetic
+  task: multi_hop_tracing
+  benchmark_name: controlled-long-context
+  task_family: multi-hop
+  evaluation_partition: calibration
+  selection_seed: 2027
+  sample_offset: 0
+  num_samples: 8
+  context_length: 8192
+  answer_length: 4
+  max_generation_tokens: 32
+  synthetic_difficulty: medium
+  scorer: exact_match
+updates:
+  targets:
+  - lora.q_early
+  - lora.k_early
+  - lora.v_early
+  - lora.mlp_early
+  - lora.q_middle
+  - lora.mlp_middle
+  - lora.k_late
+  - lora.mlp_late
+  step_count: 1
+  update_norm: 0.001
+cache:
+  strategies:
+  - full_recompute
+  - stale_reuse
+  - windowed_recompute_1
+  - windowed_recompute_2
+  - windowed_recompute_4
+  - windowed_recompute_8
+  - windowed_recompute_16
+  - windowed_recompute_32
+  - layerwise_recompute
+  refresh_period: 4
+  update_norm_threshold: 0.01
+  version_gap_threshold: 8
+  oracle_kl_threshold: 0.05
+  oracle_top1_threshold: 0.99
+  oracle_task_drop_threshold: 0.01
+metrics:
+  compute_tensor_metrics: true
+  compute_task_metrics: true
+  compute_attention_metrics: false
+  compute_layerwise_propagation_metrics: false
+  compute_boundary_compatibility_metrics: true
+  boundary_attention_topk: 8
+  compute_flops_metrics: true
+measurement:
+  warmup_runs: 0
+  timed_runs: 1
+  bootstrap_resamples: 2000
+  confidence_level: 0.95
+adapter:
+  update_mode: lora_train
+  norm_control: target_l2
+  lora_rank: 8
+  lora_alpha: 16.0
+  learning_rate: 0.0002
+  train_steps_per_version: 1
+  freeze_base_model: true
+version_steps:
+- 1
+- 4
+- 16
+cached_version: 0

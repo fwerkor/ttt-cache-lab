@@ -182,6 +182,14 @@ def test_discovery_gate_configs_cover_window_and_propagation_axes() -> None:
     assert all(config.metrics.propagation_probe_tokens == 32 for config in propagation)
     assert all(len(config.updates.targets) == 8 for config in propagation)
 
+    boundary_paths = sorted(Path("configs/paper/discovery").glob("w3_*.yaml"))
+    assert len(boundary_paths) == 2
+    boundary = [VersionedExperimentConfig.from_yaml(path) for path in boundary_paths]
+    assert all(config.metrics.compute_boundary_compatibility_metrics for config in boundary)
+    assert all(config.metrics.boundary_attention_topk == 8 for config in boundary)
+    assert all(len(config.updates.targets) == 8 for config in boundary)
+    assert all(paired_windows.issubset(set(config.cache.strategies)) for config in boundary)
+
 
 def test_study_manifest_expands_every_config_to_three_seeds() -> None:
     _, jobs = expand_study(Path("configs/paper/study.yaml"))
