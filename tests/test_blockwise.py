@@ -14,6 +14,7 @@ from ttt_cache_lab.experiments.blockwise import (
     _logit_selection_metrics,
     _reference_token_id,
     _SearchPoint,
+    _sparse_objective_score,
     _swap_refine_sparse_objective_masks,
 )
 from ttt_cache_lab.models.interface import BackendOutput
@@ -63,6 +64,21 @@ def test_greedy_sparse_reference_objective_selects_best_blocks() -> None:
 
     assert selected[1][0].tolist() == [[False, True, False]]
     assert selected[2][0].tolist() == [[False, True, True]]
+
+
+def test_sequence_sparse_objective_reads_probe_metadata() -> None:
+    evaluation = _evaluation([0.0, 0.0])
+    assert evaluation.output.extras is not None
+    evaluation.output.extras["reference_token_nll_2"] = 0.125
+
+    assert (
+        _sparse_objective_score(
+            evaluation,
+            reference_token_id=0,
+            objective="reference_nll_2",
+        )
+        == 0.125
+    )
 
 
 def test_reference_token_id_accepts_batch_encoding_like_mapping() -> None:
