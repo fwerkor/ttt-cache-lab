@@ -1624,6 +1624,7 @@ def _joint_sparse_search_point(
     if stale_margin < 0.0:
         raise ValueError("stale_margin must be nonnegative")
     empty = np.zeros_like(next(iter(path.values())).mask) if path else np.zeros((1, 1), dtype=bool)
+    total_probe_count = max((point.probe_count for point in path.values()), default=0)
     stale_score = _sparse_objective_score(
         stale,
         reference_token_id=reference_token_id,
@@ -1633,7 +1634,7 @@ def _joint_sparse_search_point(
         mask=empty,
         evaluation=stale,
         score=stale_score,
-        probe_count=max((point.probe_count for point in path.values()), default=0),
+        probe_count=total_probe_count,
     )
     best_penalized = stale_score
     acceptance_threshold = stale_score - stale_margin
@@ -1649,7 +1650,7 @@ def _joint_sparse_search_point(
                 mask=point.mask.copy(),
                 evaluation=point.evaluation,
                 score=penalized,
-                probe_count=point.probe_count,
+                probe_count=total_probe_count,
             )
             best_penalized = penalized
     return best

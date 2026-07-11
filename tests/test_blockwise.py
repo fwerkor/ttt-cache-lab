@@ -228,6 +228,9 @@ def test_joint_search_uses_cost_penalty_and_can_select_stale() -> None:
     assert int(np.count_nonzero(penalized.mask)) == 1
     assert int(np.count_nonzero(stale_selected.mask)) == 0
     assert int(np.count_nonzero(safety_gated.mask)) == 2
+    assert unpenalized.probe_count == 3
+    assert penalized.probe_count == 3
+    assert safety_gated.probe_count == 3
 
 
 def test_joint_search_rejects_improvement_below_stale_margin() -> None:
