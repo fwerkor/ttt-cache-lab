@@ -1,0 +1,51 @@
+adapter:
+  freeze_base_model: true
+  learning_rate: 0.0002
+  lora_alpha: 16.0
+  lora_rank: 8
+  train_steps_per_version: 1
+  update_mode: lora_train
+cache:
+  refresh_period: 4
+  strategies:
+  - full_recompute
+  - stale_reuse
+  - frozen_reuse
+  - periodic_refresh
+  - delta_correction
+  - adaptive
+  update_norm_threshold: 0.05
+data:
+  answer_length: 4
+  context_length: 4096
+  num_samples: 4
+  task: passkey
+experiment_id: e2_version_drift
+model:
+  backend: ascend_hf
+  device: npu:0
+  max_length: 8192
+  model_name_or_path: mistralai/Mistral-7B-Instruct-v0.1
+  modelscope_model_id: AI-ModelScope/Mistral-7B-Instruct-v0.1
+  torch_dtype: bfloat16
+  trust_remote_code: true
+  use_chat_template: true
+name: ascend-e2-version-drift-mistral-7b-v0_1
+output_dir: runs/ascend_e2_version_drift_mistral_7b_v0_1
+seed: 7
+updates:
+  step_count: 1
+  targets:
+  - lora.q_middle
+  - lora.k_early
+  - lora.k_middle
+  - lora.v_middle
+  - lora.mlp_middle
+  - norm_middle
+  update_norm: 1.0e-05
+version_steps:
+- 0
+- 1
+- 2
+- 4
+- 8

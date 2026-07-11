@@ -804,3 +804,123 @@ jobs:
   - controlled
   required_paths:
   - runs/paper/calibration/final/failure_map/failure_map.csv
+- name: architecture_a1_gemma_3_4b_multi_hop_tracing
+  config: configs/paper/architecture/a1_gemma_3_4b_multi_hop_tracing.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - gemma_3_4b
+  - controlled
+- name: architecture_a1_gemma_3_4b_multi_needle
+  config: configs/paper/architecture/a1_gemma_3_4b_multi_needle.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - gemma_3_4b
+  - controlled
+- name: architecture_a1_gemma_3_4b_variable_tracking
+  config: configs/paper/architecture/a1_gemma_3_4b_variable_tracking.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - gemma_3_4b
+  - controlled
+- name: architecture_a1_llama_3_2_3b_multi_hop_tracing
+  config: configs/paper/architecture/a1_llama_3_2_3b_multi_hop_tracing.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - llama_3_2_3b
+  - controlled
+- name: architecture_a1_llama_3_2_3b_multi_needle
+  config: configs/paper/architecture/a1_llama_3_2_3b_multi_needle.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - llama_3_2_3b
+  - controlled
+- name: architecture_a1_llama_3_2_3b_variable_tracking
+  config: configs/paper/architecture/a1_llama_3_2_3b_variable_tracking.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - llama_3_2_3b
+  - controlled
+- name: architecture_a1_mistral_7b_v0_1_multi_hop_tracing
+  config: configs/paper/architecture/a1_mistral_7b_v0_1_multi_hop_tracing.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - mistral_7b_v0_1
+  - controlled
+- name: architecture_a1_mistral_7b_v0_1_multi_needle
+  config: configs/paper/architecture/a1_mistral_7b_v0_1_multi_needle.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - mistral_7b_v0_1
+  - controlled
+- name: architecture_a1_mistral_7b_v0_1_variable_tracking
+  config: configs/paper/architecture/a1_mistral_7b_v0_1_variable_tracking.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - mistral_7b_v0_1
+  - controlled
+- name: architecture_a1_qwen1_5_moe_a2_7b_multi_hop_tracing
+  config: configs/paper/architecture/a1_qwen1_5_moe_a2_7b_multi_hop_tracing.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - qwen1_5_moe_a2_7b
+  - controlled
+- name: architecture_a1_qwen1_5_moe_a2_7b_multi_needle
+  config: configs/paper/architecture/a1_qwen1_5_moe_a2_7b_multi_needle.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - qwen1_5_moe_a2_7b
+  - controlled
+- name: architecture_a1_qwen1_5_moe_a2_7b_variable_tracking
+  config: configs/paper/architecture/a1_qwen1_5_moe_a2_7b_variable_tracking.yaml
+  seeds:
+  - 7
+  - 17
+  - 29
+  tags:
+  - architecture
+  - qwen1_5_moe_a2_7b
+  - controlled

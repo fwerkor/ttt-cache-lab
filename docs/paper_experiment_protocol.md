@@ -25,6 +25,7 @@ The experiment framework must not claim production serving integration, universa
 | E6 | How do cost and benefit scale? | 4K–64K context tests on 7B and 8K–32K tests on 14B/32B |
 | E7 | Which planner components matter? | Held-out LongBench v2 component ablations |
 | E8 | What happens during a sustained capacity-limited trace? | Global cache manager, LRU eviction, p95 latency, and false-safe rate |
+| A1 | Do the discovered failure boundaries transfer across decoder structures? | Three-task lightweight screening on dense GQA, sliding-window attention, local/global attention, and sparse MoE models |
 
 ## 3. Task hierarchy
 
@@ -100,10 +101,14 @@ Every record stores:
 | Qwen2.5-7B-Instruct | Primary complete paper evaluation |
 | Qwen2.5-14B-Instruct | Intermediate-scale transfer and performance confirmation |
 | Qwen2.5-32B-Instruct | Large-model headline and scaling evidence |
-| Mistral-7B-Instruct-v0.3 | Cross-family transfer |
+| Mistral-7B-Instruct-v0.3 | Existing held-out cross-family LongBench-v2 transfer |
+| Mistral-7B-Instruct-v0.1 | Sliding-window-attention architecture screening |
+| Llama-3.2-3B-Instruct | Independent dense GQA family screening |
+| Gemma-3-4B-IT | Alternating local/global-attention architecture screening |
+| Qwen1.5-MoE-A2.7B-Chat | Sparse-MoE screening with separate router, shared-expert, and routed-expert targets |
 | Qwen2.5-Coder-7B-Instruct | Code and repository tasks |
 
-The 14B and 32B configurations use explicit model-layer sharding across all visible accelerators. The 7B configurations default to one visible accelerator, except long-context runs that may be changed to model sharding without changing task membership or analysis semantics.
+The 14B and 32B configurations use explicit model-layer sharding across all visible accelerators. The 7B configurations default to one visible accelerator, except long-context runs that may be changed to model sharding without changing task membership or analysis semantics. A1 architecture-screening configs are opt-in and are not referenced by default launch scripts; each uses eight calibration samples, three controlled tasks, six update targets, four cache strategies, and version gaps 1/4/16 before any model is promoted to a full matrix.
 
 Records use backend-reported layer count, hidden size, and parameter count. Configuration defaults are not accepted as model-scale measurements.
 
@@ -164,7 +169,7 @@ The run metadata records git commit, config hash, package versions, dtype, atten
 
 ## 9. Main model/task matrix
 
-The checked-in matrix contains 72 configurations and expands to 216 jobs at three seeds. Every Qwen calibration scale covers all six controlled task families, so task coverage does not silently shrink as model size increases.
+The checked-in matrix contains 84 configurations and expands to 252 jobs at three seeds. Every Qwen calibration scale covers all six controlled task families, so task coverage does not silently shrink as model size increases. Twelve A1 jobs cover four additional architectures across multi-hop tracing, multi-needle retrieval, and variable tracking; these are screening evidence rather than replacements for the primary Qwen scaling matrix.
 
 The principal results are:
 

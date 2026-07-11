@@ -90,8 +90,12 @@ configs/experiments/ascend_smoke_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_0_5b.yaml
 configs/experiments/ascend_e2_version_drift_qwen_1_5b.yaml
 configs/experiments/ascend_e2_version_drift_llama_3_2_1b.yaml
-configs/experiments/ascend_e2_version_drift_qwen_7b.yaml         # 4-NPU model sharding
-configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml  # manual large-model template
+configs/experiments/ascend_e2_version_drift_llama_3_2_3b.yaml
+configs/experiments/ascend_e2_version_drift_gemma_3_4b.yaml
+configs/experiments/ascend_e2_version_drift_qwen1_5_moe_a2_7b.yaml
+configs/experiments/ascend_e2_version_drift_qwen_7b.yaml          # 4-NPU model sharding
+configs/experiments/ascend_e2_version_drift_mistral_7b_v0_1.yaml  # sliding-window screening
+configs/experiments/ascend_e2_version_drift_mistral_7b_v0_3.yaml  # existing manual large-model template
 configs/experiments/ascend_e2_version_drift_qwen_32b_8npu.yaml     # 8-NPU model sharding
 configs/experiments/ascend_e5_delta_correction_qwen_0_5b.yaml
 configs/experiments/ascend_e6_scaling_qwen_1_5b_4k.yaml
@@ -101,11 +105,21 @@ configs/experiments/ascend_e6_scaling_qwen_1_5b_32k.yaml
 configs/experiments/ascend_e6_scaling_qwen_7b_32k.yaml
 ```
 
+Architecture-screening configs remain platform-neutral under `configs/paper/architecture/`. Run one on Ascend with ModelScope resolution and an isolated visible card:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=7 scripts/run_ascend_architecture_single.sh \
+  configs/paper/architecture/a1_gemma_3_4b_multi_hop_tracing.yaml
+```
+
+They are intentionally excluded from default parallel launchers.
+
 ## 8. Validation notes
 
 - `ascend_hf` uses torch-npu through Hugging Face Transformers; torch-npu must match the server PyTorch/CANN versions.
 - Ascend scripts resolve `model.modelscope_model_id` to a local snapshot before model loading.
 - Delta correction uses cached LoRA projection inputs and cached-version A/B snapshots; it does not read the full-reference cache.
-- Native decoder-layer restart is implemented for Llama/Qwen/Mistral-like and GPT-2-like model layouts. Unsupported layouts fail explicitly.
+- Native decoder-layer restart is implemented for Llama/Qwen/Mistral-like, nested Gemma 3 text, and GPT-2-like model layouts. Unsupported layouts fail explicitly.
+- Qwen2-MoE targets distinguish router, shared-expert, and fused routed-expert parameters; the fused routed-expert target currently uses controlled direct parameter perturbation because it is not an `nn.Linear` LoRA injection point.
 - aLoRA-style prefix reuse disables LoRA before the configured invocation marker, caches that base prefix, and recomputes only the post-marker suffix under the active adapter.
 - Multi-NPU sharding logic is covered by unit tests, but throughput, HCCL behavior, and memory headroom must still be validated on the target 8×910B machine.

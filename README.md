@@ -30,10 +30,10 @@ Implemented:
 - controlled retrieval, rejection, multi-hop, aggregation, set-reasoning, and state-tracking diagnostics plus JSONL and Hugging Face loaders;
 - deterministic calibration/validation/test partitions, LongBench and LongBench v2 field mapping, multiple-choice, numeric, set, QA, summarization, and code scoring;
 - exact tokenizer-level context sizing with explicit `error`, `left`, and `middle` truncation policies;
-- Q/K/V/O/QV/attention/MLP/Norm/output-head update targets and layer-positioned LoRA variants;
+- Q/K/V/O/QV/attention/MLP/Norm/output-head update targets, layer-positioned LoRA variants, and separate MoE router/shared-expert/routed-expert targets;
 - answer-supervised online LoRA updates, global-L2 update-norm control, and multi-token exact-match generation scoring;
 - versioned per-layer cache metadata, adapter/version indexing, relative update norm since the last refresh, and executable rejection semantics;
-- full recomputation, stale/frozen reuse, LoRA K/V delta correction, native Llama/GPT-2 layer restart, periodic/threshold policies, measured oracle selection, and adaptive planning;
+- full recomputation, stale/frozen reuse, LoRA K/V delta correction, native Llama-like/Gemma 3/GPT-2 layer restart, periodic/threshold policies, measured oracle selection, and adaptive planning;
 - fixed-adapter E1 baselines, including executable aLoRA-style invocation-prefix reuse, LRAgent-style per-adapter caches, and ForkKV-style base/delta decomposition;
 - real KV tensor byte counts, peak allocated memory, adaptation/cache/decode/end-to-end latency, throughput, cache-entry counts, and configurable tensor/task metrics;
 - lightweight E1-E7 templates plus a frozen E1-E8 paper matrix with controlled, LongBench, LongBench v2, code, scaling, ablation, and cache-pressure workloads;
@@ -42,7 +42,7 @@ Implemented:
 - E3-calibrated E4 planning with failure-map artifact hashes, runtime action-latency budgets, explicit cache-manager scopes, and measured-oracle provenance;
 - E5 correction/fallback diagnostics, E6 latency/speedup/task-drop scaling plots, E7 paired ablation effects, E8 tail-latency/cache-pressure reports, and adaptation-gain/update-scale reports;
 - cluster-bootstrap confidence intervals, paired comparisons, Wilson false-safe bounds, warm-up/repeated timing, and p50/p95 latency reporting;
-- a shardable 72-configuration, 216-job manifest spanning 1.5B, 7B, 14B, and 32B models, Mistral cross-family transfer, and a 7B code model;
+- a shardable 84-configuration, 252-job manifest spanning 1.5B, 3B, 4B, 7B, 14B, and 32B models, dense/sliding-window/local-global/MoE architecture transfer, and a 7B code model;
 - atomic per-target checkpoints, record-level resume, cross-run record merging, structured failure manifests, and run metadata with config/git/package provenance;
 - baseline-only task probes that preserve generated answers, score distributions, latency, memory, and explicit all-zero/all-one degeneracy flags before expensive runs;
 - CI for linting, strict type checking, unit tests, and offline tiny-Llama integration tests that execute real LoRA, KV delta correction, and native layer restart paths.
@@ -166,13 +166,14 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 |---|---|---|
 | E1 | Static adapters and aLoRA/LRAgent/ForkKV-style baselines | `configs/experiments/e1_static_adapter_baseline_qwen_0_5b.yaml` |
 | E2 | Adapter-version drift characterization | `configs/experiments/e2_version_drift_qwen_1_5b.yaml` |
-| E2 cross-family | Qwen/LLaMA family generality and manual Mistral check | `configs/experiments/e2_version_drift_llama_3_2_1b.yaml`; Mistral 7B remains a manual large-model template |
+| E2 cross-family | Dense, sliding-window, local/global, and MoE architecture generality | `configs/experiments/e2_version_drift_llama_3_2_3b.yaml`, `e2_version_drift_mistral_7b_v0_1.yaml`, `e2_version_drift_gemma_3_4b.yaml`, and `e2_version_drift_qwen1_5_moe_a2_7b.yaml` |
 | E3 | Update-target × version-gap failure map | `configs/experiments/e3_failure_map_qwen_0_5b.yaml` |
 | E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_qwen_0_5b.yaml` |
 | E5 | Delta correction and rank/update-norm sweep | `configs/versioned_sweep_e5_delta_qwen_0_5b.yaml` |
 | E6 | Exact 4K-32K context and model-scale scaling | `configs/versioned_sweep_e6_context_qwen_1_5b.yaml` |
 | E7 | Planner-component ablations and failure boundaries | `configs/paper/ablation/e7_qwen_7b_longbench_v2.yaml` |
 | E8 | Sustained cache-capacity and tail-latency workload | `configs/paper/workload/e8_qwen_32b.yaml` |
+| A1 | Lightweight cross-architecture screening on three controlled tasks | `configs/paper/architecture/a1_*_{multi_hop_tracing,multi_needle,variable_tracking}.yaml` |
 
 ## Output files
 
@@ -295,7 +296,7 @@ python -m ttt_cache_lab.cli version-report \
 
 ## Paper-scale study
 
-The frozen protocol is in [`docs/paper_experiment_protocol.md`](docs/paper_experiment_protocol.md). The checked-in matrix contains 72 configurations and expands to 216 jobs over seeds 7, 17, and 29. Every Qwen calibration scale covers all six controlled task families. Qwen2.5-7B is the complete main evaluation; 14B and 32B are explicit primary scaling evidence.
+The frozen protocol is in [`docs/paper_experiment_protocol.md`](docs/paper_experiment_protocol.md). The checked-in matrix contains 84 configurations and expands to 252 jobs over seeds 7, 17, and 29. Every Qwen calibration scale covers all six controlled task families. The A1 gate adds Mistral-7B-v0.1, Llama-3.2-3B, Gemma-3-4B, and Qwen1.5-MoE-A2.7B without placing them in any default launcher. Qwen2.5-7B remains the complete main evaluation; 14B and 32B are explicit primary scaling evidence.
 
 Generate the stable job matrix:
 
