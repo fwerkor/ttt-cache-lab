@@ -1,6 +1,7 @@
 output_root: runs/delta_rms_calibration
 config_root: runs/delta_rms_calibration_configs
 norm_control: target_rms
+cache_update_norm_threshold: 1.0
 strategies:
   - full_recompute
   - stale_reuse

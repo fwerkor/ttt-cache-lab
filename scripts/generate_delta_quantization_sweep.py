@@ -18,6 +18,7 @@ def generate(spec_path: Path, *, profiles: set[str] | None = None) -> list[Path]
     strategies = list(spec["strategies"])
     version_steps = list(spec["version_steps"])
     norm_control = spec.get("norm_control")
+    cache_update_norm_threshold = spec.get("cache_update_norm_threshold")
     generated: list[Path] = []
 
     for profile_name, profile in spec["profiles"].items():
@@ -36,6 +37,8 @@ def generate(spec_path: Path, *, profiles: set[str] | None = None) -> list[Path]
             config["updates"]["update_norm"] = norm
             if norm_control is not None:
                 config["adapter"]["norm_control"] = str(norm_control)
+            if cache_update_norm_threshold is not None:
+                config["cache"]["update_norm_threshold"] = float(cache_update_norm_threshold)
             config["cache"]["strategies"] = strategies
             config["version_steps"] = version_steps
             destination = config_root / profile_name / f"{slug}.yaml"

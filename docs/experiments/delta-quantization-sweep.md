@@ -49,7 +49,9 @@ The broad pilot sweep locates the numerical transition with a small sample budge
 
 ## Cross-model update normalization
 
-A fixed target L2 norm is diluted as the number of updated LoRA parameters grows. The RMS calibration therefore uses `adapter.norm_control: target_rms`, where the configured update value is converted to `L2 = RMS * sqrt(updated_parameter_count)`. Each record includes `updated_parameter_count` and `applied_update_rms`. The calibration specification is `configs/sweeps/ascend_delta_rms_calibration.yaml`.
+A fixed target L2 norm is diluted as the number of updated LoRA parameters grows. The RMS calibration therefore uses `adapter.norm_control: target_rms`, where the configured update value is converted to `L2 = RMS * sqrt(updated_parameter_count)`. Each record includes `updated_parameter_count` and `applied_update_rms`. The calibration specification is `configs/sweeps/ascend_delta_rms_calibration.yaml`. It raises `cache.update_norm_threshold` to `1.0` only to force execution of the direct-delta algorithm; this is an evaluation override, not a recommended deployment safety threshold.
+
+Sweep summaries distinguish the requested `delta_correction` strategy from the action actually executed. `delta_execution_rate` and `delta_fallback_rate` prevent full-recompute safety fallbacks from being counted as successful delta corrections.
 
 ## Reproduction
 

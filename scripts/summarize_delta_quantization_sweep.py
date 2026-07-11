@@ -31,7 +31,10 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in records:
         if int(row.get("adapter_version", 0)) <= 0:
             continue
+        records_path = Path(str(row.get("records_path", "")))
+        profile = records_path.parent.parent.name if len(records_path.parts) >= 3 else ""
         key = (
+            profile,
             row.get("model_name", ""),
             row.get("update_target", ""),
             float(row.get("configured_update_norm", 0.0)),
@@ -42,10 +45,13 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     output: list[dict[str, Any]] = []
     for key, rows in sorted(grouped.items(), key=lambda item: str(item[0])):
-        model, target, norm, version, context = key
+        profile, model, target, norm, version, context = key
         stale = [row for row in rows if row.get("cache_strategy") == "stale_reuse"]
-        delta = [row for row in rows if row.get("cache_strategy") == "delta_correction"]
-        if not stale or not delta:
+        delta_requested = [
+            row for row in rows if row.get("cache_strategy") == "delta_correction"
+        ]
+        delta = [row for row in delta_requested if row.get("action") == "delta_correct"]
+        if not stale or not delta_requested:
             continue
         stale_by_sample = {int(row["sample_id"]): row for row in stale}
         delta_by_sample = {int(row["sample_id"]): row for row in delta}
@@ -64,15 +70,21 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
         output.append(
             {
+                "profile": profile,
                 "model_name": model,
+                "model_parameter_count": int(float(rows[0].get("model_parameter_count", 0))),
                 "update_target": target,
                 "configured_update_norm": norm,
                 "adapter_version": version,
                 "context_length": context,
                 "paired_samples": len(common),
-                "norm_control": delta[0].get("norm_control", ""),
-                "updated_parameter_count_mean": _mean(delta, "updated_parameter_count"),
-                "applied_update_rms_mean": _mean(delta, "applied_update_rms"),
+                "delta_requested_samples": len(delta_requested),
+                "delta_executed_samples": len(delta),
+                "delta_execution_rate": len(delta) / len(delta_requested),
+                "delta_fallback_rate": 1.0 - len(delta) / len(delta_requested),
+                "norm_control": delta_requested[0].get("norm_control", ""),
+                "updated_parameter_count_mean": _mean(delta_requested, "updated_parameter_count"),
+                "applied_update_rms_mean": _mean(delta_requested, "applied_update_rms"),
                 "stale_logits_kl_mean": _mean(stale, "logits_kl"),
                 "delta_logits_kl_mean": _mean(delta, "logits_kl"),
                 "delta_kl_improvement_mean": fmean(paired_improvements) if paired_improvements else 0.0,
@@ -103,7 +115,7 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     if paired_improvements
                     else 0.0
                 ),
-                "records_path": delta[0].get("records_path", ""),
+                "records_path": delta_requested[0].get("records_path", ""),
             }
         )
     return output
