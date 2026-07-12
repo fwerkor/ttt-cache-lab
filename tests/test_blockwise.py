@@ -8,6 +8,7 @@ import numpy as np
 
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.blockwise import (
+    _attention_residual_metrics,
     _beam_sparse_objective_masks,
     _compact_evaluation_output,
     _completed_condition_keys,
@@ -37,6 +38,47 @@ def _evaluation(logits: list[float]) -> _Evaluation:
         extras={},
     )
     return _Evaluation(output=output, logits_kl=0.0, top1_agreement=1.0)
+
+
+
+def test_attention_residual_metrics_track_local_progress() -> None:
+    inputs = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+
+    def output(attention_output: list[list[float]]) -> BackendOutput:
+        return BackendOutput(
+            logits=np.zeros((1, 2), dtype=np.float64),
+            cache_tensor=np.zeros((1, 1), dtype=np.float64),
+            hidden_tensor=np.zeros((1, 1), dtype=np.float64),
+            parameter_version=1,
+            extras={
+                "attention_input_summary": inputs.copy(),
+                "attention_output_summary": np.asarray(
+                    attention_output, dtype=np.float64
+                ),
+            },
+        )
+
+    baseline = output([[0.0, 0.0], [0.0, 0.0]])
+    stale = output([[0.0, 0.0], [0.0, 0.0]])
+    full = output([[1.0, 0.0], [2.0, 0.0]])
+    candidate = output([[0.5, 0.0], [1.0, 0.0]])
+
+    metrics = _attention_residual_metrics(
+        candidate=candidate,
+        full=full,
+        stale=stale,
+        baseline=baseline,
+        target_layer=0,
+    )
+
+    assert metrics["target_attention_output_candidate_error_l2"] == 0.5
+    assert metrics["target_attention_output_recovery_fraction"] == 0.5
+    assert metrics["target_attention_output_delta_projection"] == 0.5
+    assert metrics["target_attention_output_delta_cosine"] == 1.0
+    assert metrics["target_attention_output_orthogonal_error_fraction"] == 0.0
+    assert metrics["downstream_attention_output_recovery_fraction"] == 0.5
+    assert metrics["target_attention_input_candidate_shift_relative"] == 0.0
+    assert metrics["target_attention_input_full_shift_relative"] == 0.0
 
 
 def test_condition_seed_ignores_runtime_metadata() -> None:

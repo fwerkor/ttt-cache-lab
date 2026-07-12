@@ -453,7 +453,34 @@ def _explore_condition(
         block_size=block_size,
         block_count=block_count,
     )
+    condition.update(
+        _prefix_hidden_cascade_metrics(
+            baseline=baseline,
+            full=full,
+            target_layer=start_layer,
+        )
+    )
+    condition.update(
+        _cache_cascade_metrics(
+            kv_scores=kv_scores,
+            target_layer=start_layer,
+        )
+    )
     cache: dict[bytes, _Evaluation] = {}
+    stale_output_reference: BackendOutput | None = None
+
+    def enrich_local_attention_metrics(output: BackendOutput) -> None:
+        if output.extras is None or stale_output_reference is None:
+            return
+        output.extras.update(
+            _attention_residual_metrics(
+                candidate=output,
+                full=full,
+                stale=stale_output_reference,
+                baseline=baseline,
+                target_layer=start_layer,
+            )
+        )
 
     def evaluate(mask: np.ndarray) -> _Evaluation:
         key = np.ascontiguousarray(mask, dtype=np.uint8).tobytes()
@@ -466,6 +493,7 @@ def _explore_condition(
             block_mask=mask,
             block_size=block_size,
         )
+        enrich_local_attention_metrics(output)
         enrich_reference_metrics(output)
         value = _Evaluation(
             output=_compact_evaluation_output(output),
@@ -478,6 +506,9 @@ def _explore_condition(
 
     empty = np.zeros_like(eligible)
     stale = evaluate(empty)
+    stale_output_reference = stale.output
+    enrich_local_attention_metrics(stale.output)
+    enrich_reference_metrics(stale.output)
     sparse_probe = getattr(backend, "probe_blockwise_lora_delta", None)
     sparse_score_fn = getattr(backend, "blockwise_lora_delta_scores", None)
     sparse_cache: dict[bytes, _Evaluation] = {}
@@ -490,6 +521,7 @@ def _explore_condition(
             block_mask=mask,
             block_size=block_size,
         )
+        enrich_local_attention_metrics(output)
         enrich_reference_metrics(output)
         value = _Evaluation(
             output=_compact_evaluation_output(output),
@@ -1103,6 +1135,18 @@ def _explore_condition(
                                     "logits_kl": candidate_evaluation.logits_kl,
                                     "latency": candidate_latency,
                                     "strategy_flops": candidate_flops,
+                                    **{
+                                        key: float(value)
+                                        for key, value in candidate_extras.items()
+                                        if key.startswith(
+                                            (
+                                                "target_attention_",
+                                                "final_attention_",
+                                                "downstream_attention_",
+                                            )
+                                        )
+                                        and isinstance(value, int | float)
+                                    },
                                 }
                             )
                             if candidate_nll < selected_nll - reference_margin - 1e-15:
@@ -1325,6 +1369,18 @@ def _explore_condition(
                                     "logits_kl": candidate_evaluation.logits_kl,
                                     "latency": candidate_latency,
                                     "strategy_flops": candidate_flops,
+                                    **{
+                                        key: float(value)
+                                        for key, value in candidate_extras.items()
+                                        if key.startswith(
+                                            (
+                                                "target_attention_",
+                                                "final_attention_",
+                                                "downstream_attention_",
+                                            )
+                                        )
+                                        and isinstance(value, int | float)
+                                    },
                                 }
                             )
                             if (
@@ -2310,6 +2366,276 @@ def _assemble_frontier_mask(
     return mask
 
 
+
+
+def _prefix_hidden_cascade_metrics(
+    *,
+    baseline: BackendOutput,
+    full: BackendOutput,
+    target_layer: int,
+) -> dict[str, float]:
+    """Summarize how a target-layer update propagates across prefix hidden states."""
+    baseline_extras = baseline.extras or {}
+    full_extras = full.extras or {}
+    baseline_states = baseline_extras.get("hidden_states")
+    full_states = full_extras.get("hidden_states")
+    if not isinstance(baseline_states, tuple | list) or not isinstance(
+        full_states, tuple | list
+    ):
+        return {}
+    if len(baseline_states) != len(full_states) or not baseline_states:
+        return {}
+    input_index = max(0, min(target_layer, len(baseline_states) - 1))
+    output_index = max(0, min(target_layer + 1, len(baseline_states) - 1))
+
+    def relative_drift(index: int) -> tuple[float, Any | None]:
+        old = baseline_states[index]
+        new = full_states[index]
+        if (
+            old is None
+            or new is None
+            or not hasattr(old, "detach")
+            or not hasattr(new, "detach")
+            or tuple(old.shape) != tuple(new.shape)
+        ):
+            return math.nan, None
+        old_float = old.detach().float()
+        new_float = new.detach().float()
+        difference = new_float - old_float
+        numerator = float((difference * difference).sum().sqrt().cpu())
+        denominator = float((new_float * new_float).sum().sqrt().cpu())
+        return numerator / max(denominator, 1e-12), difference
+
+    input_drift, _ = relative_drift(input_index)
+    target_drift, target_difference = relative_drift(output_index)
+    final_drift, _ = relative_drift(len(baseline_states) - 1)
+    metrics = {
+        "target_prefix_input_drift_relative": input_drift,
+        "target_prefix_output_drift_relative": target_drift,
+        "final_prefix_hidden_drift_relative": final_drift,
+        "prefix_hidden_cascade_amplification": final_drift / max(target_drift, 1e-12),
+    }
+    if target_difference is None:
+        return metrics
+    token_energy = (target_difference * target_difference).sum(dim=-1)
+    while token_energy.ndim > 1:
+        token_energy = token_energy.sum(dim=0)
+    energy = np.asarray(token_energy.detach().float().cpu().numpy(), dtype=np.float64)
+    energy = energy.reshape(-1)
+    total = float(np.sum(energy))
+    if total <= 1e-24 or not len(energy):
+        metrics.update(
+            {
+                "target_prefix_drift_top10_fraction": 0.0,
+                "target_prefix_drift_entropy": 0.0,
+                "target_prefix_drift_first_half_fraction": 0.0,
+            }
+        )
+        return metrics
+    top_count = max(1, int(math.ceil(0.1 * len(energy))))
+    probabilities = energy / total
+    nonzero = probabilities[probabilities > 0.0]
+    entropy = -float(np.sum(nonzero * np.log(nonzero)))
+    normalized_entropy = entropy / max(math.log(len(energy)), 1e-12)
+    split = max(1, len(energy) // 2)
+    metrics.update(
+        {
+            "target_prefix_drift_top10_fraction": float(
+                np.sum(np.sort(energy)[-top_count:]) / total
+            ),
+            "target_prefix_drift_entropy": normalized_entropy,
+            "target_prefix_drift_first_half_fraction": float(
+                np.sum(energy[:split]) / total
+            ),
+        }
+    )
+    return metrics
+
+
+def _cache_cascade_metrics(
+    *,
+    kv_scores: np.ndarray,
+    target_layer: int,
+) -> dict[str, float]:
+    """Summarize full-reference cache drift beyond the directly updated layer."""
+    scores = np.asarray(kv_scores, dtype=np.float64)
+    if scores.ndim != 2 or not (0 <= target_layer < scores.shape[0]):
+        return {}
+
+    def rms(values: np.ndarray) -> float:
+        flat = np.asarray(values, dtype=np.float64).reshape(-1)
+        return float(np.sqrt(np.mean(flat * flat))) if len(flat) else 0.0
+
+    target_rms = rms(scores[target_layer])
+    downstream = scores[target_layer + 1 :]
+    downstream_rms = rms(downstream)
+    downstream_layer_rms = (
+        np.sqrt(np.mean(downstream * downstream, axis=1))
+        if downstream.size
+        else np.zeros(0, dtype=np.float64)
+    )
+    final_rms = rms(scores[-1])
+    return {
+        "target_cache_drift_rms": target_rms,
+        "downstream_cache_drift_rms": downstream_rms,
+        "final_cache_drift_rms": final_rms,
+        "cache_cascade_amplification": downstream_rms / max(target_rms, 1e-12),
+        "cache_cascade_final_amplification": final_rms / max(target_rms, 1e-12),
+        "downstream_cache_drift_max_layer_rms": (
+            float(np.max(downstream_layer_rms)) if len(downstream_layer_rms) else 0.0
+        ),
+        "downstream_cache_drift_layer_rms_std": (
+            float(np.std(downstream_layer_rms)) if len(downstream_layer_rms) else 0.0
+        ),
+    }
+
+
+def _attention_residual_metrics(
+    *,
+    candidate: BackendOutput,
+    full: BackendOutput,
+    stale: BackendOutput,
+    baseline: BackendOutput,
+    target_layer: int,
+) -> dict[str, float]:
+    """Compare a candidate with full recompute in attention-output space."""
+
+    def summary(output: BackendOutput, name: str) -> np.ndarray | None:
+        extras = output.extras or {}
+        value = extras.get(name)
+        if not isinstance(value, np.ndarray) or value.ndim != 2:
+            return None
+        return np.asarray(value, dtype=np.float64)
+
+    candidate_output = summary(candidate, "attention_output_summary")
+    full_output = summary(full, "attention_output_summary")
+    stale_output = summary(stale, "attention_output_summary")
+    baseline_output = summary(baseline, "attention_output_summary")
+    candidate_input = summary(candidate, "attention_input_summary")
+    full_input = summary(full, "attention_input_summary")
+    stale_input = summary(stale, "attention_input_summary")
+    baseline_input = summary(baseline, "attention_input_summary")
+    required = (candidate_output, full_output, stale_output)
+    if any(value is None for value in required):
+        return {}
+    assert candidate_output is not None
+    assert full_output is not None
+    assert stale_output is not None
+    if not (
+        candidate_output.shape == full_output.shape == stale_output.shape
+        and 0 <= target_layer < candidate_output.shape[0]
+    ):
+        return {}
+
+    def vector_metrics(
+        candidate_vector: np.ndarray,
+        full_vector: np.ndarray,
+        stale_vector: np.ndarray,
+        *,
+        prefix: str,
+    ) -> dict[str, float]:
+        candidate_vector = np.asarray(candidate_vector, dtype=np.float64).reshape(-1)
+        full_vector = np.asarray(full_vector, dtype=np.float64).reshape(-1)
+        stale_vector = np.asarray(stale_vector, dtype=np.float64).reshape(-1)
+        stale_delta = full_vector - stale_vector
+        candidate_delta = candidate_vector - stale_vector
+        stale_error = float(np.linalg.norm(stale_delta))
+        candidate_error = float(np.linalg.norm(full_vector - candidate_vector))
+        full_scale = float(np.linalg.norm(full_vector))
+        delta_squared = float(np.dot(stale_delta, stale_delta))
+        candidate_delta_norm = float(np.linalg.norm(candidate_delta))
+        projection = (
+            float(np.dot(candidate_delta, stale_delta) / delta_squared)
+            if delta_squared > 1e-24
+            else 0.0
+        )
+        orthogonal = candidate_delta - projection * stale_delta
+        cosine = (
+            float(np.dot(candidate_delta, stale_delta) / (candidate_delta_norm * stale_error))
+            if candidate_delta_norm > 1e-12 and stale_error > 1e-12
+            else 0.0
+        )
+        return {
+            f"{prefix}_stale_error_l2": stale_error,
+            f"{prefix}_candidate_error_l2": candidate_error,
+            f"{prefix}_candidate_error_relative": candidate_error / max(full_scale, 1e-12),
+            f"{prefix}_recovery_fraction": (
+                (stale_error - candidate_error) / max(stale_error, 1e-12)
+            ),
+            f"{prefix}_delta_projection": projection,
+            f"{prefix}_delta_cosine": cosine,
+            f"{prefix}_orthogonal_error_fraction": float(np.linalg.norm(orthogonal))
+            / max(stale_error, 1e-12),
+        }
+
+    metrics = vector_metrics(
+        candidate_output[target_layer],
+        full_output[target_layer],
+        stale_output[target_layer],
+        prefix="target_attention_output",
+    )
+    metrics.update(
+        vector_metrics(
+            candidate_output[-1],
+            full_output[-1],
+            stale_output[-1],
+            prefix="final_attention_output",
+        )
+    )
+    metrics.update(
+        vector_metrics(
+            candidate_output[target_layer:],
+            full_output[target_layer:],
+            stale_output[target_layer:],
+            prefix="downstream_attention_output",
+        )
+    )
+
+    if all(
+        value is not None
+        for value in (candidate_input, full_input, stale_input, baseline_input)
+    ):
+        assert candidate_input is not None
+        assert full_input is not None
+        assert stale_input is not None
+        assert baseline_input is not None
+        if (
+            candidate_input.shape
+            == full_input.shape
+            == stale_input.shape
+            == baseline_input.shape
+            and target_layer < candidate_input.shape[0]
+        ):
+            scale = max(
+                float(np.linalg.norm(baseline_input[target_layer])),
+                1e-12,
+            )
+            metrics.update(
+                {
+                    "target_attention_input_candidate_shift_relative": float(
+                        np.linalg.norm(
+                            candidate_input[target_layer] - baseline_input[target_layer]
+                        )
+                    )
+                    / scale,
+                    "target_attention_input_stale_shift_relative": float(
+                        np.linalg.norm(stale_input[target_layer] - baseline_input[target_layer])
+                    )
+                    / scale,
+                    "target_attention_input_full_shift_relative": float(
+                        np.linalg.norm(full_input[target_layer] - baseline_input[target_layer])
+                    )
+                    / scale,
+                }
+            )
+    if baseline_output is not None and baseline_output.shape == full_output.shape:
+        scale = max(float(np.linalg.norm(baseline_output[target_layer])), 1e-12)
+        metrics["target_attention_output_full_shift_vs_baseline_relative"] = float(
+            np.linalg.norm(full_output[target_layer] - baseline_output[target_layer])
+        ) / scale
+    return metrics
+
+
 def _record(
     condition: dict[str, Any],
     *,
@@ -2339,6 +2665,18 @@ def _record(
         )
         and isinstance(value, int | float)
     }
+    attention_residual_metrics = {
+        key: value
+        for key, value in extras.items()
+        if key.startswith(
+            (
+                "target_attention_",
+                "final_attention_",
+                "downstream_attention_",
+            )
+        )
+        and isinstance(value, int | float)
+    }
     return {
         **condition,
         "selector": selector,
@@ -2356,6 +2694,7 @@ def _record(
         "reference_probe_tokens": int(extras.get("reference_probe_tokens", 0)),
         "reference_probe_latency": float(extras.get("reference_probe_latency", 0.0)),
         **sequence_metrics,
+        **attention_residual_metrics,
         "stale_logits_kl": stale_kl,
         "kl_gain_vs_stale": stale_kl - evaluation.logits_kl,
         "beneficial_vs_stale": evaluation.logits_kl <= stale_kl + 1e-15,
