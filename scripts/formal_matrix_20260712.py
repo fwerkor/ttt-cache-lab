@@ -151,6 +151,8 @@ def prepare_config(job: Job, seed: int, output_dir: Path, queue: str) -> Path:
         payload["checkpoint_each_target"] = True
         patch_model(payload["model"], queue)
         patch_data(payload["data"])
+        if "alora_prefix_reuse" in payload.get("cache", {}).get("strategies", []):
+            payload["data"].setdefault("adapter_activation_marker", "<|adapter_activation|>")
         if job.mode == "e6_fixed":
             cache = payload["cache"]
             cache["strategies"] = [s for s in cache.get("strategies", []) if s in {"full_recompute", "stale_reuse", "periodic_refresh", "threshold_refresh"}]

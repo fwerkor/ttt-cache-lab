@@ -114,7 +114,7 @@ def run_blockwise_exploration(
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     backend = build_backend(config.model, seed=config.seed)
-    backend.configure_metrics(capture_attention=True)
+    backend.configure_metrics(capture_attention=True, capture_hidden_states=True)
     splice = getattr(backend, "probe_blockwise_cache_splice", None)
     if not callable(splice):
         raise RuntimeError("The selected backend does not implement blockwise cache splicing")

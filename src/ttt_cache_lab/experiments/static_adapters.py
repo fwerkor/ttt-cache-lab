@@ -69,7 +69,13 @@ class StaticAdapterExperimentRunner:
     def run(self) -> ExperimentArtifacts:
         data = build_task_samples(self.config.data, seed=self.config.seed)
         backend = build_backend(self.config.model, seed=self.config.seed)
-        backend.configure_metrics(capture_attention=self.config.metrics.compute_attention_metrics)
+        backend.configure_metrics(
+            capture_attention=self.config.metrics.compute_attention_metrics,
+            capture_hidden_states=any(
+                name == "layerwise_recompute" or name.startswith("windowed_recompute_")
+                for name in self.config.cache.strategies
+            ),
+        )
         run_configured_task_probe(self.config, backend=backend, samples=data)
         run_metadata = collect_run_metadata(self.config)
         metadata_path = write_run_metadata(self.config.output_dir, run_metadata)
