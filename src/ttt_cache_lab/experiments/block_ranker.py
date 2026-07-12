@@ -73,6 +73,19 @@ REFERENCE_ROUTER_OBJECTIVES = (
     "reference_nll_gain",
     "best_candidate",
 )
+COMMITTED_ROUTER_QUANTILES = (0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00)
+COMMITTED_ROUTER_MIN_GAINS = (
+    0.0,
+    1e-6,
+    1e-5,
+    5e-5,
+    1e-4,
+    2e-4,
+    5e-4,
+    1e-3,
+    2e-3,
+    5e-3,
+)
 ROUTER_BLOCK_FEATURE_NAMES = (
     "stale_attention_mass",
     "input_weight_bound",
@@ -84,6 +97,8 @@ BASELINE_REFERENCE_SELECTOR_NAMES = (
     "sparse_input_bound",
     "sparse_predicted_delta_norm",
 )
+ZERO_PROBE_RECOMPUTE_FEATURE = "router_baseline_stale_kl"
+ZERO_PROBE_RECOMPUTE_TRIGGER_QUANTILE = 0.875
 
 
 def fit_block_ranker(
@@ -91,6 +106,7 @@ def fit_block_ranker(
     *,
     output_path: Path,
     ridge_values: tuple[float, ...] = (1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0),
+    committed_guard_dirs: list[Path] | None = None,
 ) -> Path:
     if not input_dirs:
         raise ValueError("At least one blockwise input directory is required")
@@ -101,9 +117,16 @@ def fit_block_ranker(
     mask_rows: list[dict[str, str]] = []
     record_rows: list[dict[str, str]] = []
     for directory in input_dirs:
-        feature_rows.extend(_read_rows(directory / "block_features.csv"))
-        mask_rows.extend(_read_rows(directory / "block_masks.csv"))
-        record_rows.extend(_read_rows(directory / "blockwise_records.csv"))
+        source = str(directory)
+        for row in _read_rows(directory / "block_features.csv"):
+            row["_training_source"] = source
+            feature_rows.append(row)
+        for row in _read_rows(directory / "block_masks.csv"):
+            row["_training_source"] = source
+            mask_rows.append(row)
+        for row in _read_rows(directory / "blockwise_records.csv"):
+            row["_training_source"] = source
+            record_rows.append(row)
     if not feature_rows:
         raise ValueError("No block feature rows were found")
 
@@ -154,6 +177,27 @@ def fit_block_ranker(
             feature_mode="baseline_only",
         )
     )
+    committed_candidate_pool_policies = _committed_candidate_pool_policies(
+        record_rows,
+        pool_size=8,
+    )
+    baseline_committed_candidate_router_policies = (
+        _committed_candidate_router_policies(
+            feature_rows,
+            record_rows,
+            committed_candidate_pool_policies,
+            ridge_values=REFERENCE_ROUTER_RIDGE_VALUES,
+            min_stale_kl=REFERENCE_POOL_MIN_STALE_KL,
+        )
+    )
+    committed_runtime_guards = _committed_runtime_guards(
+        committed_guard_dirs or []
+    )
+    zero_probe_recompute_policies = _zero_probe_recompute_policies(record_rows)
+    for target, policy in baseline_committed_candidate_router_policies.items():
+        guard = committed_runtime_guards.get(target)
+        if guard is not None:
+            policy["runtime_guard"] = guard
     models: dict[str, Any] = {}
     for target, items in sorted(grouped.items()):
         x = np.stack([item["x"] for item in items], axis=0)
@@ -205,6 +249,10 @@ def fit_block_ranker(
             "baseline_reference_candidate_router_policy": (
                 baseline_reference_candidate_router_policies.get(target)
             ),
+            "baseline_committed_candidate_router_policy": (
+                baseline_committed_candidate_router_policies.get(target)
+            ),
+            "zero_probe_recompute_policy": zero_probe_recompute_policies.get(target),
         }
 
     payload = {
@@ -212,6 +260,9 @@ def fit_block_ranker(
         "feature_names": list(FEATURE_NAMES),
         "models": models,
         "training_inputs": [str(path) for path in input_dirs],
+        "committed_guard_inputs": [
+            str(path) for path in (committed_guard_dirs or [])
+        ],
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -319,6 +370,150 @@ def route_reference_candidate(
     if not isinstance(selected, dict):
         raise ValueError("Reference router selected an invalid candidate")
     return cast(dict[str, Any], selected), np.asarray(scores, dtype=np.float64)
+
+
+
+def route_committed_candidate(
+    ranker: dict[str, Any],
+    *,
+    update_target: str,
+    feature_rows: list[dict[str, Any]],
+    stale_output_entropy: float | None = None,
+    policy_name: str = "baseline_committed_candidate_router_policy",
+) -> tuple[dict[str, Any] | None, np.ndarray, np.ndarray]:
+    """Route to one directly committed candidate or abstain without a forward."""
+    model = ranker.get("models", {}).get(update_target)
+    if not isinstance(model, dict):
+        raise ValueError(f"Block ranker has no model for update target {update_target!r}")
+    policy = model.get(policy_name)
+    if not isinstance(policy, dict):
+        raise ValueError(
+            f"Block ranker has no {policy_name!r} for {update_target!r}"
+        )
+    expected_cells = int(policy.get("expected_direct_cells", 0))
+    vector = _baseline_reference_router_feature_vector(
+        feature_rows,
+        expected_cells=expected_cells,
+    )
+    mean = np.asarray(policy["mean"], dtype=np.float64)
+    scale = np.asarray(policy["scale"], dtype=np.float64)
+    intercept = np.asarray(policy["intercept"], dtype=np.float64)
+    weights = np.asarray(policy["weights"], dtype=np.float64)
+    error = np.asarray(policy["overprediction_error"], dtype=np.float64)
+    if vector.shape != mean.shape or scale.shape != mean.shape:
+        raise ValueError("Committed router feature schema does not match fitted model")
+    predictions = intercept + ((vector - mean) / scale) @ weights
+    if error.shape != predictions.shape:
+        raise ValueError("Committed router error schema does not match candidates")
+    lower_bounds = predictions - error
+    candidates = policy.get("candidates", [])
+    if not isinstance(candidates, list) or len(candidates) != len(predictions):
+        raise ValueError("Committed router candidate schema is invalid")
+    selected_index = int(np.argmax(lower_bounds))
+    minimum = float(policy.get("minimum_lower_bound", 0.0))
+    if float(lower_bounds[selected_index]) <= minimum:
+        return None, np.asarray(predictions), np.asarray(lower_bounds)
+    selected = candidates[selected_index]
+    if not isinstance(selected, dict):
+        raise ValueError("Committed router selected an invalid candidate")
+    guard = policy.get("runtime_guard")
+    if isinstance(guard, dict):
+        rules = guard.get("rules", [])
+        entropy = float(stale_output_entropy) if stale_output_entropy is not None else math.nan
+        trusted = any(
+            isinstance(rule, dict)
+            and str(rule.get("candidate_selector", ""))
+            == str(selected.get("candidate_selector", ""))
+            and np.isfinite(entropy)
+            and float(rule.get("entropy_min", -math.inf)) <= entropy
+            and entropy <= float(rule.get("entropy_max", math.inf))
+            for rule in rules
+        )
+        if not trusted:
+            return None, np.asarray(predictions), np.asarray(lower_bounds)
+    return (
+        cast(dict[str, Any], selected),
+        np.asarray(predictions, dtype=np.float64),
+        np.asarray(lower_bounds, dtype=np.float64),
+    )
+
+
+def route_zero_probe_recompute(
+    ranker: dict[str, Any],
+    *,
+    update_target: str,
+    condition: dict[str, Any],
+    policy_name: str = "zero_probe_recompute_policy",
+) -> tuple[bool, float, dict[str, Any]]:
+    """Choose stale reuse or direct full recompute without an extra model forward."""
+
+    model = ranker.get("models", {}).get(update_target)
+    if not isinstance(model, dict):
+        raise ValueError(f"Block ranker has no model for update target {update_target!r}")
+    policy = model.get(policy_name)
+    if not isinstance(policy, dict):
+        raise ValueError(
+            f"Block ranker has no {policy_name!r} for {update_target!r}"
+        )
+    feature = str(policy.get("risk_feature", ZERO_PROBE_RECOMPUTE_FEATURE))
+    score = float(condition.get(feature, math.nan))
+    threshold = float(policy.get("risk_threshold", math.inf))
+    trigger = bool(np.isfinite(score) and score >= threshold)
+    return trigger, score, cast(dict[str, Any], policy)
+
+
+def _zero_probe_recompute_policies(
+    record_rows: list[dict[str, str]],
+    *,
+    trigger_quantile: float = ZERO_PROBE_RECOMPUTE_TRIGGER_QUANTILE,
+) -> dict[str, dict[str, Any]]:
+    """Calibrate a target-specific direct-recompute threshold on stale records."""
+
+    if not 0.0 < trigger_quantile < 1.0:
+        raise ValueError("zero-probe recompute trigger quantile must be in (0, 1)")
+    grouped: dict[str, dict[tuple[Any, ...], dict[str, str]]] = defaultdict(dict)
+    for row in record_rows:
+        if row.get("selector") != "stale":
+            continue
+        raw_score = row.get(ZERO_PROBE_RECOMPUTE_FEATURE, "")
+        if raw_score in {"", None}:
+            continue
+        score = float(raw_score)
+        if not np.isfinite(score):
+            continue
+        grouped[str(row["update_target"])][_condition_key(row)] = row
+
+    policies: dict[str, dict[str, Any]] = {}
+    for target, by_condition in sorted(grouped.items()):
+        rows = list(by_condition.values())
+        if not rows:
+            continue
+        scores = np.asarray(
+            [float(row[ZERO_PROBE_RECOMPUTE_FEATURE]) for row in rows],
+            dtype=np.float64,
+        )
+        threshold = float(np.quantile(scores, trigger_quantile, method="higher"))
+        triggered = scores >= threshold
+        stale_kl = np.asarray(
+            [max(float(row.get("logits_kl", 0.0)), 0.0) for row in rows],
+            dtype=np.float64,
+        )
+        denominator = max(float(np.sum(stale_kl)), 1e-300)
+        policies[target] = {
+            "objective": "zero_probe_direct_full_recompute",
+            "risk_feature": ZERO_PROBE_RECOMPUTE_FEATURE,
+            "risk_threshold": threshold,
+            "trigger_quantile": float(trigger_quantile),
+            "calibration_conditions": int(len(rows)),
+            "calibration_triggered": int(np.count_nonzero(triggered)),
+            "calibration_trigger_rate": float(np.mean(triggered)),
+            "calibration_weighted_kl_recovery": float(
+                np.sum(stale_kl[triggered]) / denominator
+            ),
+            "runtime_forward_count": 0,
+            "runtime_uses_full_reference": False,
+        }
+    return policies
 
 
 def _feature_vector(row: dict[str, Any]) -> np.ndarray:
@@ -1176,6 +1371,429 @@ def _reference_candidate_router_policies(
     return policies
 
 
+
+
+def _committed_candidate_pool_policies(
+    rows: list[dict[str, str]],
+    *,
+    pool_size: int,
+) -> dict[str, dict[str, Any]]:
+    """Select a compact candidate set by direct KL oracle coverage."""
+    if pool_size < 1:
+        raise ValueError("committed candidate pool size must be positive")
+    grouped: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row.get("selector") == "stale" or row.get("selector") in STATIC_SELECTOR_NAMES:
+            grouped[_condition_key(row)].append(row)
+
+    def pool_metrics(
+        pool: list[tuple[str, int]],
+        valid_conditions: list[tuple[str, ...]],
+        stale_by_condition: dict[tuple[str, ...], float],
+        rows_by_condition: dict[
+            tuple[str, ...], dict[tuple[str, int], dict[str, str]]
+        ],
+    ) -> dict[str, float | int]:
+        stale_sum = 0.0
+        gain_sum = 0.0
+        beneficial = 0
+        for condition in valid_conditions:
+            stale_kl = stale_by_condition[condition]
+            selected_kl = stale_kl
+            for candidate in pool:
+                selected_kl = min(
+                    selected_kl,
+                    float(rows_by_condition[condition][candidate]["logits_kl"]),
+                )
+            gain = stale_kl - selected_kl
+            stale_sum += stale_kl
+            gain_sum += gain
+            beneficial += int(gain > 1e-15)
+        return {
+            "oracle_weighted_recovery": gain_sum / max(stale_sum, 1e-12),
+            "oracle_beneficial": beneficial,
+        }
+
+    policies: dict[str, dict[str, Any]] = {}
+    targets = sorted({condition[1] for condition in grouped})
+    for target in targets:
+        conditions = [condition for condition in grouped if condition[1] == target]
+        if not conditions:
+            continue
+        rows_by_condition: dict[
+            tuple[str, ...], dict[tuple[str, int], dict[str, str]]
+        ] = {}
+        stale_by_condition: dict[tuple[str, ...], float] = {}
+        available: set[tuple[str, int]] | None = None
+        for condition in conditions:
+            condition_rows = grouped[condition]
+            stale_rows = [row for row in condition_rows if row.get("selector") == "stale"]
+            if not stale_rows:
+                continue
+            stale_kl = float(stale_rows[0].get("logits_kl", "nan"))
+            if not np.isfinite(stale_kl):
+                continue
+            keyed = {
+                (str(row["selector"]), int(row.get("selected_cells", 0))): row
+                for row in condition_rows
+                if row.get("selector") in STATIC_SELECTOR_NAMES
+                and int(row.get("selected_cells", 0)) > 0
+                and np.isfinite(float(row.get("logits_kl", "nan")))
+            }
+            if not keyed:
+                continue
+            rows_by_condition[condition] = keyed
+            stale_by_condition[condition] = stale_kl
+            keys = set(keyed)
+            available = keys if available is None else available & keys
+        valid_conditions = sorted(rows_by_condition)
+        if not valid_conditions or not available:
+            continue
+
+        selected: list[tuple[str, int]] = []
+        remaining = sorted(available)
+        while remaining and len(selected) < pool_size:
+            scored_candidates = []
+            for candidate in remaining:
+                candidate_metrics = pool_metrics(
+                    [*selected, candidate],
+                    valid_conditions,
+                    stale_by_condition,
+                    rows_by_condition,
+                )
+                scored_candidates.append((candidate, candidate_metrics))
+            best = max(
+                scored_candidates,
+                key=lambda item: (
+                    float(item[1]["oracle_weighted_recovery"]),
+                    int(item[1]["oracle_beneficial"]),
+                    -item[0][1],
+                    item[0][0],
+                ),
+            )[0]
+            selected.append(best)
+            remaining.remove(best)
+        metrics = pool_metrics(selected, valid_conditions, stale_by_condition, rows_by_condition)
+        policies[target] = {
+            "candidates": [
+                {"candidate_selector": selector, "candidate_count": count}
+                for selector, count in selected
+            ],
+            "calibration_conditions": len(valid_conditions),
+            **metrics,
+        }
+    return policies
+
+
+def _committed_runtime_guards(
+    input_dirs: list[Path],
+) -> dict[str, dict[str, Any]]:
+    """Fit selector-specific entropy trust bands on an independent dev set."""
+    rows_by_target: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for directory in input_dirs:
+        for row in _read_rows(directory / "blockwise_records.csv"):
+            if row.get("selector") != "sparse_committed_router_policy":
+                continue
+            selected_cells = int(float(row.get("selected_cells", 0)))
+            if selected_cells <= 0:
+                continue
+            stale_kl = float(row.get("stale_logits_kl", "nan"))
+            candidate_kl = float(row.get("logits_kl", "nan"))
+            entropy = float(row.get("output_entropy", "nan"))
+            if not all(np.isfinite(value) for value in (stale_kl, candidate_kl, entropy)):
+                continue
+            rows_by_target[str(row.get("update_target", ""))].append(
+                {
+                    "candidate_selector": str(row.get("candidate_selector", "")),
+                    "entropy": entropy,
+                    "gain": stale_kl - candidate_kl,
+                    "source": str(directory),
+                }
+            )
+    guards: dict[str, dict[str, Any]] = {}
+    for target, rows in sorted(rows_by_target.items()):
+        rules: list[dict[str, Any]] = []
+        selectors = sorted({str(row["candidate_selector"]) for row in rows})
+        for selector in selectors:
+            selected_rows = [row for row in rows if row["candidate_selector"] == selector]
+            entropies = sorted({float(row["entropy"]) for row in selected_rows})
+            best: tuple[tuple[Any, ...], float, float, list[dict[str, Any]]] | None = None
+            for lower_index, lower in enumerate(entropies):
+                for upper in entropies[lower_index:]:
+                    included = [
+                        row
+                        for row in selected_rows
+                        if lower <= float(row["entropy"]) <= upper
+                    ]
+                    harmful = sum(float(row["gain"]) < -1e-15 for row in included)
+                    gain = sum(float(row["gain"]) for row in included)
+                    beneficial = sum(float(row["gain"]) > 1e-15 for row in included)
+                    if harmful or beneficial == 0 or gain <= 0.0:
+                        continue
+                    key = (-gain, -beneficial, -len(included), upper - lower, lower, upper)
+                    if best is None or key < best[0]:
+                        best = (key, lower, upper, included)
+            if best is None:
+                continue
+            _, lower, upper, included = best
+            harmful_below = [
+                float(row["entropy"])
+                for row in selected_rows
+                if float(row["gain"]) < -1e-15 and float(row["entropy"]) < lower
+            ]
+            harmful_above = [
+                float(row["entropy"])
+                for row in selected_rows
+                if float(row["gain"]) < -1e-15 and float(row["entropy"]) > upper
+            ]
+            trusted_lower = (
+                0.5 * (max(harmful_below) + lower) if harmful_below else 0.0
+            )
+            trusted_upper = (
+                0.5 * (upper + min(harmful_above)) if harmful_above else 1e9
+            )
+            rules.append(
+                {
+                    "candidate_selector": selector,
+                    "entropy_min": trusted_lower,
+                    "entropy_max": trusted_upper,
+                    "dev_conditions": len(selected_rows),
+                    "dev_accepted": len(included),
+                    "dev_harmful": 0,
+                    "dev_beneficial": sum(
+                        float(row["gain"]) > 1e-15 for row in included
+                    ),
+                    "dev_absolute_gain": sum(float(row["gain"]) for row in included),
+                }
+            )
+        guards[target] = {
+            "feature": "stale_output_entropy",
+            "rules": rules,
+            "calibration_conditions": len(rows),
+            "calibration_sources": sorted({str(row["source"]) for row in rows}),
+            "runtime_forward_count": 0,
+            "runtime_uses_kl": False,
+        }
+    return guards
+
+def _committed_candidate_router_policies(
+    feature_rows: list[dict[str, str]],
+    record_rows: list[dict[str, str]],
+    pool_policies: dict[str, dict[str, Any]],
+    *,
+    ridge_values: tuple[float, ...] = REFERENCE_ROUTER_RIDGE_VALUES,
+    min_stale_kl: float = REFERENCE_POOL_MIN_STALE_KL,
+) -> dict[str, dict[str, Any]]:
+    """Fit a zero-forward router with an abstaining lower confidence bound.
+
+    Cross-validation is grouped by calibration source, task, context, and block
+    size rather than by sample id.  This prevents adjacent samples from the same
+    workload from making the safety estimate look artificially strong.
+    """
+    features_by_condition: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    records_by_condition: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
+    for row in feature_rows:
+        features_by_condition[_condition_key(row)].append(row)
+    for row in record_rows:
+        records_by_condition[_condition_key(row)].append(row)
+
+    policies: dict[str, dict[str, Any]] = {}
+    for target, pool_policy in sorted(pool_policies.items()):
+        candidates = [
+            {
+                "candidate_selector": str(item["candidate_selector"]),
+                "candidate_count": int(item["candidate_count"]),
+            }
+            for item in pool_policy.get("candidates", [])
+            if isinstance(item, dict)
+        ]
+        if not candidates:
+            continue
+        items: list[dict[str, Any]] = []
+        direct_counts: list[int] = []
+        for condition, rows in features_by_condition.items():
+            if condition[1] != target:
+                continue
+            records = records_by_condition.get(condition, [])
+            stale_rows = [row for row in records if row.get("selector") == "stale"]
+            if not stale_rows:
+                continue
+            stale = stale_rows[0]
+            stale_kl = float(stale.get("logits_kl", "nan"))
+            if not np.isfinite(stale_kl):
+                continue
+            candidate_rows: list[dict[str, str]] = []
+            for candidate in candidates:
+                matches = [
+                    row
+                    for row in records
+                    if row.get("selector") == candidate["candidate_selector"]
+                    and int(row.get("selected_cells", 0))
+                    == candidate["candidate_count"]
+                ]
+                if not matches or not np.isfinite(float(matches[0].get("logits_kl", "nan"))):
+                    candidate_rows = []
+                    break
+                candidate_rows.append(matches[0])
+            if not candidate_rows:
+                continue
+            expected_cells = len(rows)
+            direct_counts.append(expected_cells)
+            first = rows[0]
+            source = str(first.get("_training_source", "unknown"))
+            workload_group = "::".join(
+                (
+                    source,
+                    str(first.get("task_name", "unknown")),
+                    str(first.get("context_length", "unknown")),
+                    str(first.get("block_size", "unknown")),
+                )
+            )
+            items.append(
+                {
+                    "feature_rows": rows,
+                    "expected_cells": expected_cells,
+                    "workload_group": workload_group,
+                    "stale_kl": stale_kl,
+                    "candidate_kl": np.asarray(
+                        [float(row["logits_kl"]) for row in candidate_rows],
+                        dtype=np.float64,
+                    ),
+                }
+            )
+        if not items:
+            continue
+        expected_cells = max(set(direct_counts), key=direct_counts.count)
+        items = [item for item in items if item["expected_cells"] == expected_cells]
+        if len(items) < 2:
+            continue
+        x = np.stack(
+            [
+                _baseline_reference_router_feature_vector(
+                    item["feature_rows"], expected_cells=expected_cells
+                )
+                for item in items
+            ],
+            axis=0,
+        )
+        y = np.stack(
+            [float(item["stale_kl"]) - item["candidate_kl"] for item in items],
+            axis=0,
+        )
+        groups = np.asarray([item["workload_group"] for item in items])
+        best: tuple[
+            tuple[Any, ...], float, float, float, np.ndarray, np.ndarray, dict[str, Any]
+        ] | None = None
+        for ridge in ridge_values:
+            predictions = np.zeros_like(y)
+            unique_groups = sorted(set(groups.tolist()))
+            if len(unique_groups) < 2:
+                mean, scale, intercept, weights = _fit_standardized_multioutput_ridge(
+                    x, y, float(ridge)
+                )
+                predictions = intercept + ((x - mean) / scale) @ weights
+            else:
+                for held_out in unique_groups:
+                    train = groups != held_out
+                    test = ~train
+                    mean, scale, intercept, weights = _fit_standardized_multioutput_ridge(
+                        x[train], y[train], float(ridge)
+                    )
+                    predictions[test] = intercept + ((x[test] - mean) / scale) @ weights
+            overprediction = predictions - y
+            for quantile in COMMITTED_ROUTER_QUANTILES:
+                error = np.quantile(overprediction, quantile, axis=0, method="higher")
+                lower_bounds = predictions - error
+                best_indices = np.argmax(lower_bounds, axis=1)
+                best_values = lower_bounds[np.arange(len(items)), best_indices]
+                for minimum in COMMITTED_ROUTER_MIN_GAINS:
+                    choices = np.where(best_values > minimum, best_indices, -1)
+                    metrics = _committed_router_metrics(
+                        items,
+                        choices,
+                        min_stale_kl=min_stale_kl,
+                    )
+                    key = (
+                        int(metrics["material_harmful"]),
+                        int(metrics["all_harmful"]),
+                        -float(metrics["material_weighted_recovery"]),
+                        -float(metrics["all_weighted_recovery"]),
+                        -int(metrics["accepted"]),
+                        float(quantile),
+                        float(minimum),
+                        float(ridge),
+                    )
+                    if best is None or key < best[0]:
+                        best = (
+                            key,
+                            float(ridge),
+                            float(quantile),
+                            float(minimum),
+                            predictions.copy(),
+                            np.asarray(error, dtype=np.float64),
+                            metrics,
+                        )
+        if best is None:
+            continue
+        _, ridge, quantile, minimum, cv_predictions, error, metrics = best
+        mean, scale, intercept, weights = _fit_standardized_multioutput_ridge(
+            x, y, ridge
+        )
+        policies[target] = {
+            "candidates": candidates,
+            "feature_mode": "baseline_only",
+            "objective": "absolute_kl_gain_lower_bound",
+            "ridge": ridge,
+            "expected_direct_cells": expected_cells,
+            "feature_dimension": int(x.shape[1]),
+            "mean": mean.tolist(),
+            "scale": scale.tolist(),
+            "intercept": intercept.tolist(),
+            "weights": weights.tolist(),
+            "overprediction_quantile": quantile,
+            "overprediction_error": error.tolist(),
+            "minimum_lower_bound": minimum,
+            "calibration_conditions": len(items),
+            "calibration_workload_groups": len(set(groups.tolist())),
+            "validation_grouping": "training_source::task_name::context_length::block_size",
+            "runtime_forward_count": 0,
+            "runtime_uses_kl": False,
+            **metrics,
+        }
+    return policies
+
+
+def _committed_router_metrics(
+    items: list[dict[str, Any]],
+    choices: np.ndarray,
+    *,
+    min_stale_kl: float,
+) -> dict[str, float | int]:
+    stale = np.asarray([float(item["stale_kl"]) for item in items], dtype=np.float64)
+    gains = np.zeros(len(items), dtype=np.float64)
+    for index, (item, choice) in enumerate(zip(items, choices, strict=True)):
+        if int(choice) >= 0:
+            candidate_kl = float(item["candidate_kl"][int(choice)])
+            gains[index] = stale[index] - candidate_kl
+    accepted = choices >= 0
+    material = stale >= min_stale_kl
+
+    def weighted(mask: np.ndarray) -> float:
+        return float(gains[mask].sum() / max(stale[mask].sum(), 1e-12))
+
+    return {
+        "accepted": int(np.sum(accepted)),
+        "accept_rate": float(np.mean(accepted)),
+        "all_harmful": int(np.sum(gains < -1e-15)),
+        "all_beneficial": int(np.sum(gains > 1e-15)),
+        "all_weighted_recovery": weighted(np.ones(len(stale), dtype=bool)),
+        "material_conditions": int(np.sum(material)),
+        "material_harmful": int(np.sum((gains < -1e-15) & material)),
+        "material_beneficial": int(np.sum((gains > 1e-15) & material)),
+        "material_weighted_recovery": weighted(material) if np.any(material) else 0.0,
+        "worst_harm": float(min(np.min(gains), 0.0)),
+    }
+
 def _reference_router_targets(
     items: list[dict[str, Any]],
     *,
@@ -1492,6 +2110,7 @@ def _condition_key(row: dict[str, Any]) -> tuple[str, ...]:
         str(row.get("update_target", "")),
         str(row.get("block_size", "")),
         str(row.get("final_adapter_fingerprint", "")),
+        str(row.get("_training_source", "")),
     )
 
 

@@ -9,15 +9,52 @@ import pytest
 
 from ttt_cache_lab.experiments.block_ranker import (
     FEATURE_NAMES,
+    _baseline_reference_router_feature_vector,
     _confidence_probe_policies,
     _one_probe_policies,
     _reference_candidate_pool_policies,
     _reference_candidate_router_policies,
     fit_block_ranker,
     load_block_ranker,
+    route_committed_candidate,
     route_reference_candidate,
+    route_zero_probe_recompute,
     score_block_features,
 )
+
+
+def test_zero_probe_recompute_router_uses_only_frozen_risk_threshold() -> None:
+    ranker = {
+        "models": {
+            "lora.k_middle": {
+                "zero_probe_recompute_policy": {
+                    "risk_feature": "router_baseline_stale_kl",
+                    "risk_threshold": 0.01,
+                    "trigger_quantile": 0.875,
+                    "runtime_forward_count": 0,
+                    "runtime_uses_full_reference": False,
+                }
+            }
+        }
+    }
+
+    trigger, score, policy = route_zero_probe_recompute(
+        ranker,
+        update_target="lora.k_middle",
+        condition={"router_baseline_stale_kl": 0.0101},
+    )
+    assert trigger is True
+    assert score == pytest.approx(0.0101)
+    assert policy["runtime_forward_count"] == 0
+    assert policy["runtime_uses_full_reference"] is False
+
+    trigger, score, _ = route_zero_probe_recompute(
+        ranker,
+        update_target="lora.k_middle",
+        condition={"router_baseline_stale_kl": 0.0099},
+    )
+    assert trigger is False
+    assert score == pytest.approx(0.0099)
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -388,6 +425,82 @@ def test_baseline_reference_router_uses_non_attention_features() -> None:
     }
     assert scores.shape == (2,)
 
+
+
+def test_committed_router_selects_positive_lower_bound_and_can_abstain() -> None:
+    rows = [_feature_row("lora.k_middle", 9, block) for block in range(4)]
+    dimension = len(
+        _baseline_reference_router_feature_vector(rows, expected_cells=4)
+    )
+    candidates = [
+        {"candidate_selector": "sparse_input_bound", "candidate_count": 1},
+        {
+            "candidate_selector": "sparse_predicted_delta_norm",
+            "candidate_count": 2,
+        },
+    ]
+
+    def ranker(errors: list[float]) -> dict[str, Any]:
+        return {
+            "models": {
+                "lora.k_middle": {
+                    "baseline_committed_candidate_router_policy": {
+                        "candidates": candidates,
+                        "expected_direct_cells": 4,
+                        "mean": [0.0] * dimension,
+                        "scale": [1.0] * dimension,
+                        "intercept": [0.20, 0.10],
+                        "weights": [[0.0, 0.0] for _ in range(dimension)],
+                        "overprediction_error": errors,
+                        "minimum_lower_bound": 0.0,
+                    }
+                }
+            }
+        }
+
+    selected, predicted, lower = route_committed_candidate(
+        ranker([0.05, 0.20]),
+        update_target="lora.k_middle",
+        feature_rows=rows,
+    )
+    abstained, _, rejected_lower = route_committed_candidate(
+        ranker([0.30, 0.20]),
+        update_target="lora.k_middle",
+        feature_rows=rows,
+    )
+
+    assert selected == candidates[0]
+    assert predicted.tolist() == pytest.approx([0.20, 0.10])
+    assert lower.tolist() == pytest.approx([0.15, -0.10])
+    assert abstained is None
+    assert max(rejected_lower) <= 0.0
+
+    guarded = ranker([0.05, 0.20])
+    guarded["models"]["lora.k_middle"][
+        "baseline_committed_candidate_router_policy"
+    ]["runtime_guard"] = {
+        "rules": [
+            {
+                "candidate_selector": "sparse_input_bound",
+                "entropy_min": 0.10,
+                "entropy_max": 0.20,
+            }
+        ]
+    }
+    trusted, _, _ = route_committed_candidate(
+        guarded,
+        update_target="lora.k_middle",
+        feature_rows=rows,
+        stale_output_entropy=0.15,
+    )
+    out_of_band, _, _ = route_committed_candidate(
+        guarded,
+        update_target="lora.k_middle",
+        feature_rows=rows,
+        stale_output_entropy=0.05,
+    )
+    assert trusted == candidates[0]
+    assert out_of_band is None
 
 def test_confidence_probe_policy_rejects_low_confidence_harm() -> None:
     rows: list[dict[str, str]] = []
