@@ -2195,7 +2195,8 @@ class HuggingFaceBackend:
                 total_energy = total_norm * total_norm
                 norms = np.linalg.norm(layer_vectors, axis=1)
                 cancellation = total_norm / max(float(np.sum(norms)), 1e-12)
-                for block_index in np.flatnonzero(layer_mask):
+                for raw_block_index in np.flatnonzero(layer_mask):
+                    block_index = int(raw_block_index)
                     vector = correction_vectors[layer, block_index]
                     norm = float(np.linalg.norm(vector))
                     dot = float(np.dot(vector, total))
