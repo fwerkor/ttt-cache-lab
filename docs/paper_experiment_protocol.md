@@ -40,7 +40,10 @@ The controlled suite isolates cache-consistency mechanisms:
 - `common_words`: compute an intersection across long lists;
 - `variable_tracking`: recover the final value after dispersed state updates.
 
-The framework also retains `passkey` and `key_value` for smoke tests. Controlled samples are generated deterministically from `data.selection_seed`; model/update seeds never change sample membership. `answer_length` controls the generated reference value, while the decode budget is independently set by `max_generation_tokens` (16 by default) so instruction-style response prefixes do not truncate the answer or leak the reference tokenizer length.
+The framework also retains version-routed `passkey` and `key_value` tasks. Passkey difficulty changes the number of routing hops rather than only adding filler: easy is revision-to-value, medium is slot-to-revision-to-value, and hard is profile-to-slot-to-revision-to-value. Controlled samples are generated deterministically from `data.selection_seed`; model/update seeds never change sample membership. `answer_length` controls the generated reference value, while paper-scale synthetic configs reserve at least 32 generation tokens so instruction-style prefixes do not truncate the answer.
+
+E2 uses model-specific controlled tasks selected by baseline viability probes: Qwen2.5-1.5B uses easy version-routed passkey, Qwen2.5-7B uses easy variable tracking, and Qwen2.5-14B/32B use hard common-words with set-F1. This avoids the observed floor/ceiling discontinuity of applying one retrieval task to every scale.
+E2 also separates micro-drift and task-ability evidence. Small-update runs characterize distributional sensitivity; paper controlled and realistic E2 runs use `update_norm: 1e-3` on held-out samples and must report whether fresh-cache adaptation gain is available before interpreting gain-retention ratios.
 
 E3 uses model-calibrated contexts and semantic difficulty rather than forcing the same 16K hard task onto every scale. The frozen calibration matrix is:
 
@@ -77,9 +80,9 @@ For LongBench v2:
 
 | Partition | Offset | Count | Use |
 |---|---:|---:|---|
-| validation | 0 | 64 | baseline and threshold selection |
-| main test | 64 | 256 on Qwen-7B; 96 on other models | held-out E2/E4 evaluation |
-| ablation test | 320 | 96 | E7 only |
+| validation | 0 | 96 | baseline and threshold selection |
+| main test | 96 | 256 on Qwen-7B; 96 on other models | held-out E2/E4 evaluation |
+| ablation test | 352 | 96 | E7 only |
 
 These index ranges are disjoint. Test outcomes must not be used to regenerate the E3 failure map or tune periodic/threshold baselines.
 
@@ -108,7 +111,7 @@ Every record stores:
 | Qwen1.5-MoE-A2.7B-Chat | Sparse-MoE screening with separate router, shared-expert, and routed-expert targets |
 | Qwen2.5-Coder-7B-Instruct | Code and repository tasks |
 
-The 14B and 32B configurations use explicit model-layer sharding across all visible accelerators. The 7B configurations default to one visible accelerator, except long-context runs that may be changed to model sharding without changing task membership or analysis semantics. A1 architecture-screening configs are opt-in and are not referenced by default launch scripts; each uses eight calibration samples, three controlled tasks, six update targets, four cache strategies, and version gaps 1/4/16 before any model is promoted to a full matrix.
+The 14B and 32B configurations use explicit model-layer sharding across all visible accelerators. The 7B configurations default to one visible accelerator, except long-context runs that may be changed to model sharding without changing task membership or analysis semantics. A1 architecture-screening configs are opt-in and are not referenced by default launch scripts; each controlled configuration uses at least 48 samples, six update targets, four cache strategies, and version gaps 1/4/16 before any model is promoted to a full matrix.
 
 Records use backend-reported layer count, hidden size, and parameter count. Configuration defaults are not accepted as model-scale measurements.
 

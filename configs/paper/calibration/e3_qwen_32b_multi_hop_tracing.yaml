@@ -20,12 +20,19 @@ data:
   evaluation_partition: calibration
   selection_seed: 2027
   sample_offset: 0
-  num_samples: 12
+  num_samples: 32
   context_length: 16384
   answer_length: 4
   synthetic_difficulty: hard
   scorer: contains
   max_generation_tokens: 32
+task_viability:
+  enabled: true
+  probe_samples: 32
+  min_mean_score: 0.05
+  max_mean_score: 1.0
+  min_nonzero_fraction: 0.10
+  max_perfect_fraction: 1.0
 updates:
   targets:
   - lora.q

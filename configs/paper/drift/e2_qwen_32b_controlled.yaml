@@ -14,7 +14,7 @@ model:
   use_chat_template: true
 data:
   source: synthetic
-  task: multi_hop_tracing
+  task: common_words
   benchmark_name: controlled-long-context
   task_family: multi_hop_reasoning
   evaluation_partition: test
@@ -23,8 +23,16 @@ data:
   num_samples: 32
   context_length: 16384
   answer_length: 4
-  scorer: contains
+  scorer: set_f1
   max_generation_tokens: 32
+  synthetic_difficulty: hard
+task_viability:
+  enabled: true
+  probe_samples: 32
+  min_mean_score: 0.05
+  max_mean_score: 0.95
+  min_nonzero_fraction: 0.10
+  max_perfect_fraction: 0.90
 updates:
   targets:
   - lora.q

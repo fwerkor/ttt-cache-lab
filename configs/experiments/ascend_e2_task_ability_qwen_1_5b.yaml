@@ -1,41 +1,44 @@
-name: e2-version-drift-mistral-7b-v0_1
-output_dir: runs/e2_version_drift_mistral_7b_v0_1
-experiment_id: e2_version_drift
+name: ascend-e2-task-ability-qwen-1_5b
+output_dir: runs/ascend_e2_task_ability_qwen_1_5b
+experiment_id: e2_task_ability
 seed: 7
 model:
-  backend: hf
-  modelscope_model_id: AI-ModelScope/Mistral-7B-Instruct-v0.1
-  model_name_or_path: mistralai/Mistral-7B-Instruct-v0.1
-  device: auto
-  torch_dtype: auto
-  max_length: 8192
+  backend: ascend_hf
+  modelscope_model_id: Qwen/Qwen2.5-1.5B-Instruct
+  model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  device: npu:0
+  torch_dtype: bfloat16
+  max_length: 4096
   trust_remote_code: true
   use_chat_template: true
 data:
-  task: variable_tracking
+  task: passkey
   num_samples: 64
   context_length: 4096
   answer_length: 4
-  scorer: contains
+  scorer: numeric_match
   synthetic_difficulty: easy
-  max_generation_tokens: 16
+  max_generation_tokens: 8
+  selection_seed: 2027
+  sample_offset: 96
+  evaluation_partition: test
+  task_family: controlled_task_ability
 task_viability:
   enabled: true
   probe_samples: 32
   min_mean_score: 0.05
   max_mean_score: 0.95
-  min_nonzero_fraction: 0.10
-  max_perfect_fraction: 0.90
+  min_nonzero_fraction: 0.1
+  max_perfect_fraction: 0.9
 updates:
   targets:
-  - lora.q_middle
-  - lora.k_early
-  - lora.k_middle
-  - lora.v_middle
-  - lora.mlp_middle
-  - norm_middle
+  - lora.q
+  - lora.k
+  - lora.v
+  - lora.qv
+  - lora.mlp_late
   step_count: 1
-  update_norm: 1.0e-05
+  update_norm: 0.001
 cache:
   strategies:
   - full_recompute
