@@ -25,8 +25,21 @@ from ttt_cache_lab.experiments.blockwise import (
     _swap_refine_sparse_objective_masks,
     _write_jsonl,
     _write_rows,
+    _zero_probe_baseline_stale_kl,
 )
+from ttt_cache_lab.metrics.tensor import kl_divergence
 from ttt_cache_lab.models.interface import BackendOutput
+
+
+def test_fast_zero_probe_kl_matches_reference_implementation() -> None:
+    baseline = np.asarray([[2.0, 0.5, -1.0, 3.0]], dtype=np.float64)
+    stale = np.asarray([[1.8, 0.7, -0.8, 3.1]], dtype=np.float64)
+    expected = kl_divergence(baseline, stale)
+    actual = _zero_probe_baseline_stale_kl(
+        baseline_logits=baseline,
+        stale_logits=stale,
+    )
+    assert np.isclose(actual, expected, rtol=1e-5, atol=1e-8)
 
 
 def _evaluation(logits: list[float]) -> _Evaluation:

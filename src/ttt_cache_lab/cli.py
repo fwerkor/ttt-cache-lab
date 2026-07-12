@@ -177,9 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     blockwise.add_argument(
         "--sparse-policy-variant",
-        choices=("reference", "baseline_reference"),
+        choices=("reference", "baseline_reference", "committed", "recompute"),
         default="reference",
-        help="Choose the post-update or baseline-compatible fitted router",
+        help=(
+            "Choose the post-update, baseline-compatible probe, zero-probe "
+            "direct-commit router, or zero-probe direct-recompute gate"
+        ),
     )
 
     block_ranker = subparsers.add_parser(
@@ -188,6 +191,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     block_ranker.add_argument("--input-dir", required=True, type=Path, nargs="+")
     block_ranker.add_argument("--output", required=True, type=Path)
+    block_ranker.add_argument(
+        "--committed-guard-dir",
+        type=Path,
+        nargs="+",
+        default=[],
+        help="Independent dev artifacts used only to fit the committed-router trust band",
+    )
     block_ranker.add_argument(
         "--ridge-values",
         type=float,
@@ -422,6 +432,7 @@ def main(argv: list[str] | None = None) -> None:
             list(args.input_dir),
             output_path=args.output,
             ridge_values=tuple(args.ridge_values),
+            committed_guard_dirs=list(args.committed_guard_dir),
         )
         console.print(f"Wrote {ranker_path}")
         return

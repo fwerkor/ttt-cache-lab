@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import time
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -17,7 +18,9 @@ from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.block_ranker import (
     load_block_ranker,
+    route_committed_candidate,
     route_reference_candidate,
+    route_zero_probe_recompute,
     score_block_features,
 )
 from ttt_cache_lab.metrics.tensor import kl_divergence, top1_agreement
@@ -150,9 +153,15 @@ def run_blockwise_exploration(
     )
     if sparse_policy_only and sparse_ranker is None:
         raise ValueError("sparse_policy_only requires a fitted sparse ranker")
-    if sparse_policy_variant not in {"reference", "baseline_reference"}:
+    if sparse_policy_variant not in {
+        "reference",
+        "baseline_reference",
+        "committed",
+        "recompute",
+    }:
         raise ValueError(
-            "sparse_policy_variant must be 'reference' or 'baseline_reference'"
+            "sparse_policy_variant must be 'reference', 'baseline_reference', "
+            "'committed', or 'recompute'"
         )
     backend = build_backend(config.model, seed=config.seed)
     backend.configure_metrics(capture_attention=True)
@@ -507,6 +516,24 @@ def _explore_condition(
     empty = np.zeros_like(eligible)
     stale = evaluate(empty)
     stale_output_reference = stale.output
+    router_feature_started = time.perf_counter()
+    if sparse_policy_variant == "recompute":
+        condition["router_baseline_stale_kl"] = (
+            _zero_probe_baseline_stale_kl(
+                baseline_logits=baseline.logits,
+                stale_logits=stale.output.logits,
+            )
+        )
+    else:
+        condition.update(
+            _zero_probe_failure_metrics(
+                baseline_logits=baseline.logits,
+                stale_logits=stale.output.logits,
+            )
+        )
+    condition["router_feature_latency"] = (
+        time.perf_counter() - router_feature_started
+    )
     enrich_local_attention_metrics(stale.output)
     enrich_reference_metrics(stale.output)
     sparse_probe = getattr(backend, "probe_blockwise_lora_delta", None)
@@ -561,6 +588,92 @@ def _explore_condition(
             stale_kl=stale.logits_kl,
         )
     ]
+    if sparse_ranker is not None and sparse_policy_variant == "recompute":
+        trigger_recompute, risk_score, recompute_policy = route_zero_probe_recompute(
+            sparse_ranker,
+            update_target=str(condition["update_target"]),
+            condition=condition,
+        )
+        if trigger_recompute:
+            policy_evaluation = _Evaluation(
+                output=full,
+                logits_kl=0.0,
+                top1_agreement=1.0,
+            )
+            action_latency = float(
+                condition.get("full_recompute_strategy_latency", 0.0)
+            )
+            action_flops = float(condition.get("full_recompute_flops", 0.0))
+            cache_latency = float(
+                condition.get("full_recompute_prefill_latency", 0.0)
+            )
+            decode_latency = float(
+                condition.get("full_recompute_decode_latency", 0.0)
+            )
+        else:
+            policy_evaluation = stale
+            stale_extras = stale.output.extras or {}
+            cache_latency = float(stale_extras.get("cache_maintenance_latency", 0.0))
+            decode_latency = float(stale_extras.get("decode_latency", 0.0))
+            action_latency = cache_latency + decode_latency
+            action_flops = float(stale_extras.get("strategy_flops", 0.0))
+        router_latency = float(condition.get("router_feature_latency", 0.0))
+        records.append(
+            _record(
+                condition,
+                selector="zero_probe_recompute_router",
+                requested_budget_fraction=1.0 if trigger_recompute else 0.0,
+                mask=empty,
+                eligible=eligible,
+                evaluation=policy_evaluation,
+                stale_kl=stale.logits_kl,
+                selection_metadata={
+                    "selection_objective": str(
+                        recompute_policy.get(
+                            "objective", "zero_probe_direct_full_recompute"
+                        )
+                    ),
+                    "selected_full_recompute_fallback": trigger_recompute,
+                    "selected_stale_action": not trigger_recompute,
+                    "router_action": (
+                        "full_recompute" if trigger_recompute else "stale"
+                    ),
+                    "router_risk_feature": str(
+                        recompute_policy.get("risk_feature", "")
+                    ),
+                    "router_risk_score": risk_score,
+                    "router_risk_threshold": float(
+                        recompute_policy.get("risk_threshold", math.inf)
+                    ),
+                    "router_trigger_quantile": float(
+                        recompute_policy.get("trigger_quantile", 0.0)
+                    ),
+                    "router_calibration_conditions": int(
+                        recompute_policy.get("calibration_conditions", 0)
+                    ),
+                    "router_calibration_trigger_rate": float(
+                        recompute_policy.get("calibration_trigger_rate", 0.0)
+                    ),
+                    "router_calibration_weighted_kl_recovery": float(
+                        recompute_policy.get(
+                            "calibration_weighted_kl_recovery", 0.0
+                        )
+                    ),
+                    "router_runtime_forward_count": 0,
+                    "router_runtime_uses_full_reference": False,
+                    "planner_probe_latency": 0.0,
+                    "planner_probe_flops": 0.0,
+                    "search_probe_count": 0,
+                    "search_reference_token_evaluations": 0,
+                    "router_decision_latency": router_latency,
+                    "end_to_end_planner_latency": action_latency + router_latency,
+                    "strategy_flops": action_flops,
+                    "cache_maintenance_latency": cache_latency,
+                    "decode_latency": decode_latency,
+                    "sparse_ranker_path": str(sparse_ranker_path),
+                },
+            )
+        )
     mask_rows: list[dict[str, Any]] = []
     feature_rows: list[dict[str, Any]] = []
     desired_counts = sorted(
@@ -1222,7 +1335,156 @@ def _explore_condition(
                             )
                         )
 
-                if isinstance(target_model, dict):
+                if (
+                    isinstance(target_model, dict)
+                    and sparse_policy_variant == "committed"
+                ):
+                    committed_policy_name = (
+                        "baseline_committed_candidate_router_policy"
+                    )
+                    committed_policy = target_model.get(committed_policy_name)
+                    if isinstance(committed_policy, dict):
+                        _, committed_stale_entropy, _ = _logit_selection_metrics(
+                            stale.output.logits,
+                            reference_token_id=int(
+                                condition.get("reference_token_id", -1)
+                            ),
+                        )
+                        candidate, predicted_gains, lower_bounds = (
+                            route_committed_candidate(
+                                sparse_ranker,
+                                update_target=str(condition["update_target"]),
+                                feature_rows=condition_feature_rows,
+                                stale_output_entropy=committed_stale_entropy,
+                                policy_name=committed_policy_name,
+                            )
+                        )
+                        selected_mask = np.zeros_like(direct_available)
+                        selected_evaluation = stale
+                        selected_count = 0
+                        selected_selector = "stale"
+                        if candidate is not None:
+                            candidate_selector = str(
+                                candidate.get("candidate_selector", "")
+                            )
+                            candidate_score_name = sparse_selectors.get(
+                                candidate_selector
+                            )
+                            candidate_count = max(
+                                0,
+                                min(
+                                    int(candidate.get("candidate_count", 0)),
+                                    direct_total,
+                                ),
+                            )
+                            if (
+                                candidate_score_name is not None
+                                and candidate_count > 0
+                            ):
+                                candidate_scores = np.asarray(
+                                    sparse_scores[candidate_score_name],
+                                    dtype=np.float64,
+                                )
+                                selected_mask = _top_mask(
+                                    candidate_scores,
+                                    direct_available,
+                                    candidate_count,
+                                )
+                                selected_evaluation = evaluate_sparse(selected_mask)
+                                selected_count = candidate_count
+                                selected_selector = candidate_selector
+                        accepted = selected_count > 0
+                        selected_budget = selected_count / total_eligible
+                        selected_extras = selected_evaluation.output.extras or {}
+                        committed_latency = float(
+                            selected_extras.get("cache_maintenance_latency", 0.0)
+                        ) + float(selected_extras.get("decode_latency", 0.0))
+                        best_lower_bound = float(np.max(lower_bounds))
+                        records.append(
+                            _record(
+                                condition,
+                                selector="sparse_committed_router_policy",
+                                requested_budget_fraction=selected_budget,
+                                mask=selected_mask,
+                                eligible=eligible,
+                                evaluation=selected_evaluation,
+                                stale_kl=stale.logits_kl,
+                                selection_metadata={
+                                    "selection_objective": (
+                                        "conservative_absolute_kl_gain_lower_bound"
+                                    ),
+                                    "search_probe_count": 0,
+                                    "search_reference_token_evaluations": 0,
+                                    "joint_budget_selection": True,
+                                    "selected_stale_action": not accepted,
+                                    "safety_gate_passed": accepted,
+                                    "candidate_selector": selected_selector,
+                                    "candidate_selected_cells": selected_count,
+                                    "candidate_logits_kl": (
+                                        selected_evaluation.logits_kl
+                                    ),
+                                    "planner_probe_latency": 0.0,
+                                    "end_to_end_planner_latency": committed_latency,
+                                    "planner_probe_flops": 0.0,
+                                    "router_scores": json.dumps(
+                                        predicted_gains.tolist()
+                                    ),
+                                    "router_lower_bounds": json.dumps(
+                                        lower_bounds.tolist()
+                                    ),
+                                    "router_selected_lower_bound": best_lower_bound,
+                                    "router_minimum_lower_bound": float(
+                                        committed_policy.get(
+                                            "minimum_lower_bound", 0.0
+                                        )
+                                    ),
+                                    "router_overprediction_quantile": float(
+                                        committed_policy.get(
+                                            "overprediction_quantile", 1.0
+                                        )
+                                    ),
+                                    "router_objective": str(
+                                        committed_policy.get("objective", "")
+                                    ),
+                                    "router_ridge": float(
+                                        committed_policy.get("ridge", 0.0)
+                                    ),
+                                    "router_runtime_forward_count": 0,
+                                    "router_runtime_uses_kl": False,
+                                    "router_runtime_guard": json.dumps(
+                                        committed_policy.get("runtime_guard", {}),
+                                        sort_keys=True,
+                                    ),
+                                    "router_calibration_material_harmful": int(
+                                        committed_policy.get(
+                                            "material_harmful", 0
+                                        )
+                                    ),
+                                    "router_calibration_material_recovery": float(
+                                        committed_policy.get(
+                                            "material_weighted_recovery", 0.0
+                                        )
+                                    ),
+                                    "router_calibration_accept_rate": float(
+                                        committed_policy.get("accept_rate", 0.0)
+                                    ),
+                                    "sparse_ranker_path": str(sparse_ranker_path),
+                                },
+                            )
+                        )
+                        mask_rows.extend(
+                            _mask_rows(
+                                condition,
+                                "sparse_committed_router_policy",
+                                selected_budget,
+                                selected_mask,
+                            )
+                        )
+
+                if (
+                    isinstance(target_model, dict)
+                    and sparse_policy_variant != "committed"
+                ):
                     baseline_reference_variant = (
                         sparse_policy_variant == "baseline_reference"
                     )
@@ -2872,6 +3134,118 @@ def _logit_selection_metrics(
         return math.nan, entropy, max_probability
     log_partition = float(np.log(max(denominator, 1e-300)) + np.max(values))
     return log_partition - float(values[reference_token_id]), entropy, max_probability
+
+
+def _zero_probe_baseline_stale_kl(
+    *,
+    baseline_logits: np.ndarray,
+    stale_logits: np.ndarray,
+) -> float:
+    """Compute the one runtime risk feature with a single float32 softmax pair."""
+
+    baseline_values = np.asarray(baseline_logits, dtype=np.float32).reshape(
+        -1, baseline_logits.shape[-1]
+    )[0]
+    stale_values = np.asarray(stale_logits, dtype=np.float32).reshape(
+        -1, stale_logits.shape[-1]
+    )[0]
+    if baseline_values.shape != stale_values.shape:
+        raise ValueError("Baseline and stale logits must have the same vocabulary shape")
+    baseline_shifted = baseline_values - np.max(baseline_values)
+    stale_shifted = stale_values - np.max(stale_values)
+    baseline_log_probabilities = baseline_shifted - np.log(
+        np.sum(np.exp(baseline_shifted), dtype=np.float64)
+    )
+    stale_log_probabilities = stale_shifted - np.log(
+        np.sum(np.exp(stale_shifted), dtype=np.float64)
+    )
+    baseline_probabilities = np.exp(baseline_log_probabilities)
+    value = np.sum(
+        baseline_probabilities
+        * (baseline_log_probabilities - stale_log_probabilities),
+        dtype=np.float64,
+    )
+    return max(float(value), 0.0)
+
+
+def _zero_probe_failure_metrics(
+    *,
+    baseline_logits: np.ndarray,
+    stale_logits: np.ndarray,
+) -> dict[str, float]:
+    """Summarize old-model versus stale-cache output drift without a new forward."""
+
+    baseline_values = np.asarray(baseline_logits, dtype=np.float64).reshape(
+        -1, baseline_logits.shape[-1]
+    )[0]
+    stale_values = np.asarray(stale_logits, dtype=np.float64).reshape(
+        -1, stale_logits.shape[-1]
+    )[0]
+    if baseline_values.shape != stale_values.shape:
+        raise ValueError("Baseline and stale logits must have the same vocabulary shape")
+
+    def probabilities(values: np.ndarray) -> np.ndarray:
+        shifted = values - float(np.max(values))
+        exp_values = np.exp(shifted)
+        return exp_values / max(float(np.sum(exp_values)), 1e-300)
+
+    baseline_probabilities = probabilities(baseline_values)
+    stale_probabilities = probabilities(stale_values)
+    midpoint = 0.5 * (baseline_probabilities + stale_probabilities)
+    epsilon = 1e-300
+    js = 0.5 * np.sum(
+        baseline_probabilities
+        * (
+            np.log(baseline_probabilities + epsilon)
+            - np.log(midpoint + epsilon)
+        )
+    )
+    js += 0.5 * np.sum(
+        stale_probabilities
+        * (
+            np.log(stale_probabilities + epsilon)
+            - np.log(midpoint + epsilon)
+        )
+    )
+
+    baseline_positive = baseline_probabilities[baseline_probabilities > 0.0]
+    stale_positive = stale_probabilities[stale_probabilities > 0.0]
+    baseline_entropy = float(
+        -np.sum(baseline_positive * np.log(baseline_positive))
+    )
+    stale_entropy = float(-np.sum(stale_positive * np.log(stale_positive)))
+    baseline_max_probability = float(np.max(baseline_probabilities))
+    stale_max_probability = float(np.max(stale_probabilities))
+    delta = stale_values - baseline_values
+    baseline_norm = max(float(np.linalg.norm(baseline_values)), 1e-12)
+    stale_norm = max(float(np.linalg.norm(stale_values)), 1e-12)
+    cosine = float(
+        np.dot(baseline_values, stale_values) / (baseline_norm * stale_norm)
+    )
+    return {
+        "router_baseline_stale_kl": kl_divergence(
+            baseline_values[None, :], stale_values[None, :]
+        ),
+        "router_stale_baseline_kl": kl_divergence(
+            stale_values[None, :], baseline_values[None, :]
+        ),
+        "router_baseline_stale_js": float(js),
+        "router_baseline_stale_top1_agreement": top1_agreement(
+            baseline_values[None, :], stale_values[None, :]
+        ),
+        "router_baseline_entropy": baseline_entropy,
+        "router_stale_entropy": stale_entropy,
+        "router_entropy_delta": stale_entropy - baseline_entropy,
+        "router_baseline_max_probability": baseline_max_probability,
+        "router_stale_max_probability": stale_max_probability,
+        "router_max_probability_delta": (
+            stale_max_probability - baseline_max_probability
+        ),
+        "router_baseline_stale_logit_relative_l2": (
+            float(np.linalg.norm(delta)) / baseline_norm
+        ),
+        "router_baseline_stale_logit_cosine": cosine,
+    }
 
 
 def _prepare_target(
