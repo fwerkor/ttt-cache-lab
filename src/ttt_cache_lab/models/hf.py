@@ -766,14 +766,30 @@ class HuggingFaceBackend:
         labels = self.torch.full_like(input_ids, -100)
         labels[:, -answer_ids.shape[1] :] = answer_ids.to(self.device)
         attention_mask = self.torch.ones_like(input_ids, device=self.device)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-            use_cache=False,
+        # Long-context LoRA updates otherwise retain one full activation stack
+        # per decoder layer. That defeats model sharding because the first
+        # shard can reach the device limit before a single update is applied.
+        # Checkpoint only the training forward; inference cache behaviour and
+        # timing remain unchanged.
+        checkpointing = self.parallelism == "model_shard" and hasattr(
+            self.model, "gradient_checkpointing_enable"
         )
-        loss = outputs.loss
-        loss.backward()
+        if checkpointing:
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        try:
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                use_cache=False,
+            )
+            loss = outputs.loss
+            loss.backward()
+        finally:
+            if checkpointing and hasattr(self.model, "gradient_checkpointing_disable"):
+                self.model.gradient_checkpointing_disable()
         pending_updates: list[tuple[Any, Any]] = []
         updated_parameter_count = 0
         squared_norm = self.torch.zeros((), dtype=self.torch.float64, device=self.device)
