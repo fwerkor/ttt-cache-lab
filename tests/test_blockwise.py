@@ -17,10 +17,13 @@ from ttt_cache_lab.experiments.blockwise import (
     _greedy_sparse_objective_masks,
     _joint_sparse_search_point,
     _logit_selection_metrics,
+    _mask_from_order,
     _read_jsonl,
     _read_rows,
     _reference_token_id,
     _SearchPoint,
+    _signed_residual_best_prefix,
+    _signed_residual_greedy_order,
     _sparse_objective_score,
     _swap_refine_sparse_objective_masks,
     _write_jsonl,
@@ -29,6 +32,80 @@ from ttt_cache_lab.experiments.blockwise import (
 )
 from ttt_cache_lab.metrics.tensor import kl_divergence
 from ttt_cache_lab.models.interface import BackendOutput
+
+
+def test_signed_residual_greedy_uses_direction_and_tracks_energy() -> None:
+    vectors = np.asarray(
+        [
+            [
+                [2.0, 0.0],
+                [1.0, 0.0],
+                [-0.5, 0.0],
+            ]
+        ],
+        dtype=np.float64,
+    )
+    available = np.ones((1, 3), dtype=bool)
+
+    order, marginals, initial_energy = _signed_residual_greedy_order(
+        vectors,
+        available,
+    )
+
+    assert order == [(0, 0), (0, 1), (0, 2)]
+    assert initial_energy == 6.25
+    assert marginals[0] == 6.0
+    assert marginals[1] == 0.0
+    mask = _mask_from_order(available.shape, order, 2)
+    assert mask.tolist() == [[True, True, False]]
+    final_residual = np.sum(vectors[~mask], axis=0)
+    assert np.isclose(
+        initial_energy - sum(marginals[:2]),
+        float(np.dot(final_residual, final_residual)),
+    )
+
+
+def test_signed_residual_best_prefix_crosses_temporary_negative_gain() -> None:
+    vectors = np.asarray([[[3.0], [-2.0]]], dtype=np.float64)
+    available = np.ones((1, 2), dtype=bool)
+    _, marginals, initial_energy = _signed_residual_greedy_order(vectors, available)
+
+    assert marginals == [-3.0, 4.0]
+    count, residual_energy = _signed_residual_best_prefix(
+        marginals,
+        initial_energy,
+        cost_fraction=0.0,
+    )
+    assert count == 2
+    assert residual_energy == 0.0
+    expensive_count, expensive_energy = _signed_residual_best_prefix(
+        marginals,
+        initial_energy,
+        cost_fraction=5.0,
+    )
+    assert expensive_count == 0
+    assert expensive_energy == initial_energy
+
+
+def test_signed_residual_greedy_is_layer_separable() -> None:
+    vectors = np.asarray(
+        [
+            [[1.0], [1.0]],
+            [[10.0], [-9.0]],
+        ],
+        dtype=np.float64,
+    )
+    available = np.ones((2, 2), dtype=bool)
+
+    order, _, _ = _signed_residual_greedy_order(
+        vectors,
+        available,
+        max_cells=2,
+    )
+
+    assert order[0] in {(0, 0), (0, 1)}
+    assert order[1] in {(0, 0), (0, 1)}
+    assert order[0] != order[1]
 
 
 def test_fast_zero_probe_kl_matches_reference_implementation() -> None:
@@ -53,7 +130,6 @@ def _evaluation(logits: list[float]) -> _Evaluation:
     return _Evaluation(output=output, logits_kl=0.0, top1_agreement=1.0)
 
 
-
 def test_attention_residual_metrics_track_local_progress() -> None:
     inputs = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
 
@@ -65,9 +141,7 @@ def test_attention_residual_metrics_track_local_progress() -> None:
             parameter_version=1,
             extras={
                 "attention_input_summary": inputs.copy(),
-                "attention_output_summary": np.asarray(
-                    attention_output, dtype=np.float64
-                ),
+                "attention_output_summary": np.asarray(attention_output, dtype=np.float64),
             },
         )
 
@@ -167,9 +241,7 @@ def test_sequence_sparse_objective_reads_probe_metadata() -> None:
 
 
 def test_reference_token_id_accepts_batch_encoding_like_mapping() -> None:
-    backend = SimpleNamespace(
-        tokenizer=lambda text, add_special_tokens=False: UserDict({"input_ids": [17, 18]})
-    )
+    backend = SimpleNamespace(tokenizer=lambda text, add_special_tokens=False: UserDict({"input_ids": [17, 18]}))
     sample = TaskSample(prompt="prompt", answer="answer", metadata={})
 
     assert _reference_token_id(backend, sample) == 17

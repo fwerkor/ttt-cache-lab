@@ -753,6 +753,18 @@ def _explore_condition(
                     sparse_scores["attention_predicted_delta"][layer_index, block_index]
                 ),
             }
+            for signed_name in (
+                "signed_correction_norm",
+                "signed_total_alignment",
+                "signed_total_projection",
+                "signed_first_residual_gain",
+                "signed_cancellation_ratio",
+            ):
+                signed_values = sparse_scores.get(signed_name)
+                if isinstance(signed_values, np.ndarray):
+                    feature_row[signed_name] = float(
+                        signed_values[layer_index, block_index]
+                    )
             condition_feature_rows.append(feature_row)
             feature_rows.append(feature_row)
         sparse_selectors = {
@@ -784,6 +796,164 @@ def _explore_condition(
                         mask_rows.extend(
                             _mask_rows(condition, selector, count / total_eligible, mask)
                         )
+            if (
+                not sparse_policy_only
+                and isinstance(
+                    sparse_scores.get("signed_correction_vectors"), np.ndarray
+                )
+            ):
+                signed_available = (
+                    np.asarray(
+                        sparse_scores.get(
+                            "signed_correction_available",
+                            direct_available,
+                        ),
+                        dtype=bool,
+                    )
+                    & direct_available
+                )
+                signed_started = time.perf_counter()
+                signed_order, signed_marginals, signed_initial_energy = (
+                    _signed_residual_greedy_order(
+                        np.asarray(
+                            sparse_scores["signed_correction_vectors"],
+                            dtype=np.float64,
+                        ),
+                        signed_available,
+                        max_cells=int(np.count_nonzero(signed_available)),
+                    )
+                )
+                signed_decision_latency = time.perf_counter() - signed_started
+                for count in desired_counts:
+                    direct_count = min(count, len(signed_order))
+                    signed_mask = _mask_from_order(
+                        direct_available.shape,
+                        signed_order,
+                        direct_count,
+                    )
+                    signed_evaluation = (
+                        evaluate_sparse(signed_mask) if direct_count > 0 else stale
+                    )
+                    final_energy = signed_initial_energy - float(
+                        np.sum(signed_marginals[:direct_count])
+                    )
+                    records.append(
+                        _record(
+                            condition,
+                            selector="sparse_signed_residual_greedy",
+                            requested_budget_fraction=direct_count / total_eligible,
+                            mask=signed_mask,
+                            eligible=eligible,
+                            evaluation=signed_evaluation,
+                            stale_kl=stale.logits_kl,
+                            selection_metadata={
+                                "selection_objective": (
+                                    "signed_attention_value_residual_reduction"
+                                ),
+                                "signed_residual_initial_energy": (
+                                    signed_initial_energy
+                                ),
+                                "signed_residual_final_energy_fraction": (
+                                    max(final_energy, 0.0)
+                                    / max(signed_initial_energy, 1e-30)
+                                ),
+                                "signed_residual_last_marginal": (
+                                    signed_marginals[direct_count - 1]
+                                    if direct_count > 0
+                                    else 0.0
+                                ),
+                                "router_runtime_forward_count": 0,
+                                "router_runtime_uses_kl": False,
+                                "planner_probe_latency": 0.0,
+                                "planner_probe_flops": 0.0,
+                                "search_probe_count": 0,
+                                "search_reference_token_evaluations": 0,
+                                "joint_budget_selection": False,
+                                "router_decision_latency": signed_decision_latency,
+                            },
+                        )
+                    )
+                    mask_rows.extend(
+                        _mask_rows(
+                            condition,
+                            "sparse_signed_residual_greedy",
+                            direct_count / total_eligible,
+                            signed_mask,
+                        )
+                    )
+
+                auto_thresholds = (
+                    ("000", 0.0),
+                    ("001", 0.01),
+                    ("0025", 0.025),
+                    ("005", 0.05),
+                    ("010", 0.10),
+                )
+                for threshold_name, threshold_fraction in auto_thresholds:
+                    auto_count, final_energy = _signed_residual_best_prefix(
+                        signed_marginals,
+                        signed_initial_energy,
+                        cost_fraction=threshold_fraction,
+                    )
+                    auto_mask = _mask_from_order(
+                        direct_available.shape,
+                        signed_order,
+                        auto_count,
+                    )
+                    auto_evaluation = (
+                        evaluate_sparse(auto_mask) if auto_count > 0 else stale
+                    )
+                    auto_selector = (
+                        f"sparse_signed_residual_auto_{threshold_name}"
+                    )
+                    records.append(
+                        _record(
+                            condition,
+                            selector=auto_selector,
+                            requested_budget_fraction=auto_count / total_eligible,
+                            mask=auto_mask,
+                            eligible=eligible,
+                            evaluation=auto_evaluation,
+                            stale_kl=stale.logits_kl,
+                            selection_metadata={
+                                "selection_objective": (
+                                    "signed_attention_value_dynamic_"
+                                    "residual_reduction"
+                                ),
+                                "signed_residual_cell_cost_fraction": (
+                                    threshold_fraction
+                                ),
+                                "signed_residual_initial_energy": (
+                                    signed_initial_energy
+                                ),
+                                "signed_residual_final_energy_fraction": (
+                                    max(final_energy, 0.0)
+                                    / max(signed_initial_energy, 1e-30)
+                                ),
+                                "signed_residual_last_marginal": (
+                                    signed_marginals[auto_count - 1]
+                                    if auto_count > 0
+                                    else 0.0
+                                ),
+                                "router_runtime_forward_count": 0,
+                                "router_runtime_uses_kl": False,
+                                "planner_probe_latency": 0.0,
+                                "planner_probe_flops": 0.0,
+                                "search_probe_count": 0,
+                                "search_reference_token_evaluations": 0,
+                                "joint_budget_selection": True,
+                                "router_decision_latency": signed_decision_latency,
+                            },
+                        )
+                    )
+                    mask_rows.extend(
+                        _mask_rows(
+                            condition,
+                            auto_selector,
+                            auto_count / total_eligible,
+                            auto_mask,
+                        )
+                    )
             if sparse_ranker is not None and not sparse_policy_only:
                 learned_vector, learned_default_count = score_block_features(
                     sparse_ranker,
@@ -3055,6 +3225,88 @@ def _candidate_pool(
     if int(np.count_nonzero(pool)) < limit:
         pool |= _top_mask(kv_scores + attention_scores, eligible, limit)
     return pool
+
+
+def _signed_residual_greedy_order(
+    correction_vectors: np.ndarray,
+    available: np.ndarray,
+    *,
+    max_cells: int | None = None,
+) -> tuple[list[tuple[int, int]], list[float], float]:
+    """Order cells by their marginal reduction of signed correction residual."""
+    vectors = np.asarray(correction_vectors, dtype=np.float64)
+    mask = np.asarray(available, dtype=bool)
+    if vectors.ndim != 3 or vectors.shape[:2] != mask.shape:
+        raise ValueError(
+            "correction_vectors must have shape [layers, blocks, features] "
+            "matching available"
+        )
+    candidates = [
+        tuple(int(value) for value in index) for index in np.argwhere(mask)
+    ]
+    limit = len(candidates) if max_cells is None else min(max_cells, len(candidates))
+    if limit < 0:
+        raise ValueError("max_cells must be nonnegative")
+    residual = np.sum(np.where(mask[..., None], vectors, 0.0), axis=1)
+    initial_energy = float(np.sum(residual * residual))
+    order: list[tuple[int, int]] = []
+    marginal_gains: list[float] = []
+    remaining = set(candidates)
+    while remaining and len(order) < limit:
+        scored: list[tuple[float, int, int]] = []
+        for layer, block in remaining:
+            vector = vectors[layer, block]
+            marginal = float(
+                2.0 * np.dot(residual[layer], vector) - np.dot(vector, vector)
+            )
+            scored.append((marginal, layer, block))
+        marginal, layer, block = max(
+            scored,
+            key=lambda item: (item[0], -item[1], -item[2]),
+        )
+        order.append((layer, block))
+        marginal_gains.append(marginal)
+        residual[layer] -= vectors[layer, block]
+        remaining.remove((layer, block))
+    return order, marginal_gains, initial_energy
+
+
+def _signed_residual_best_prefix(
+    marginal_gains: list[float],
+    initial_energy: float,
+    *,
+    cost_fraction: float,
+) -> tuple[int, float]:
+    """Choose the residual-greedy prefix minimizing residual plus cell cost."""
+    if initial_energy < 0.0:
+        raise ValueError("initial_energy must be nonnegative")
+    if cost_fraction < 0.0:
+        raise ValueError("cost_fraction must be nonnegative")
+    best_count = 0
+    best_energy = initial_energy
+    best_objective = initial_energy
+    cumulative_gain = 0.0
+    cell_cost = cost_fraction * initial_energy
+    for count, marginal in enumerate(marginal_gains, start=1):
+        cumulative_gain += marginal
+        residual_energy = max(initial_energy - cumulative_gain, 0.0)
+        objective = residual_energy + cell_cost * count
+        if (objective, count) < (best_objective, best_count):
+            best_count = count
+            best_energy = residual_energy
+            best_objective = objective
+    return best_count, best_energy
+
+
+def _mask_from_order(
+    shape: tuple[int, int],
+    order: list[tuple[int, int]],
+    count: int,
+) -> np.ndarray:
+    mask = np.zeros(shape, dtype=bool)
+    for layer, block in order[: max(0, count)]:
+        mask[layer, block] = True
+    return mask
 
 
 def _top_mask(scores: np.ndarray, eligible: np.ndarray, count: int) -> np.ndarray:
