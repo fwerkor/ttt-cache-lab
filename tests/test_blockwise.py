@@ -7,6 +7,7 @@ import numpy as np
 
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.blockwise import (
+    _compact_evaluation_output,
     _Evaluation,
     _greedy_sparse_objective_masks,
     _logit_selection_metrics,
@@ -68,3 +69,35 @@ def test_reference_token_id_accepts_batch_encoding_like_mapping() -> None:
     sample = TaskSample(prompt="prompt", answer="answer", metadata={})
 
     assert _reference_token_id(backend, sample) == 17
+
+
+def test_compact_evaluation_output_drops_device_resident_state() -> None:
+    heavy_cache = object()
+    output = BackendOutput(
+        logits=np.asarray([[1.0, 2.0]], dtype=np.float64),
+        cache_tensor=np.ones((8, 8), dtype=np.float64),
+        hidden_tensor=np.ones((8, 8), dtype=np.float64),
+        parameter_version=3,
+        extras={
+            "past_key_values": heavy_cache,
+            "hidden_states": heavy_cache,
+            "lora_cache": heavy_cache,
+            "attention_summary": np.asarray([[0.25, 0.75]]),
+            "cache_mode": "oracle_layer_token_block_splice",
+            "strategy_flops": 123.0,
+        },
+    )
+
+    compact = _compact_evaluation_output(output)
+
+    assert compact.logits is output.logits
+    assert compact.cache_tensor.size == 0
+    assert compact.hidden_tensor.size == 0
+    assert compact.parameter_version == 3
+    assert compact.extras is not None
+    assert compact.extras["cache_mode"] == "oracle_layer_token_block_splice"
+    assert compact.extras["strategy_flops"] == 123.0
+    assert "attention_summary" in compact.extras
+    assert "past_key_values" not in compact.extras
+    assert "hidden_states" not in compact.extras
+    assert "lora_cache" not in compact.extras

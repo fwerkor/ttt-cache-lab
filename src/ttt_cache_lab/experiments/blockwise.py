@@ -37,6 +37,55 @@ class _Evaluation:
     top1_agreement: float
 
 
+_EVALUATION_EXTRA_KEYS = frozenset(
+    {
+        "attention_summary",
+        "cache_mode",
+        "strategy_flops",
+        "cache_maintenance_latency",
+        "decode_latency",
+        "selected_direct_cells",
+        "available_direct_cells",
+        "selected_direct_fraction",
+        "residual_cache_bytes",
+    }
+)
+
+
+def _compact_evaluation_output(output: BackendOutput) -> BackendOutput:
+    """Drop device-resident state after a blockwise candidate is scored.
+
+    A W4 condition evaluates hundreds of masks. Retaining each candidate's
+    ``past_key_values`` makes accelerator memory grow linearly with the number
+    of masks even though later oracle logic only needs logits and a small set
+    of scalar/attention metadata. Keep exactly that compact state.
+    """
+    extras = output.extras or {}
+    compact_extras = {
+        key: value for key, value in extras.items() if key in _EVALUATION_EXTRA_KEYS
+    }
+    return BackendOutput(
+        logits=output.logits,
+        cache_tensor=np.empty((0,), dtype=np.float32),
+        hidden_tensor=np.empty((0,), dtype=np.float32),
+        parameter_version=output.parameter_version,
+        extras=compact_extras,
+    )
+
+
+def _release_accelerator_cache(backend: ModelBackend) -> None:
+    """Return freed candidate buffers to the accelerator between conditions."""
+    torch = getattr(backend, "torch", None)
+    if torch is None:
+        return
+    for name in ("npu", "cuda"):
+        accelerator = getattr(torch, name, None)
+        empty_cache = getattr(accelerator, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+            return
+
+
 def run_blockwise_exploration(
     config: VersionedExperimentConfig,
     *,
@@ -143,10 +192,14 @@ def run_blockwise_exploration(
                     records.extend(condition_records)
                     frontier_rows.extend(condition_frontier)
                     mask_rows.extend(condition_masks)
-                _write_rows(output_dir / "blockwise_records.csv", records)
-                _write_jsonl(output_dir / "blockwise_records.jsonl", records)
-                _write_rows(output_dir / "block_frontier.csv", frontier_rows)
-                _write_rows(output_dir / "block_masks.csv", mask_rows)
+                    # Checkpoint each block-size condition. A W4 condition is
+                    # expensive enough that waiting for all block sizes can
+                    # discard hours of valid work after a later failure.
+                    _write_rows(output_dir / "blockwise_records.csv", records)
+                    _write_jsonl(output_dir / "blockwise_records.jsonl", records)
+                    _write_rows(output_dir / "block_frontier.csv", frontier_rows)
+                    _write_rows(output_dir / "block_masks.csv", mask_rows)
+                    _release_accelerator_cache(backend)
     finally:
         backend.restore_after_update()
 
@@ -210,10 +263,11 @@ def _explore_condition(
             block_size=block_size,
         )
         value = _Evaluation(
-            output=output,
+            output=_compact_evaluation_output(output),
             logits_kl=kl_divergence(full.logits, output.logits),
             top1_agreement=top1_agreement(full.logits, output.logits),
         )
+        del output
         cache[key] = value
         return value
 
@@ -236,10 +290,11 @@ def _explore_condition(
             block_size=block_size,
         )
         value = _Evaluation(
-            output=output,
+            output=_compact_evaluation_output(output),
             logits_kl=kl_divergence(full.logits, output.logits),
             top1_agreement=top1_agreement(full.logits, output.logits),
         )
+        del output
         sparse_cache[key] = value
         return value
 
