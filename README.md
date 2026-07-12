@@ -49,6 +49,233 @@ Implemented:
 
 Remaining work is paper-scale hardware validation rather than placeholder implementation: Qwen2.5-7B has passed real Ascend smoke, two-NPU feasibility, and four-NPU 8K stress runs, while the full long-context matrix and 14B/32B configurations still need complete measurements on the selected accelerator infrastructure. The aLoRA/LRAgent/ForkKV-style methods are explicitly labeled as paper reimplementations and should still be compared with official upstream implementations where licensing and environments permit.
 
+## 论文实验进度 / Paper experiment progress
+
+> 最后人工核对：**2026-07-12**。本节是论文数据的人工维护清单；不做复杂自动同步，需要更新时直接核对运行产物并修改勾选。
+
+### 状态规则
+
+- `✅`：已验收为论文数据。task probe 通过；配置要求的全部 sample × target × strategy × version 条件齐全；存在 `run_metadata.json` 和汇总文件；没有未解决的 `run_failure.json`。
+- `◐`：正在运行或仅部分完成。备注中必须写清尚缺的 target、strategy、version、sample 或失败条件。
+- `⬜`：尚未验收。Smoke、少样本探索、旧协议结果和被新配置替代的结果都不能勾选。
+- `⚠`：配置本身与冻结协议不一致，必须先修配置再运行。
+- 每个 seed 单元对应 `runs/paper/study/<job-name>/seed-<seed>/`；一项配置只有三个 seed 全部为 `✅` 才算完成。
+
+### 正式数据总览
+
+| 实验组 | 配置数 | Seed 运行数 | 已验收 | 剩余 |
+|---|---:|---:|---:|---:|
+| E1 · 静态适配器基线 | 1 | 3 | 0 | 3 |
+| E2 · 参数版本漂移 | 6 | 18 | 0 | 18 |
+| E3 · 失效图校准 | 24 | 72 | 0 | 72 |
+| E4-V · Planner 验证集调参/冻结 | 4 | 12 | 0 | 12 |
+| E4-T · Planner 最终测试 | 11 | 33 | 0 | 33 |
+| E5 · Delta correction 安全域 | 12 | 36 | 0 | 36 |
+| E6 · 上下文与模型扩展 | 11 | 33 | 0 | 33 |
+| E7 · Planner 消融与失效边界 | 1 | 3 | 0 | 3 |
+| E8 · 容量压力与尾延迟 | 2 | 6 | 0 | 6 |
+| A1 · 跨架构迁移筛查 | 12 | 36 | 0 | 36 |
+| **冻结主矩阵合计** | **84** | **252** | **0** | **252** |
+
+> 这里的“已验收”刻意采用保守口径。已有 Ascend smoke/stress 与 B/W 探索结果用于验证实现和选择研究路线；在最终论文规模产物完成核对前，不计入 252 个正式 seed 运行。
+
+### W/B：机制发现与 Planner 探索线
+
+| ID | 模型 / 任务 | 精确条件 | 数据状态 | 最终验收产物 / 备注 |
+|---|---|---|---|---|
+| W1-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | q/k/v/mlp 的 early/middle/late 位置；window=1/2/4/8/16/32；gap=1/4/16；full/stale/suffix 配对参照 | ◐ | `minimal_safe_windows.csv`；已有探索结果，待按最终产物核对 |
+| W1-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W1-1.5B 相同的配对 window 矩阵 | ◐ | `minimal_safe_windows.csv`；待最终运行/产物核对 |
+| W2-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | 8 个 target/position 条件；gap=1/4/16；逐层 hidden/K/V drift；32 probe tokens | ◐ | `propagation_profiles.csv`；已有探索结果，待正式验收 |
+| W2-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W2-1.5B 相同的逐层传播矩阵 | ◐ | `propagation_profiles.csv`；待最终运行/产物核对 |
+| W3-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=8 | 8 个 target/position 条件；gap=1/4/16；local-boundary 与 stale-suffix 信号；held-out predictor | ◐ | `boundary_predictor_summary.csv`；已有探索结果，待正式验收 |
+| W3-7B | Qwen2.5-7B · multi-hop · 8K · n=8 | 与 W3-1.5B 相同的 boundary predictor 矩阵 | ◐ | `boundary_predictor_summary.csv`；待最终运行/产物核对 |
+| W4/B1 oracle | Qwen2.5-1.5B · multi-hop · 4K · n=16 | target=k/q/mlp/v-middle；gap=4；block=32/64/128；budget=1/14、2/14；random/raw-drift/attention-weighted/layer-prefix/greedy/per-token oracle | ◐ | 当前长任务；需 `block_frontier.csv`、`block_masks.csv`、`blockwise_report.md` |
+| B2 static ranker | W4 calibration artifacts | zero-probe sparse block ranker；跨样本切分；confidence/safety gate | ◐ | 代码已实现；需 held-out KL 收益、误伤率、选中 cells 与 planner latency |
+| B3 one-probe router | W4 calibration artifacts | prompt-anchor probe length=1/2/4；reference/baseline-reference policy | ◐ | 代码已实现；需 probe 成本、总延迟与 held-out quality |
+| B4 committed router | W4 calibration + 独立 guard split | zero-probe direct commit/recompute gate；trust-band calibration | ◐ | 代码已实现；需无 KL runtime 评估与 false-safe 置信上界 |
+| B5 dynamic controller | W4 calibration artifacts | risk-scaled 动态预算；activation threshold；max cells；marginal-gain stopping | ◐ | 代码已实现；需 held-out budget/quality/latency frontier |
+| B6 planner 正式证据 | 晋级后的模型/任务矩阵 | 完整计时 probe + selection + repair；对比 full/stale/periodic/threshold/delta/suffix/oracle | ⬜ | B2-B5 选定可部署策略后冻结精确配置，并加入 `study.yaml` |
+
+### 冻结的 84 项正式配置
+
+下表逐项列出所有正式配置。“内部条件”是每个 seed 内部必须完整覆盖的实验轴；若某个 seed 只完成一部分，必须在该 seed 或备注中写明剩余条件。
+
+<details>
+<summary><strong>E1 · 静态适配器基线</strong> — 1 个配置 / 3 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`baseline_e1_qwen_7b_longbench_v2`](configs/paper/baseline/e1_qwen_7b_longbench_v2.yaml) | Qwen2.5-7B | LongBench-v2 · validation | 16K | n=96; offset=0; target=q/k/v/qv; norm=1e-3; r=8; v=0; cache=full/base-reuse/per-adapter/aLoRA/LRAgent/ForkKV/base+delta; repeat=0w+1t; parallel=single; adapter-seq=0/1/2/3/0/2/1/3 | ⬜ | ⬜ | ⬜ |  |
+
+</details>
+
+<details>
+<summary><strong>E2 · 参数版本漂移</strong> — 6 个配置 / 18 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`drift_e2_qwen_14b_controlled`](configs/paper/drift/e2_qwen_14b_controlled.yaml) | Qwen2.5-14B | common_words · test · hard | 16K | n=48; offset=96; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16/32; cache=full/stale/frozen; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`drift_e2_qwen_14b_longbench_v2`](configs/paper/drift/e2_qwen_14b_longbench_v2.yaml) | Qwen2.5-14B | LongBench-v2 · test | 16K | n=96; offset=96; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`drift_e2_qwen_32b_controlled`](configs/paper/drift/e2_qwen_32b_controlled.yaml) | Qwen2.5-32B | common_words · test · hard | 16K | n=32; offset=96; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16/32; cache=full/stale/frozen; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`drift_e2_qwen_32b_longbench_v2`](configs/paper/drift/e2_qwen_32b_longbench_v2.yaml) | Qwen2.5-32B | LongBench-v2 · test | 16K | n=96; offset=96; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`drift_e2_qwen_7b_controlled`](configs/paper/drift/e2_qwen_7b_controlled.yaml) | Qwen2.5-7B | variable_tracking · test · easy | 16K | n=64; offset=96; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16/32; cache=full/stale/frozen; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`drift_e2_qwen_7b_longbench_v2`](configs/paper/drift/e2_qwen_7b_longbench_v2.yaml) | Qwen2.5-7B | LongBench-v2 · test | 16K | n=96; offset=96; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+
+</details>
+
+<details>
+<summary><strong>E3 · 失效图校准</strong> — 24 个配置 / 72 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`calibration_e3_qwen_14b_aggregation`](configs/paper/calibration/e3_qwen_14b_aggregation.yaml) | Qwen2.5-14B | aggregation · calibration · hard | 16K | n=48; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_14b_multi_hop_tracing`](configs/paper/calibration/e3_qwen_14b_multi_hop_tracing.yaml) | Qwen2.5-14B | multi_hop_tracing · calibration · medium | 16K | n=48; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_14b_multi_needle`](configs/paper/calibration/e3_qwen_14b_multi_needle.yaml) | Qwen2.5-14B | multi_needle · calibration · hard | 16K | n=48; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_14b_variable_tracking`](configs/paper/calibration/e3_qwen_14b_variable_tracking.yaml) | Qwen2.5-14B | variable_tracking · calibration · hard | 16K | n=48; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_14b_common_words`](configs/paper/calibration/e3_qwen_14b_common_words.yaml) | Qwen2.5-14B | common_words · calibration · hard | 16K | n=48; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_14b_needle_absent`](configs/paper/calibration/e3_qwen_14b_needle_absent.yaml) | Qwen2.5-14B | needle_absent · calibration · hard | 16K | n=48; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_1_5b_aggregation`](configs/paper/calibration/e3_qwen_1_5b_aggregation.yaml) | Qwen2.5-1.5B | aggregation · calibration · easy | 4K | n=96; offset=0; target=q/k_early/k_middle/k_late/v_early/v_middle/v_late/qv/o/mlp_early/mlp_middle/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_1_5b_common_words`](configs/paper/calibration/e3_qwen_1_5b_common_words.yaml) | Qwen2.5-1.5B | common_words · calibration · easy | 4K | n=96; offset=0; target=q/k_early/k_middle/k_late/v_early/v_middle/v_late/qv/o/mlp_early/mlp_middle/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_1_5b_multi_hop_tracing`](configs/paper/calibration/e3_qwen_1_5b_multi_hop_tracing.yaml) | Qwen2.5-1.5B | multi_hop_tracing · calibration · easy | 4K | n=96; offset=0; target=q/k_early/k_middle/k_late/v_early/v_middle/v_late/qv/o/mlp_early/mlp_middle/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_1_5b_multi_needle`](configs/paper/calibration/e3_qwen_1_5b_multi_needle.yaml) | Qwen2.5-1.5B | multi_needle · calibration · medium | 4K | n=96; offset=0; target=q/k_early/k_middle/k_late/v_early/v_middle/v_late/qv/o/mlp_early/mlp_middle/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_1_5b_needle_absent`](configs/paper/calibration/e3_qwen_1_5b_needle_absent.yaml) | Qwen2.5-1.5B | needle_absent · calibration · hard | 4K | n=96; offset=0; target=q/k_early/k_middle/k_late/v_early/v_middle/v_late/qv/o/mlp_early/mlp_middle/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_1_5b_variable_tracking`](configs/paper/calibration/e3_qwen_1_5b_variable_tracking.yaml) | Qwen2.5-1.5B | variable_tracking · calibration · easy | 4K | n=96; offset=0; target=q/k_early/k_middle/k_late/v_early/v_middle/v_late/qv/o/mlp_early/mlp_middle/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_32b_aggregation`](configs/paper/calibration/e3_qwen_32b_aggregation.yaml) | Qwen2.5-32B | aggregation · calibration · hard | 16K | n=32; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_32b_multi_hop_tracing`](configs/paper/calibration/e3_qwen_32b_multi_hop_tracing.yaml) | Qwen2.5-32B | multi_hop_tracing · calibration · hard | 16K | n=32; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_32b_multi_needle`](configs/paper/calibration/e3_qwen_32b_multi_needle.yaml) | Qwen2.5-32B | multi_needle · calibration · hard | 16K | n=32; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_32b_variable_tracking`](configs/paper/calibration/e3_qwen_32b_variable_tracking.yaml) | Qwen2.5-32B | variable_tracking · calibration · hard | 16K | n=32; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_32b_common_words`](configs/paper/calibration/e3_qwen_32b_common_words.yaml) | Qwen2.5-32B | common_words · calibration · hard | 16K | n=32; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_32b_needle_absent`](configs/paper/calibration/e3_qwen_32b_needle_absent.yaml) | Qwen2.5-32B | needle_absent · calibration · hard | 16K | n=32; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_7b_aggregation`](configs/paper/calibration/e3_qwen_7b_aggregation.yaml) | Qwen2.5-7B | aggregation · calibration · medium | 8K | n=64; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_7b_multi_hop_tracing`](configs/paper/calibration/e3_qwen_7b_multi_hop_tracing.yaml) | Qwen2.5-7B | multi_hop_tracing · calibration · medium | 8K | n=64; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_7b_multi_needle`](configs/paper/calibration/e3_qwen_7b_multi_needle.yaml) | Qwen2.5-7B | multi_needle · calibration · hard | 8K | n=64; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_7b_variable_tracking`](configs/paper/calibration/e3_qwen_7b_variable_tracking.yaml) | Qwen2.5-7B | variable_tracking · calibration · easy | 8K | n=64; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_7b_common_words`](configs/paper/calibration/e3_qwen_7b_common_words.yaml) | Qwen2.5-7B | common_words · calibration · hard | 8K | n=64; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+| [`calibration_e3_qwen_7b_needle_absent`](configs/paper/calibration/e3_qwen_7b_needle_absent.yaml) | Qwen2.5-7B | needle_absent · calibration · hard | 8K | n=64; offset=0; target=q/k/v/qv/mlp_early/mlp_late/norm/output_head; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/frozen/periodic/threshold/delta/suffix/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ |  |
+
+</details>
+
+<details>
+<summary><strong>E4-V · Planner 验证集调参/冻结</strong> — 4 个配置 / 12 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`validation_e4_mistral_7b_longbench_v2_validation`](configs/paper/validation/e4_mistral_7b_longbench_v2_validation.yaml) | Mistral-7B-v0.3 | LongBench-v2 · validation | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`validation_e4_qwen_14b_longbench_v2_validation`](configs/paper/validation/e4_qwen_14b_longbench_v2_validation.yaml) | Qwen2.5-14B | LongBench-v2 · validation | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`validation_e4_qwen_32b_longbench_v2_validation`](configs/paper/validation/e4_qwen_32b_longbench_v2_validation.yaml) | Qwen2.5-32B | LongBench-v2 · validation | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`validation_e4_qwen_7b_longbench_v2_validation`](configs/paper/validation/e4_qwen_7b_longbench_v2_validation.yaml) | Qwen2.5-7B | LongBench-v2 · validation | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+
+</details>
+
+<details>
+<summary><strong>E4-T · Planner 最终测试</strong> — 11 个配置 / 33 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`test_e4_mistral_7b_longbench_v2_test`](configs/paper/test/e4_mistral_7b_longbench_v2_test.yaml) | Mistral-7B-v0.3 | LongBench-v2 · test | 16K | n=96; offset=64; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_14b_longbench_v2_test`](configs/paper/test/e4_qwen_14b_longbench_v2_test.yaml) | Qwen2.5-14B | LongBench-v2 · test | 16K | n=96; offset=64; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_32b_longbench_v2_test`](configs/paper/test/e4_qwen_32b_longbench_v2_test.yaml) | Qwen2.5-32B | LongBench-v2 · test | 16K | n=96; offset=64; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_7b_2wikimqa`](configs/paper/test/e4_qwen_7b_2wikimqa.yaml) | Qwen2.5-7B | LongBench/2wikimqa · test | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_7b_gov_report`](configs/paper/test/e4_qwen_7b_gov_report.yaml) | Qwen2.5-7B | LongBench/gov_report · test | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_7b_hotpotqa`](configs/paper/test/e4_qwen_7b_hotpotqa.yaml) | Qwen2.5-7B | LongBench/hotpotqa · test | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_7b_longbench_v2_test`](configs/paper/test/e4_qwen_7b_longbench_v2_test.yaml) | Qwen2.5-7B | LongBench-v2 · test | 16K | n=256; offset=96; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_7b_passage_count`](configs/paper/test/e4_qwen_7b_passage_count.yaml) | Qwen2.5-7B | LongBench/passage_count · test | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_7b_passage_retrieval_en`](configs/paper/test/e4_qwen_7b_passage_retrieval_en.yaml) | Qwen2.5-7B | LongBench/passage_retrieval_en · test | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_coder_7b_lcc`](configs/paper/test/e4_qwen_coder_7b_lcc.yaml) | Qwen2.5-Coder-7B | LongBench/lcc · test | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`test_e4_qwen_coder_7b_repobench_p`](configs/paper/test/e4_qwen_coder_7b_repobench_p.yaml) | Qwen2.5-Coder-7B | LongBench/repobench-p · test | 16K | n=96; offset=0; target=q/k/v/qv/mlp_late; norm=1e-3; r=8; v=0/1/2/4/8; cache=no-adapt/full/stale/periodic/threshold/delta/suffix/planner/oracle; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+
+</details>
+
+<details>
+<summary><strong>E5 · Delta correction 安全域</strong> — 12 个配置 / 36 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`delta_e5_qwen_32b_r16_n1e3`](configs/paper/delta/e5_qwen_32b_r16_n1e3.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 16K | n=24; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-3; r=16; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_32b_r16_n1e4`](configs/paper/delta/e5_qwen_32b_r16_n1e4.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 16K | n=24; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-4; r=16; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_32b_r4_n1e3`](configs/paper/delta/e5_qwen_32b_r4_n1e3.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 16K | n=24; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-3; r=4; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_32b_r4_n1e4`](configs/paper/delta/e5_qwen_32b_r4_n1e4.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 16K | n=24; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-4; r=4; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_32b_r8_n1e3`](configs/paper/delta/e5_qwen_32b_r8_n1e3.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 16K | n=24; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_32b_r8_n1e4`](configs/paper/delta/e5_qwen_32b_r8_n1e4.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 16K | n=24; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-4; r=8; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_7b_r16_n1e3`](configs/paper/delta/e5_qwen_7b_r16_n1e3.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 16K | n=32; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-3; r=16; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_7b_r16_n1e4`](configs/paper/delta/e5_qwen_7b_r16_n1e4.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 16K | n=32; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-4; r=16; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_7b_r4_n1e3`](configs/paper/delta/e5_qwen_7b_r4_n1e3.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 16K | n=32; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-3; r=4; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_7b_r4_n1e4`](configs/paper/delta/e5_qwen_7b_r4_n1e4.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 16K | n=32; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-4; r=4; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_7b_r8_n1e3`](configs/paper/delta/e5_qwen_7b_r8_n1e3.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 16K | n=32; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`delta_e5_qwen_7b_r8_n1e4`](configs/paper/delta/e5_qwen_7b_r8_n1e4.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 16K | n=32; offset=160; target=k_early/k_middle/k_late/v_early/v_middle/v_late/qv; norm=1e-4; r=8; v=0/1/2/4/8/16; cache=full/stale/base+delta/delta/periodic/planner; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+
+</details>
+
+<details>
+<summary><strong>E6 · 上下文与模型扩展</strong> — 11 个配置 / 33 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`scaling_e6_qwen_14b_16384`](configs/paper/scaling/e6_qwen_14b_16384.yaml) | Qwen2.5-14B | multi_hop_tracing · test · hard | 16K | n=32; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_14b_32768`](configs/paper/scaling/e6_qwen_14b_32768.yaml) | Qwen2.5-14B | multi_hop_tracing · test · hard | 32K | n=16; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_14b_8192`](configs/paper/scaling/e6_qwen_14b_8192.yaml) | Qwen2.5-14B | multi_hop_tracing · test · hard | 8K | n=32; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_32b_16384`](configs/paper/scaling/e6_qwen_32b_16384.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 16K | n=32; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_32b_32768`](configs/paper/scaling/e6_qwen_32b_32768.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 32K | n=16; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_32b_8192`](configs/paper/scaling/e6_qwen_32b_8192.yaml) | Qwen2.5-32B | multi_hop_tracing · test · hard | 8K | n=32; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_7b_16384`](configs/paper/scaling/e6_qwen_7b_16384.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 16K | n=32; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_7b_32768`](configs/paper/scaling/e6_qwen_7b_32768.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 32K | n=16; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_7b_4096`](configs/paper/scaling/e6_qwen_7b_4096.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 4K | n=32; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_7b_65536`](configs/paper/scaling/e6_qwen_7b_65536.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 64K | n=16; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`scaling_e6_qwen_7b_8192`](configs/paper/scaling/e6_qwen_7b_8192.yaml) | Qwen2.5-7B | multi_hop_tracing · test · medium | 8K | n=32; offset=128; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8; cache=full/stale/periodic/threshold/planner; repeat=3w+10t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+
+</details>
+
+<details>
+<summary><strong>E7 · Planner 消融与失效边界</strong> — 1 个配置 / 3 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`ablation_e7_qwen_7b_longbench_v2`](configs/paper/ablation/e7_qwen_7b_longbench_v2.yaml) | Qwen2.5-7B | LongBench-v2 · test | 16K | n=96; offset=352; target=q/k/v/qv/mlp_late/norm; norm=1e-3; r=8; v=0/1/2/4/8/16; cache=no-adapt/full/stale/planner/-version/-target/-norm/-delta/-partial/-periodic; repeat=0w+1t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+
+</details>
+
+<details>
+<summary><strong>E8 · 容量压力与尾延迟</strong> — 2 个配置 / 6 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`workload_e8_qwen_32b`](configs/paper/workload/e8_qwen_32b.yaml) | Qwen2.5-32B | variable_tracking · test · hard | 16K | n=64; offset=256; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8/16/32; cache=full/stale/periodic/threshold/delta/planner; repeat=1w+3t; parallel=model_shard | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+| [`workload_e8_qwen_7b`](configs/paper/workload/e8_qwen_7b.yaml) | Qwen2.5-7B | variable_tracking · test · medium | 16K | n=128; offset=256; target=q/k/v/qv; norm=1e-3; r=8; v=0/1/2/4/8/16/32; cache=full/stale/periodic/threshold/delta/planner; repeat=1w+3t; parallel=single | ⬜ | ⬜ | ⬜ | 依赖 E3 failure map |
+
+</details>
+
+<details>
+<summary><strong>A1 · 跨架构迁移筛查</strong> — 12 个配置 / 36 个 seed 运行</summary>
+
+| 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
+|---|---|---|---:|---|:---:|:---:|:---:|---|
+| [`architecture_a1_gemma_3_4b_multi_hop_tracing`](configs/paper/architecture/a1_gemma_3_4b_multi_hop_tracing.yaml) | Gemma-3-4B | multi_hop_tracing · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_gemma_3_4b_multi_needle`](configs/paper/architecture/a1_gemma_3_4b_multi_needle.yaml) | Gemma-3-4B | multi_needle · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_gemma_3_4b_variable_tracking`](configs/paper/architecture/a1_gemma_3_4b_variable_tracking.yaml) | Gemma-3-4B | variable_tracking · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_llama_3_2_3b_multi_hop_tracing`](configs/paper/architecture/a1_llama_3_2_3b_multi_hop_tracing.yaml) | Llama-3.2-3B | multi_hop_tracing · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_llama_3_2_3b_multi_needle`](configs/paper/architecture/a1_llama_3_2_3b_multi_needle.yaml) | Llama-3.2-3B | multi_needle · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_llama_3_2_3b_variable_tracking`](configs/paper/architecture/a1_llama_3_2_3b_variable_tracking.yaml) | Llama-3.2-3B | variable_tracking · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_mistral_7b_v0_1_multi_hop_tracing`](configs/paper/architecture/a1_mistral_7b_v0_1_multi_hop_tracing.yaml) | Mistral-7B-v0.1 | multi_hop_tracing · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_mistral_7b_v0_1_multi_needle`](configs/paper/architecture/a1_mistral_7b_v0_1_multi_needle.yaml) | Mistral-7B-v0.1 | multi_needle · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_mistral_7b_v0_1_variable_tracking`](configs/paper/architecture/a1_mistral_7b_v0_1_variable_tracking.yaml) | Mistral-7B-v0.1 | variable_tracking · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_early/k_middle/v_middle/mlp_middle/norm_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_qwen1_5_moe_a2_7b_multi_hop_tracing`](configs/paper/architecture/a1_qwen1_5_moe_a2_7b_multi_hop_tracing.yaml) | Qwen1.5-MoE-A2.7B | multi_hop_tracing · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_middle/v_middle/moe.router_middle/moe_shared_expert_middle/moe.routed_experts_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_qwen1_5_moe_a2_7b_multi_needle`](configs/paper/architecture/a1_qwen1_5_moe_a2_7b_multi_needle.yaml) | Qwen1.5-MoE-A2.7B | multi_needle · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_middle/v_middle/moe.router_middle/moe_shared_expert_middle/moe.routed_experts_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+| [`architecture_a1_qwen1_5_moe_a2_7b_variable_tracking`](configs/paper/architecture/a1_qwen1_5_moe_a2_7b_variable_tracking.yaml) | Qwen1.5-MoE-A2.7B | variable_tracking · calibration · easy | 4K | n=8; offset=0; target=q_middle/k_middle/v_middle/moe.router_middle/moe_shared_expert_middle/moe.routed_experts_middle; norm=1e-3; r=8; v=1/4/16; cache=full/stale/windowed_recompute_4/suffix; repeat=0w+1t; parallel=single | ⚠ | ⚠ | ⚠ | ⚠ 当前配置 n=8，低于冻结协议要求的 n≥48，且缺 task_viability；正式运行前必须修复 |
+
+</details>
+
+### 已完成但不计入正式矩阵的验证
+
+| 验证项 | 状态 | 不勾正式配置的原因 |
+|---|:---:|---|
+| Qwen2.5-7B Ascend 真实 smoke | ✅ | 仅验证实现与硬件路径 |
+| Qwen2.5-7B 双 NPU 可行性 | ✅ | 仅可行性，不是冻结论文条件 |
+| Qwen2.5-7B 四 NPU 8K QV / late-MLP stress | ✅ | 仅部分 stress 条件，不等于完整 E2/E6 seed 矩阵 |
+| BF16 delta quantization investigation | ✅ | 已完成探索性负结果/诊断结果；正式 E5 网格仍单独计算 |
+
+更新本节时只能修改有产物证据的状态。seed 若部分完成，使用 `◐`，并精确写出剩余 target、strategy、version gap、sample 或失败条件。
+
+
 ## Repository layout
 
 ```text
@@ -177,9 +404,9 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 
 ## Task viability preflight
 
-Every non-toy E1-E8, A1, and W-series configuration enables a baseline task probe before the expensive experiment starts. The probe reuses the already-loaded model and writes artifacts to `runs/<experiment>/task_probe/`. Quality-facing E1/E2/E4/E6/E7/E8/A1 runs fail fast at either a floor or ceiling. Diagnostic E3/E5/W runs always reject floor effects but may allow a perfect baseline because their primary endpoints are KL, propagation, and repair fidelity.
+Every non-toy E1-E8 configuration and the W1/W2/W4 discovery configurations enable a baseline task probe before the expensive experiment starts. The probe reuses the already-loaded model and writes artifacts to `runs/<experiment>/task_probe/`. Quality-facing E1/E2/E4/E6/E7/E8 runs fail fast at either a floor or ceiling. Diagnostic E3/E5/W runs always reject floor effects but may allow a perfect baseline because their primary endpoints are KL, propagation, and repair fidelity. The A1 and W3 gaps are explicitly flagged in the progress table and must be fixed before those runs are accepted as paper evidence.
 
-Synthetic tasks use task-appropriate scorers rather than universal exact match. Passkey and key-value difficulty now changes the retrieval structure, including one-, two-, and three-hop version routing. The checked-in non-toy matrix also enforces sample-count floors: real benchmark results use at least 96 samples, controlled quality experiments generally use 32-96, and 32K/64K cost studies use at least 16.
+Synthetic tasks use task-appropriate scorers rather than universal exact match. Passkey and key-value difficulty now changes the retrieval structure, including one-, two-, and three-hop version routing. The checked-in E1-E8 matrix enforces sample-count floors: real benchmark results use at least 96 samples, controlled quality experiments generally use 32-96, and 32K/64K cost studies use at least 16. The current A1 screening configs remain below their frozen `n >= 48` requirement and are therefore marked `⚠` rather than runnable paper conditions.
 
 A standalone calibration can be run with:
 
