@@ -263,7 +263,9 @@ def _mean_bool(rows: list[dict[str, str]], field: str) -> float:
 
 def _number(row: dict[str, str], field: str) -> float:
     raw = row.get(field)
-    return float(raw) if raw not in {None, ""} else 0.0
+    if raw is None or raw == "":
+        return 0.0
+    return float(raw)
 
 
 def _boolean(row: dict[str, str], field: str) -> bool:

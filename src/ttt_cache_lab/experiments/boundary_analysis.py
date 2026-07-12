@@ -674,12 +674,14 @@ def _number(row: dict[str, str] | None, field: str) -> float:
     if row is None:
         return 0.0
     raw = row.get(field)
-    return float(raw) if raw not in {None, ""} else 0.0
+    if raw is None or raw == "":
+        return 0.0
+    return float(raw)
 
 
 def _numeric(row: dict[str, str | int | float | bool], field: str) -> float:
     raw = row.get(field)
-    if raw in {None, ""}:
+    if raw is None or raw == "":
         return 0.0
     if isinstance(raw, bool):
         return float(raw)

@@ -1206,7 +1206,7 @@ def _explore_condition(
                         selected_max_probability = gate_max_probability
                         planner_probe_latency = 0.0
                         planner_probe_flops = 0.0
-                        evaluated_masks: set[bytes] = set()
+                        router_evaluated_masks: set[bytes] = set()
                         probe_metadata: list[dict[str, Any]] = []
                         for candidate_index in probe_indices:
                             candidate = raw_candidates[candidate_index]
@@ -1238,9 +1238,9 @@ def _explore_condition(
                             mask_key = np.ascontiguousarray(
                                 candidate_mask, dtype=np.uint8
                             ).tobytes()
-                            if mask_key in evaluated_masks:
+                            if mask_key in router_evaluated_masks:
                                 continue
-                            evaluated_masks.add(mask_key)
+                            router_evaluated_masks.add(mask_key)
                             candidate_evaluation = evaluate_sparse(candidate_mask)
                             (
                                 candidate_nll,
@@ -1321,9 +1321,9 @@ def _explore_condition(
                                         if baseline_reference_variant
                                         else "distilled_adaptive_reference_router"
                                     ),
-                                    "search_probe_count": len(evaluated_masks),
+                                    "search_probe_count": len(router_evaluated_masks),
                                     "search_reference_token_evaluations": len(
-                                        evaluated_masks
+                                        router_evaluated_masks
                                     ),
                                     "joint_budget_selection": True,
                                     "selected_stale_action": not accepted,
