@@ -1791,7 +1791,7 @@ def _committed_router_metrics(
         "material_harmful": int(np.sum((gains < -1e-15) & material)),
         "material_beneficial": int(np.sum((gains > 1e-15) & material)),
         "material_weighted_recovery": weighted(material) if np.any(material) else 0.0,
-        "worst_harm": float(min(np.min(gains), 0.0)),
+        "worst_harm": min(float(np.min(gains)), 0.0),
     }
 
 def _reference_router_targets(

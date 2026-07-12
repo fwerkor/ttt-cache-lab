@@ -255,4 +255,4 @@ def _fit_logistic(
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
     clipped = np.clip(values, -40.0, 40.0)
-    return 1.0 / (1.0 + np.exp(-clipped))
+    return np.asarray(1.0 / (1.0 + np.exp(-clipped)), dtype=np.float64)

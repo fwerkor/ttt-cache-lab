@@ -62,8 +62,9 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 mypy_path = "src"
+disable_error_code = ["type-arg"]
 
 
 [[tool.mypy.overrides]]
-module = ["torch", "torch.*", "transformers", "transformers.*", "tokenizers", "tokenizers.*", "datasets"]
+module = ["torch", "torch.*", "torch_npu", "torch_npu.*", "transformers", "transformers.*", "tokenizers", "tokenizers.*", "datasets"]
 ignore_missing_imports = true

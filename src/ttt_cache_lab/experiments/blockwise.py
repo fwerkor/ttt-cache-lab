@@ -2341,6 +2341,8 @@ def _explore_condition(
             candidate_schedule = "all"
             candidate_counts: list[int] = []
             if supervised_gate:
+                assert dynamic_probe_model is not None
+                assert target_probe_model is not None
                 activated_risk, budget_cap, _ = dynamic_budget_parameters(
                     risk=continuous_risk,
                     available_cells=direct_total,
@@ -4092,7 +4094,10 @@ def _zero_probe_failure_metrics(
     def probabilities(values: np.ndarray) -> np.ndarray:
         shifted = values - float(np.max(values))
         exp_values = np.exp(shifted)
-        return exp_values / max(float(np.sum(exp_values)), 1e-300)
+        return np.asarray(
+            exp_values / max(float(np.sum(exp_values)), 1e-300),
+            dtype=np.float64,
+        )
 
     baseline_probabilities = probabilities(baseline_values)
     stale_probabilities = probabilities(stale_values)

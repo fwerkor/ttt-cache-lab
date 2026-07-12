@@ -144,10 +144,18 @@ def _analyze_e2(
         ),
     )
     for row in summary:
-        available = float(row.get("positive_adaptation_gain_available_mean", 0.0))
-        unconditional = float(row.get("positive_adaptation_gain_retention_mean", 0.0))
-        reference = float(row.get("positive_adaptation_gain_reference_mean", 0.0))
-        retained = float(row.get("positive_adaptation_gain_retained_mean", 0.0))
+        available = float(
+            str(row.get("positive_adaptation_gain_available_mean", 0.0))
+        )
+        unconditional = float(
+            str(row.get("positive_adaptation_gain_retention_mean", 0.0))
+        )
+        reference = float(
+            str(row.get("positive_adaptation_gain_reference_mean", 0.0))
+        )
+        retained = float(
+            str(row.get("positive_adaptation_gain_retained_mean", 0.0))
+        )
         row["positive_adaptation_gain_retention_conditional_mean"] = (
             unconditional / available if available > 0.0 else 0.0
         )

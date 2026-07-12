@@ -996,7 +996,7 @@ class HuggingFaceBackend:
         head_summary = self._summarize_attention_heads(attentions)
         if head_summary is None:
             return None
-        return np.mean(head_summary, axis=1)
+        return np.asarray(np.mean(head_summary, axis=1), dtype=np.float64)
 
     def _summarize_attention_heads(self, attentions: Any) -> np.ndarray | None:
         if not isinstance(attentions, tuple | list) or not attentions:
@@ -1009,7 +1009,7 @@ class HuggingFaceBackend:
             layers.append(last_query.cpu().numpy())
         if not layers or len({layer.shape for layer in layers}) != 1:
             return None
-        return np.stack(layers, axis=0)
+        return np.asarray(np.stack(layers, axis=0), dtype=np.float64)
 
     def _attention_metadata(self) -> dict[str, np.ndarray]:
         metadata: dict[str, np.ndarray] = {}
@@ -1081,7 +1081,7 @@ class HuggingFaceBackend:
         ordered = [captured[index] for index in range(self.num_layers)]
         if len({value.shape for value in ordered}) != 1:
             return None
-        return np.stack(ordered, axis=0)
+        return np.asarray(np.stack(ordered, axis=0), dtype=np.float64)
 
     def _set_lora_enabled(self, enabled: bool) -> None:
         for module in self._lora_modules:
@@ -2759,7 +2759,7 @@ class HuggingFaceBackend:
             key_summary = key.detach().float().mean(dim=tuple(range(key.ndim - 1))).cpu().numpy()
             value_summary = value.detach().float().mean(dim=tuple(range(value.ndim - 1))).cpu().numpy()
             rows.append(np.stack([key_summary, value_summary], axis=0))
-        return np.stack(rows, axis=0).astype(np.float64)
+        return np.asarray(np.stack(rows, axis=0), dtype=np.float64)
 
     def _summarize_hidden(self, hidden_states: Any) -> np.ndarray:
         if not hidden_states:
@@ -2770,7 +2770,7 @@ class HuggingFaceBackend:
             rows.append(summary)
         if not rows:
             return np.zeros((1, 1), dtype=np.float64)
-        return np.stack(rows, axis=0).astype(np.float64)
+        return np.asarray(np.stack(rows, axis=0), dtype=np.float64)
 
     def _to_numpy(self, tensor: Any) -> np.ndarray:
         result = tensor.detach().float().cpu().numpy().astype(np.float64)

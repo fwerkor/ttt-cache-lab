@@ -85,11 +85,16 @@ def test_consensus_probe_requires_every_reference_horizon_to_improve() -> None:
 def test_dynamic_controller_dead_zone_avoids_probe_work() -> None:
     policy = DynamicBudgetPolicy(max_cells=8, activation_threshold=0.65)
     evaluated: list[int] = []
+
+    def evaluate(count: int) -> float:
+        evaluated.append(count)
+        return 0.0
+
     decision = run_dynamic_budget_controller(
         stale_score=1.0,
         risk=_risk(0.64),
         available_cells=8,
-        evaluate_count=lambda count: evaluated.append(count) or 0.0,
+        evaluate_count=evaluate,
         policy=policy,
     )
 
@@ -102,11 +107,16 @@ def test_dynamic_controller_dead_zone_avoids_probe_work() -> None:
 def test_dynamic_controller_maps_low_continuous_risk_to_zero_budget() -> None:
     policy = DynamicBudgetPolicy(max_cells=8)
     evaluated: list[int] = []
+
+    def evaluate(count: int) -> float:
+        evaluated.append(count)
+        return 0.0
+
     decision = run_dynamic_budget_controller(
         stale_score=1.0,
         risk=_risk(0.01),
         available_cells=8,
-        evaluate_count=lambda count: evaluated.append(count) or 0.0,
+        evaluate_count=evaluate,
         policy=policy,
     )
 

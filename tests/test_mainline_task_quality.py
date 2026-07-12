@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -17,9 +18,9 @@ _RECOMMENDED_SYNTHETIC_SCORERS = {
 }
 
 
-def _mainline_configs() -> list[tuple[Path, dict[str, object]]]:
+def _mainline_configs() -> list[tuple[Path, dict[str, Any]]]:
     root = Path(__file__).parents[1] / "configs"
-    configs: list[tuple[Path, dict[str, object]]] = []
+    configs: list[tuple[Path, dict[str, Any]]] = []
     for path in sorted(root.rglob("*.yaml")):
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         config = payload.get("base", payload)

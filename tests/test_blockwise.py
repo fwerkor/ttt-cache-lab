@@ -56,7 +56,7 @@ def test_signed_residual_greedy_uses_direction_and_tracks_energy() -> None:
     assert initial_energy == 6.25
     assert marginals[0] == 6.0
     assert marginals[1] == 0.0
-    mask = _mask_from_order(available.shape, order, 2)
+    mask = _mask_from_order((available.shape[0], available.shape[1]), order, 2)
     assert mask.tolist() == [[True, True, False]]
     final_residual = np.sum(vectors[~mask], axis=0)
     assert np.isclose(

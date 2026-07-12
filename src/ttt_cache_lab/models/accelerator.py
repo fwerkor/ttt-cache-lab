@@ -6,7 +6,7 @@ from typing import Any
 
 def import_torch_npu_if_available() -> bool:
     try:
-        import torch_npu  # type: ignore[import-not-found]  # noqa: F401
+        import torch_npu  # noqa: F401
     except ImportError:
         return False
     return True
