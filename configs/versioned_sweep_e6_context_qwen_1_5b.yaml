@@ -14,9 +14,18 @@ base:
     trust_remote_code: true
   data:
     task: variable_tracking
-    num_samples: 2
+    num_samples: 32
     context_length: 4096
     answer_length: 4
+    scorer: contains
+    synthetic_difficulty: easy
+  task_viability:
+    enabled: true
+    probe_samples: 32
+    min_mean_score: 0.05
+    max_mean_score: 0.95
+    min_nonzero_fraction: 0.10
+    max_perfect_fraction: 0.90
   updates:
     targets: [lora.q, lora.k, lora.v, lora.qv]
     step_count: 1

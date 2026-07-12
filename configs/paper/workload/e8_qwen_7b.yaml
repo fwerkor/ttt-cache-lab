@@ -20,11 +20,19 @@ data:
   evaluation_partition: test
   selection_seed: 909
   sample_offset: 256
-  num_samples: 64
+  num_samples: 128
   context_length: 16384
   answer_length: 4
   scorer: contains
   max_generation_tokens: 32
+  synthetic_difficulty: medium
+task_viability:
+  enabled: true
+  probe_samples: 32
+  min_mean_score: 0.05
+  max_mean_score: 0.95
+  min_nonzero_fraction: 0.10
+  max_perfect_fraction: 0.90
 updates:
   targets:
   - lora.q

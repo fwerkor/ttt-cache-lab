@@ -150,6 +150,14 @@ E7. Ablations and failure-boundary experiments
   -> explains which components matter and when reuse should be rejected
 ```
 
+## 6.5 Task-validity and statistical-power gate
+
+No non-toy mainline experiment may use task scores until a baseline task probe confirms that the configured model/task pair is usable. The probe must run before E1-E8, A1, W1, W2, and W4 and must preserve its generated answers and scores for audit. Quality-facing E1/E2/E4/E6/E7/E8/A1 runs use default acceptance bounds of mean score in `[0.05, 0.95]`, at least 10% nonzero scores, and at most 90% perfect scores; model-specific calibration should target a stronger 20%-80% interval whenever possible. Diagnostic E3/E5/W runs still reject floor effects but may allow a perfect baseline because their primary endpoints are KL, propagation, or repair fidelity.
+
+Synthetic tasks must use semantics-aware scorers: numeric matching for passkeys, containment or token-level scoring for retrieval, prefix matching for fixed labels, and set F1 for unordered answers. Difficulty parameters must change the actual reasoning or retrieval structure. A label such as `hard` without a structural effect is invalid.
+
+Task-quality conclusions require adequate sample sizes. Real benchmark main results use at least 96 samples, controlled task experiments normally use 32-96, and very long 32K/64K cost studies use at least 16. Small exploratory runs may still be used for implementation debugging, but their task scores must not enter paper conclusions.
+
 ## 7. Experiment E1: static-adapter baseline alignment
 
 ### Purpose
@@ -223,6 +231,15 @@ For each sample:
 5. Compare stale outputs to full recompute outputs.
 ```
 
+### Two update-scale tracks
+
+E2 separates two questions that require different parameter-update magnitudes:
+
+- micro-drift track (`update_norm` around `1e-5`): measure KL, hidden-state, and cache sensitivity under small version changes; task adaptation gain may be unavailable and must be marked as such;
+- task-ability track (`update_norm` around `1e-3`, calibrated per model): require fresh-cache task scores to differ measurably from the pre-update model, then measure how much of that gain stale or repaired caches retain.
+
+The task-ability track uses held-out synthetic samples beginning at offset 96 or held-out external benchmark partitions. Results with `adaptation_gain_available=0` cannot support claims about retained training benefit, even when their KL measurements remain valid.
+
 ### Adapter update targets
 
 Start with:
@@ -262,14 +279,19 @@ Then real tasks:
 - relative KV summary error;
 - attention distribution shift, once available;
 - task score;
+- task-score change relative to the pre-update model;
+- probability that a strategy falls below the pre-update model;
+- retained fraction of the fresh-cache adaptation gain;
 - cache error as a function of `version_gap`;
 - accumulated adapter update norm.
 
 ### Main plots
 
 - line plot: `version_gap` vs logits KL for each update target;
-- line plot: `version_gap` vs task score drop;
-- table: first step at which stale reuse exceeds an error threshold.
+- line plot: `version_gap` vs task score drop from fresh-cache recomputation;
+- line plot: `version_gap` vs task-score change from the pre-update model;
+- line plot: retained adaptation gain vs `version_gap`;
+- table: first step at which stale reuse exceeds an error threshold or falls below the pre-update model.
 
 ### Deliverables
 

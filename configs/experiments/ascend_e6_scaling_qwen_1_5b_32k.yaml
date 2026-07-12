@@ -13,9 +13,18 @@ model:
   use_chat_template: true
 data:
   task: variable_tracking
-  num_samples: 2
+  num_samples: 16
   context_length: 32768
   answer_length: 4
+  scorer: contains
+  synthetic_difficulty: easy
+task_viability:
+  enabled: true
+  probe_samples: 16
+  min_mean_score: 0.05
+  max_mean_score: 0.95
+  min_nonzero_fraction: 0.10
+  max_perfect_fraction: 0.90
 updates:
   targets:
   - lora.q

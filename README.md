@@ -165,7 +165,7 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 | Group | Purpose | Example config |
 |---|---|---|
 | E1 | Static adapters and aLoRA/LRAgent/ForkKV-style baselines | `configs/experiments/e1_static_adapter_baseline_qwen_0_5b.yaml` |
-| E2 | Adapter-version drift characterization | `configs/experiments/e2_version_drift_qwen_1_5b.yaml` |
+| E2 | Adapter-version drift and task-ability retention | `configs/experiments/e2_version_drift_qwen_1_5b.yaml`, `e2_task_ability_qwen_1_5b.yaml` |
 | E2 cross-family | Dense, sliding-window, local/global, and MoE architecture generality | `configs/experiments/e2_version_drift_llama_3_2_3b.yaml`, `e2_version_drift_mistral_7b_v0_1.yaml`, `e2_version_drift_gemma_3_4b.yaml`, and `e2_version_drift_qwen1_5_moe_a2_7b.yaml` |
 | E3 | Update-target × version-gap failure map | `configs/experiments/e3_failure_map_qwen_0_5b.yaml` |
 | E4 | Versioned planner main experiment | `configs/experiments/e4_planner_main_qwen_0_5b.yaml` |
@@ -174,6 +174,24 @@ The full plan is in [`docs/project_plan.md`](docs/project_plan.md). The runnable
 | E7 | Planner-component ablations and failure boundaries | `configs/paper/ablation/e7_qwen_7b_longbench_v2.yaml` |
 | E8 | Sustained cache-capacity and tail-latency workload | `configs/paper/workload/e8_qwen_32b.yaml` |
 | A1 | Lightweight cross-architecture screening on three controlled tasks | `configs/paper/architecture/a1_*_{multi_hop_tracing,multi_needle,variable_tracking}.yaml` |
+
+## Task viability preflight
+
+Every non-toy E1-E8, A1, and W-series configuration enables a baseline task probe before the expensive experiment starts. The probe reuses the already-loaded model and writes artifacts to `runs/<experiment>/task_probe/`. Quality-facing E1/E2/E4/E6/E7/E8/A1 runs fail fast at either a floor or ceiling. Diagnostic E3/E5/W runs always reject floor effects but may allow a perfect baseline because their primary endpoints are KL, propagation, and repair fidelity.
+
+Synthetic tasks use task-appropriate scorers rather than universal exact match. Passkey and key-value difficulty now changes the retrieval structure, including one-, two-, and three-hop version routing. The checked-in non-toy matrix also enforces sample-count floors: real benchmark results use at least 96 samples, controlled quality experiments generally use 32-96, and 32K/64K cost studies use at least 16.
+
+A standalone calibration can be run with:
+
+```bash
+python -m ttt_cache_lab.cli task-probe \
+  --config configs/experiments/e2_version_drift_qwen_1_5b.yaml \
+  --output-dir runs/task_probe/e2_qwen_1_5b \
+  --min-mean-score 0.05 --max-mean-score 0.95 \
+  --min-nonzero-fraction 0.10 --max-perfect-fraction 0.90
+```
+
+E2 has two explicit scales: `e2_version_drift_*` retains small updates for sensitivity/consistency measurements, while `e2_task_ability_*` and the paper drift configs use `update_norm: 1e-3` on held-out samples to create measurable fresh-model task changes. E2 analysis reports task change versus the pre-update model, the fraction of conditions below the pre-update baseline, and retained fresh-cache adaptation gain.
 
 ## Output files
 
