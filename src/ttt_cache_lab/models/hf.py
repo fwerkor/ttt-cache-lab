@@ -170,6 +170,7 @@ class HuggingFaceBackend:
         self._alora_base_cache: dict[str, tuple[Any, np.ndarray]] = {}
         self._capture_attention_metrics = False
         self._last_attention_summary: np.ndarray | None = None
+        self._last_attention_head_summary: np.ndarray | None = None
         self._last_attention_input_summary: np.ndarray | None = None
         self._last_attention_output_summary: np.ndarray | None = None
         self._last_correction_flops = 0.0
@@ -922,6 +923,7 @@ class HuggingFaceBackend:
         generated: list[Any] = []
         first_logits = None
         self._last_attention_summary = None
+        self._last_attention_head_summary = None
         self._last_attention_input_summary = None
         self._last_attention_output_summary = None
         start = time.perf_counter()
@@ -961,7 +963,14 @@ class HuggingFaceBackend:
             if first_logits is None:
                 first_logits = logits
             if capture_attention:
-                self._last_attention_summary = self._summarize_attentions(getattr(result, "attentions", None))
+                self._last_attention_head_summary = self._summarize_attention_heads(
+                    getattr(result, "attentions", None)
+                )
+                if self._last_attention_head_summary is not None:
+                    self._last_attention_summary = np.mean(
+                        self._last_attention_head_summary,
+                        axis=1,
+                    )
                 self._last_attention_input_summary = self._stack_attention_vectors(
                     captured_attention_inputs
                 )
@@ -984,13 +993,19 @@ class HuggingFaceBackend:
         return first_logits, generated_text, decode_s, len(generated)
 
     def _summarize_attentions(self, attentions: Any) -> np.ndarray | None:
+        head_summary = self._summarize_attention_heads(attentions)
+        if head_summary is None:
+            return None
+        return np.mean(head_summary, axis=1)
+
+    def _summarize_attention_heads(self, attentions: Any) -> np.ndarray | None:
         if not isinstance(attentions, tuple | list) or not attentions:
             return None
         layers: list[np.ndarray] = []
         for attention in attentions:
             if attention is None or not hasattr(attention, "ndim") or attention.ndim != 4:
                 continue
-            last_query = attention[:, :, -1, :].detach().float().mean(dim=(0, 1))
+            last_query = attention[:, :, -1, :].detach().float().mean(dim=0)
             layers.append(last_query.cpu().numpy())
         if not layers or len({layer.shape for layer in layers}) != 1:
             return None
@@ -1000,6 +1015,8 @@ class HuggingFaceBackend:
         metadata: dict[str, np.ndarray] = {}
         if self._last_attention_summary is not None:
             metadata["attention_summary"] = self._last_attention_summary
+        if self._last_attention_head_summary is not None:
+            metadata["attention_head_summary"] = self._last_attention_head_summary
         if self._last_attention_input_summary is not None:
             metadata["attention_input_summary"] = self._last_attention_input_summary
         if self._last_attention_output_summary is not None:
@@ -1746,7 +1763,9 @@ class HuggingFaceBackend:
         old_past = baseline.extras.get("past_key_values")
         old_lora_cache = baseline.extras.get("lora_cache", {})
         if old_past is None or not isinstance(old_lora_cache, dict):
-            raise ValueError("Blockwise LoRA scoring requires past_key_values and LoRA state")
+            raise ValueError(
+                "Blockwise LoRA scoring requires past_key_values and LoRA state"
+            )
         layers = self._past_as_layers(old_past)
         if not layers:
             raise ValueError("Blockwise LoRA scoring requires a non-empty cache")
@@ -1757,16 +1776,24 @@ class HuggingFaceBackend:
         input_bound = np.zeros_like(attention_mass)
         exact_delta_norm = np.zeros_like(attention_mass)
         attention_summary = None
+        attention_head_summary = None
         if stale.extras is not None:
             candidate = stale.extras.get("attention_summary")
             if isinstance(candidate, np.ndarray) and candidate.ndim == 2:
                 attention_summary = candidate
+            head_candidate = stale.extras.get("attention_head_summary")
+            if isinstance(head_candidate, np.ndarray) and head_candidate.ndim == 3:
+                attention_head_summary = head_candidate
         module_by_name = {
             str(getattr(module, "lora_name", "")): module
             for module in self._lora_modules
             if getattr(module, "lora_name", "")
         }
-        position_ids = self._prefix_position_ids(baseline.extras.get("prompt_state"))
+        position_ids = self._prefix_position_ids(
+            baseline.extras.get("prompt_state")
+        )
+        decoder_layers, _ = self._decoder_layers()
+        signed_corrections: dict[tuple[int, int], np.ndarray] = {}
         for name, old_state in old_lora_cache.items():
             if not isinstance(old_state, dict):
                 continue
@@ -1790,12 +1817,12 @@ class HuggingFaceBackend:
             old_b = old_state.get("b")
             if old_a is None or old_b is None:
                 continue
-            new_weight = (module.lora_b.detach().float() @ module.lora_a.detach().float()) * float(
-                module.scaling
-            )
-            old_weight = (old_b.detach().float() @ old_a.detach().float()) * float(
-                old_state.get("scaling", module.scaling)
-            )
+            new_weight = (
+                module.lora_b.detach().float() @ module.lora_a.detach().float()
+            ) * float(module.scaling)
+            old_weight = (
+                old_b.detach().float() @ old_a.detach().float()
+            ) * float(old_state.get("scaling", module.scaling))
             weight_delta_norm = float(
                 self.torch.linalg.vector_norm(new_weight - old_weight).cpu()
             )
@@ -1806,6 +1833,77 @@ class HuggingFaceBackend:
                     projected,
                     position_ids=position_ids,
                 )
+
+            query_attention = None
+            query_value_delta = None
+            output_projection_weight = None
+            if (
+                projected is not None
+                and projection == "v"
+                and attention_head_summary is not None
+                and layer < attention_head_summary.shape[0]
+            ):
+                if int(projected.shape[2]) == sequence:
+                    value_delta = projected.detach().float()
+                elif int(projected.shape[1]) == sequence:
+                    value_delta = (
+                        projected.transpose(1, 2).contiguous().detach().float()
+                    )
+                else:
+                    value_delta = None
+                if value_delta is not None:
+                    query_attention = self.torch.as_tensor(
+                        attention_head_summary[layer],
+                        device=value_delta.device,
+                        dtype=self.torch.float32,
+                    )
+                    if int(query_attention.shape[-1]) >= sequence:
+                        query_attention = query_attention[:, :sequence]
+                        kv_heads = int(value_delta.shape[1])
+                        query_heads = int(query_attention.shape[0])
+                        if kv_heads > 0 and query_heads % kv_heads == 0:
+                            repeats = query_heads // kv_heads
+                            query_value_delta = value_delta.mean(
+                                dim=0
+                            ).repeat_interleave(repeats, dim=0)
+                            if (
+                                decoder_layers is not None
+                                and layer < len(decoder_layers)
+                            ):
+                                attention_module = getattr(
+                                    decoder_layers[layer],
+                                    "self_attn",
+                                    None,
+                                )
+                                if attention_module is None:
+                                    attention_module = getattr(
+                                        decoder_layers[layer],
+                                        "attn",
+                                        None,
+                                    )
+                                output_projection = getattr(
+                                    attention_module,
+                                    "o_proj",
+                                    None,
+                                )
+                                if output_projection is None:
+                                    output_projection = getattr(
+                                        attention_module,
+                                        "out_proj",
+                                        None,
+                                    )
+                                candidate_weight = getattr(
+                                    output_projection,
+                                    "weight",
+                                    None,
+                                )
+                                if candidate_weight is not None:
+                                    output_projection_weight = (
+                                        candidate_weight.detach().float()
+                                    )
+                    else:
+                        query_attention = None
+
             for block_index in range(block_count):
                 start = block_index * block_size
                 end = min(sequence, start + block_size)
@@ -1814,7 +1912,10 @@ class HuggingFaceBackend:
                 input_bound[layer, block_index] += float(
                     self.torch.linalg.vector_norm(cached_slice).cpu()
                 ) * weight_delta_norm
-                if attention_summary is not None and layer < attention_summary.shape[0]:
+                if (
+                    attention_summary is not None
+                    and layer < attention_summary.shape[0]
+                ):
                     attention_mass[layer, block_index] = float(
                         np.sum(attention_summary[layer, start:end])
                     )
@@ -1828,9 +1929,36 @@ class HuggingFaceBackend:
                         self.torch.linalg.vector_norm(target_slice).cpu()
                     )
                     exact_delta_norm[layer, block_index] += numerator / max(
-                        denominator, 1e-12
+                        denominator,
+                        1e-12,
                     )
-        return {
+                if query_attention is not None and query_value_delta is not None:
+                    delta_slice = query_value_delta[:, start:end, :]
+                    correction_heads = self.torch.sum(
+                        query_attention[:, start:end, None] * delta_slice,
+                        dim=1,
+                    )
+                    correction = correction_heads.reshape(-1)
+                    if (
+                        output_projection_weight is not None
+                        and int(output_projection_weight.shape[1])
+                        == int(correction.numel())
+                    ):
+                        correction = self.torch.nn.functional.linear(
+                            correction.unsqueeze(0),
+                            output_projection_weight,
+                            None,
+                        ).squeeze(0)
+                    correction_np = correction.detach().float().cpu().numpy()
+                    key = (layer, block_index)
+                    previous = signed_corrections.get(key)
+                    signed_corrections[key] = (
+                        correction_np
+                        if previous is None
+                        else previous + correction_np
+                    )
+
+        result = {
             "available": available,
             "stale_attention_mass": attention_mass,
             "input_weight_bound": input_bound,
@@ -1838,6 +1966,62 @@ class HuggingFaceBackend:
             "predicted_delta_norm": exact_delta_norm,
             "attention_predicted_delta": attention_mass * exact_delta_norm,
         }
+        if signed_corrections:
+            width = max(vector.size for vector in signed_corrections.values())
+            correction_vectors = np.zeros(
+                (len(layers), block_count, width),
+                dtype=np.float64,
+            )
+            correction_available = np.zeros_like(available)
+            for (layer, block_index), vector in signed_corrections.items():
+                correction_vectors[layer, block_index, : vector.size] = vector
+                correction_available[layer, block_index] = True
+
+            correction_norm = np.zeros_like(attention_mass)
+            total_alignment = np.zeros_like(attention_mass)
+            total_projection = np.zeros_like(attention_mass)
+            first_residual_gain = np.zeros_like(attention_mass)
+            cancellation_ratio = np.zeros_like(attention_mass)
+            for layer in range(len(layers)):
+                layer_mask = correction_available[layer]
+                if not np.any(layer_mask):
+                    continue
+                layer_vectors = correction_vectors[layer, layer_mask]
+                total = np.sum(layer_vectors, axis=0)
+                total_norm = float(np.linalg.norm(total))
+                total_energy = total_norm * total_norm
+                norms = np.linalg.norm(layer_vectors, axis=1)
+                cancellation = total_norm / max(float(np.sum(norms)), 1e-12)
+                for block_index in np.flatnonzero(layer_mask):
+                    vector = correction_vectors[layer, block_index]
+                    norm = float(np.linalg.norm(vector))
+                    dot = float(np.dot(vector, total))
+                    correction_norm[layer, block_index] = norm
+                    total_alignment[layer, block_index] = dot / max(
+                        norm * total_norm,
+                        1e-12,
+                    )
+                    total_projection[layer, block_index] = dot / max(
+                        total_energy,
+                        1e-12,
+                    )
+                    first_residual_gain[layer, block_index] = (
+                        2.0 * dot - norm * norm
+                    )
+                    cancellation_ratio[layer, block_index] = cancellation
+
+            result.update(
+                {
+                    "signed_correction_available": correction_available,
+                    "signed_correction_vectors": correction_vectors,
+                    "signed_correction_norm": correction_norm,
+                    "signed_total_alignment": total_alignment,
+                    "signed_total_projection": total_projection,
+                    "signed_first_residual_gain": first_residual_gain,
+                    "signed_cancellation_ratio": cancellation_ratio,
+                }
+            )
+        return result
 
     def probe_blockwise_lora_delta(
         self,

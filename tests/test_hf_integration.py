@@ -441,6 +441,57 @@ def test_block_sparse_lora_key_delta_repairs_only_selected_tokens(tiny_llama_dir
     assert torch.equal(repaired_layers[1][1], old_layers[1][1])
 
 
+def test_block_sparse_lora_value_scores_emit_signed_corrections(
+    tiny_llama_dir: Path,
+) -> None:
+    backend = _backend(tiny_llama_dir)
+    backend.configure_metrics(capture_attention=True)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 1},
+        ),
+        context_length=16,
+    )
+    target = parse_update_target("lora.v:1", num_layers=backend.num_layers)
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    baseline = backend.prefill(sample.prompt)
+    backend.train_lora_step(
+        sample,
+        target,
+        rank=2,
+        alpha=4.0,
+        learning_rate=0.05,
+        target_update_norm=0.02,
+    )
+    full = backend.full_recompute(sample.prompt, baseline)
+    stale = backend.probe_blockwise_cache_splice(
+        baseline=baseline,
+        full=full,
+        block_mask=np.zeros((backend.num_layers, 4), dtype=bool),
+        block_size=4,
+    )
+
+    scores = backend.blockwise_lora_delta_scores(
+        baseline=baseline,
+        stale=stale,
+        block_size=4,
+    )
+
+    assert scores["signed_correction_vectors"].shape[:2] == (
+        backend.num_layers,
+        4,
+    )
+    assert scores["signed_correction_available"][1].all()
+    assert not scores["signed_correction_available"][0].any()
+    assert np.all(np.isfinite(scores["signed_correction_vectors"]))
+    assert np.any(scores["signed_correction_norm"][1] > 0.0)
+    assert np.all(np.abs(scores["signed_total_alignment"][1]) <= 1.0 + 1e-9)
+    assert np.all(scores["signed_cancellation_ratio"][1] >= 0.0)
+    assert np.all(scores["signed_cancellation_ratio"][1] <= 1.0 + 1e-9)
+
+
 def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     sample = backend.prepare_sample(
@@ -536,10 +587,19 @@ def test_attention_capture_uses_decode_only_eager_and_restores_backend(tiny_llam
 
     assert output.extras is not None
     attention_summary = output.extras["attention_summary"]
+    attention_head_summary = output.extras["attention_head_summary"]
     attention_input_summary = output.extras["attention_input_summary"]
     attention_output_summary = output.extras["attention_output_summary"]
     assert attention_summary.shape[0] == backend.num_layers
     assert attention_summary.shape[1] > 0
+    assert attention_head_summary.shape[0] == backend.num_layers
+    assert attention_head_summary.shape[1] == 2
+    np.testing.assert_allclose(
+        attention_summary,
+        np.mean(attention_head_summary, axis=1),
+        rtol=1e-6,
+        atol=1e-7,
+    )
     assert attention_input_summary.shape == (backend.num_layers, backend.hidden_size)
     assert attention_output_summary.shape == (backend.num_layers, backend.hidden_size)
     assert backend._attention_implementation() == original_implementation
@@ -557,7 +617,6 @@ def test_layer_specific_updates_never_fall_back_to_other_layers(tiny_llama_dir: 
         )
 
 
-
 def test_direct_update_uses_all_matching_parameters_and_global_norm(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     baseline = backend.prefill("key is alpha Answer :")
@@ -565,11 +624,8 @@ def test_direct_update_uses_all_matching_parameters_and_global_norm(tiny_llama_d
     matching = backend._select_parameters(target)
     assert len(matching) == backend.num_layers
     backend.simulate_update(baseline, target, update_norm=0.125)
-    measured = torch.sqrt(
-        sum(torch.sum(delta.detach().double() ** 2) for _, delta in backend._deltas)
-    ).item()
+    measured = torch.sqrt(sum(torch.sum(delta.detach().double() ** 2) for _, delta in backend._deltas)).item()
     assert measured == pytest.approx(0.125, rel=1e-6)
-
 
 
 def test_alora_reuses_base_prefix_and_recomputes_adapter_suffix(tiny_llama_dir: Path) -> None:
