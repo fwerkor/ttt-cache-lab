@@ -23,6 +23,7 @@ from ttt_cache_lab.experiments.block_ranker import (
     route_zero_probe_recompute,
     score_block_features,
 )
+from ttt_cache_lab.experiments.task_probe import run_configured_task_probe
 from ttt_cache_lab.metrics.tensor import kl_divergence, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
@@ -200,6 +201,7 @@ def run_blockwise_exploration(
             row for row in feature_rows if _condition_key(row) in completed_conditions
         ]
     samples = build_task_samples(config.data, seed=config.seed)
+    run_configured_task_probe(config, backend=backend, samples=samples)
     try:
         for sample_id, raw_sample in enumerate(samples):
             sample = _single_token_sample(raw_sample)

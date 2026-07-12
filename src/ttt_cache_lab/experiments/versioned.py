@@ -59,6 +59,7 @@ from ttt_cache_lab.experiments.run_metadata import (
     record_run_fields,
     write_run_metadata,
 )
+from ttt_cache_lab.experiments.task_probe import run_configured_task_probe
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
@@ -99,6 +100,7 @@ class VersionedExperimentRunner:
                 or self.config.metrics.compute_boundary_compatibility_metrics
             )
         )
+        run_configured_task_probe(self.config, backend=backend, samples=data)
         run_metadata = collect_run_metadata(self.config)
         self._run_metadata = run_metadata
         metadata_path = write_run_metadata(self.config.output_dir, run_metadata)
