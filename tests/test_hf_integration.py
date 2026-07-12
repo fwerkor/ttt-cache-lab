@@ -535,6 +535,112 @@ def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: P
     assert len(metrics["reference_token_kl_values"]) == 2
 
 
+def test_prompt_suffix_scoring_matches_direct_causal_nll(
+    tiny_llama_dir: Path,
+) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="alpha beta gamma delta epsilon zeta",
+            answer="answer tokens must not be used",
+            metadata={"max_generation_tokens": 1},
+        ),
+        context_length=16,
+    )
+    baseline = backend.prefill(sample.prompt)
+    assert baseline.extras is not None
+    state = baseline.extras["prompt_state"]
+    metrics = backend.score_prompt_suffix(
+        baseline=baseline,
+        past=baseline.extras["past_key_values"],
+        probe_lengths=(1, 2),
+    )
+
+    token_count = int(state.input_ids.shape[1])
+    max_tokens = min(2, token_count - 1)
+    suffix_start = token_count - max_tokens
+    with torch.no_grad():
+        direct = backend.model(
+            input_ids=state.input_ids[:, : token_count - 1],
+            use_cache=False,
+        )
+    direct_logits = direct.logits[:, suffix_start - 1 : token_count - 1, :].float()
+    targets = state.input_ids[:, suffix_start:token_count]
+    direct_nll = -torch.gather(
+        torch.log_softmax(direct_logits, dim=-1),
+        dim=-1,
+        index=targets.unsqueeze(-1),
+    ).squeeze(-1)
+
+    assert metrics["prompt_suffix_probe_tokens"] == max_tokens
+    assert metrics["prompt_suffix_nll_1"] == pytest.approx(
+        float(direct_nll[0, 0]),
+        rel=1e-5,
+    )
+    assert metrics["prompt_suffix_nll_2"] == pytest.approx(
+        float(direct_nll[0].mean()),
+        rel=1e-5,
+    )
+    assert len(metrics["prompt_suffix_token_nll_values"]) == max_tokens
+
+
+def test_prompt_anchor_scoring_matches_direct_causal_nll(
+    tiny_llama_dir: Path,
+) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="alpha beta gamma delta epsilon zeta eta theta",
+            answer="unused answer",
+            metadata={"max_generation_tokens": 1},
+        ),
+        context_length=16,
+    )
+    baseline = backend.prefill(sample.prompt)
+    assert baseline.extras is not None
+    state = baseline.extras["prompt_state"]
+    cached_tokens = int(state.prefix_ids.shape[1])
+    block_size = 2
+    block_count = (cached_tokens + block_size - 1) // block_size
+    mask = np.zeros((1, block_count), dtype=bool)
+    mask[0, 0] = True
+    metrics = backend.score_prompt_anchors(
+        baseline=baseline,
+        past=baseline.extras["past_key_values"],
+        block_mask=mask,
+        block_size=block_size,
+        probe_lengths=(1, 2),
+    )
+
+    target_start = min(block_size, cached_tokens)
+    max_tokens = min(2, int(state.input_ids.shape[1]) - target_start)
+    with torch.no_grad():
+        direct = backend.model(
+            input_ids=state.input_ids[:, : target_start + max_tokens - 1],
+            use_cache=False,
+        )
+    direct_logits = direct.logits[
+        :, target_start - 1 : target_start + max_tokens - 1, :
+    ].float()
+    targets = state.input_ids[:, target_start : target_start + max_tokens]
+    direct_nll = -torch.gather(
+        torch.log_softmax(direct_logits, dim=-1),
+        dim=-1,
+        index=targets.unsqueeze(-1),
+    ).squeeze(-1)
+
+    assert metrics["prompt_anchor_count"] == 1
+    assert metrics["prompt_anchor_probe_tokens"] == max_tokens
+    assert metrics["prompt_anchor_b0_nll_1"] == pytest.approx(
+        float(direct_nll[0, 0]),
+        rel=1e-5,
+    )
+    assert metrics["prompt_anchor_b0_nll_2"] == pytest.approx(
+        float(direct_nll[0].mean()),
+        rel=1e-5,
+    )
+
+
 def test_lora_target_initialization_is_reproducible_and_updates_accumulate(
     tiny_llama_dir: Path,
 ) -> None:

@@ -1387,6 +1387,26 @@ class HuggingFaceBackend:
         )
         return self._restore_past_type(past, layers)
 
+    def _truncate_past(self, past: Any, token_count: int) -> Any:
+        if token_count < 0:
+            raise ValueError("token_count must be nonnegative")
+        layers = []
+        for layer in self._past_as_layers(past):
+            values = []
+            for index, tensor in enumerate(layer):
+                if index < 2 and hasattr(tensor, "shape") and tensor.ndim >= 3:
+                    if int(tensor.shape[-2]) < token_count:
+                        raise ValueError(
+                            "Requested prompt suffix exceeds cached sequence length"
+                        )
+                    values.append(tensor[..., :token_count, :].detach().clone())
+                else:
+                    values.append(
+                        tensor.detach().clone() if hasattr(tensor, "detach") else tensor
+                    )
+            layers.append(tuple(values))
+        return self._restore_past_type(past, tuple(layers))
+
     def _restore_past_type(self, original: Any, layers: tuple[tuple[Any, ...], ...]) -> Any:
         factory = getattr(type(original), "from_legacy_cache", None)
         if callable(factory):
@@ -1663,6 +1683,189 @@ class HuggingFaceBackend:
                     metrics[f"reference_token_kl_{length}"] = float(
                         prefix_kl[0, length - 1].detach().cpu()
                     )
+        return metrics
+
+    def score_prompt_suffix(
+        self,
+        *,
+        baseline: BackendOutput,
+        past: Any,
+        probe_lengths: tuple[int, ...],
+    ) -> dict[str, Any]:
+        """Score held-out prompt tokens without consulting the task answer.
+
+        The cache is truncated before a seed token, then the following known
+        prompt tokens are scored with teacher forcing. These target tokens are
+        available in ordinary inference because they come from the user prompt.
+        """
+        if not baseline.extras:
+            raise ValueError("Prompt suffix scoring requires cached prompt state")
+        if not probe_lengths or any(length <= 0 for length in probe_lengths):
+            raise ValueError("probe_lengths must contain positive values")
+        state = baseline.extras.get("prompt_state")
+        if not isinstance(state, _PromptState):
+            raise ValueError(
+                "Prompt suffix scoring requires a Hugging Face prompt state"
+            )
+        token_count = int(state.input_ids.shape[1])
+        max_tokens = min(max(probe_lengths), max(0, token_count - 1))
+        if max_tokens <= 0:
+            return {
+                "prompt_suffix_probe_tokens": 0,
+                "prompt_suffix_probe_latency": 0.0,
+            }
+
+        suffix_start = token_count - max_tokens
+        seed_position = suffix_start - 1
+        retained_past_tokens = seed_position
+        teacher_inputs = state.input_ids[:, seed_position : token_count - 1]
+        target_ids = state.input_ids[:, suffix_start:token_count]
+        truncated_past = self._truncate_past(past, retained_past_tokens)
+
+        synchronize(self.torch, self.devices)
+        start = time.perf_counter()
+        with self.torch.no_grad():
+            result = self.model(
+                input_ids=teacher_inputs,
+                past_key_values=truncated_past,
+                use_cache=False,
+            )
+            logits = result.logits[:, -max_tokens:, :].float()
+            log_probabilities = self.torch.log_softmax(logits, dim=-1)
+            token_nll = -self.torch.gather(
+                log_probabilities,
+                dim=-1,
+                index=target_ids.unsqueeze(-1),
+            ).squeeze(-1)
+            denominator = self.torch.arange(
+                1,
+                max_tokens + 1,
+                device=token_nll.device,
+                dtype=token_nll.dtype,
+            ).unsqueeze(0)
+            prefix_nll = self.torch.cumsum(token_nll, dim=1) / denominator
+        synchronize(self.torch, self.devices)
+        latency = time.perf_counter() - start
+        metrics: dict[str, Any] = {
+            "prompt_suffix_probe_tokens": max_tokens,
+            "prompt_suffix_probe_latency": latency,
+            "prompt_suffix_sequence_nll": float(
+                prefix_nll[0, -1].detach().cpu()
+            ),
+            "prompt_suffix_token_nll_values": [
+                float(value) for value in token_nll[0].detach().cpu().tolist()
+            ],
+        }
+        for length in sorted(set(probe_lengths)):
+            if length <= max_tokens:
+                metrics[f"prompt_suffix_nll_{length}"] = float(
+                    prefix_nll[0, length - 1].detach().cpu()
+                )
+        return metrics
+
+    def score_prompt_anchors(
+        self,
+        *,
+        baseline: BackendOutput,
+        past: Any,
+        block_mask: np.ndarray,
+        block_size: int,
+        probe_lengths: tuple[int, ...],
+    ) -> dict[str, Any]:
+        """Score known prompt tokens immediately after selected cache blocks.
+
+        Anchors are derived from the candidate mask. For each selected token
+        block, the scorer truncates the supplied cache just before the block's
+        downstream boundary and teacher-forces prompt tokens following that
+        boundary. The task answer is never accessed.
+        """
+        if not baseline.extras:
+            raise ValueError("Prompt anchor scoring requires cached prompt state")
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        if not probe_lengths or any(length <= 0 for length in probe_lengths):
+            raise ValueError("probe_lengths must contain positive values")
+        state = baseline.extras.get("prompt_state")
+        if not isinstance(state, _PromptState):
+            raise ValueError(
+                "Prompt anchor scoring requires a Hugging Face prompt state"
+            )
+        selected = np.asarray(block_mask, dtype=bool)
+        if selected.ndim != 2:
+            raise ValueError("block_mask must be a layer-by-token-block matrix")
+        selected_blocks = [
+            int(index) for index in np.flatnonzero(np.any(selected, axis=0))
+        ]
+        prompt_tokens = int(state.input_ids.shape[1])
+        cached_tokens = prompt_tokens - 1
+        max_requested = max(probe_lengths)
+        metrics: dict[str, Any] = {
+            "prompt_anchor_count": 0,
+            "prompt_anchor_probe_tokens": 0,
+            "prompt_anchor_probe_latency": 0.0,
+        }
+        all_token_nll: dict[str, list[float]] = {}
+        total_latency = 0.0
+        total_probe_tokens = 0
+        used_anchors = 0
+
+        for block_index in selected_blocks:
+            target_start = min((block_index + 1) * block_size, cached_tokens)
+            available = prompt_tokens - target_start
+            max_tokens = min(max_requested, available)
+            if target_start <= 0 or max_tokens <= 0:
+                continue
+            seed_position = target_start - 1
+            retained_past_tokens = seed_position
+            teacher_inputs = state.input_ids[
+                :, seed_position : target_start + max_tokens - 1
+            ]
+            target_ids = state.input_ids[:, target_start : target_start + max_tokens]
+            truncated_past = self._truncate_past(past, retained_past_tokens)
+
+            synchronize(self.torch, self.devices)
+            start = time.perf_counter()
+            with self.torch.no_grad():
+                result = self.model(
+                    input_ids=teacher_inputs,
+                    past_key_values=truncated_past,
+                    use_cache=False,
+                )
+                logits = result.logits[:, -max_tokens:, :].float()
+                log_probabilities = self.torch.log_softmax(logits, dim=-1)
+                token_nll = -self.torch.gather(
+                    log_probabilities,
+                    dim=-1,
+                    index=target_ids.unsqueeze(-1),
+                ).squeeze(-1)
+                denominator = self.torch.arange(
+                    1,
+                    max_tokens + 1,
+                    device=token_nll.device,
+                    dtype=token_nll.dtype,
+                ).unsqueeze(0)
+                prefix_nll = self.torch.cumsum(token_nll, dim=1) / denominator
+            synchronize(self.torch, self.devices)
+            total_latency += time.perf_counter() - start
+            total_probe_tokens += max_tokens
+            used_anchors += 1
+            anchor_name = f"b{block_index}"
+            values = [float(value) for value in token_nll[0].detach().cpu().tolist()]
+            all_token_nll[anchor_name] = values
+            for length in sorted(set(probe_lengths)):
+                if length <= max_tokens:
+                    metrics[f"prompt_anchor_{anchor_name}_nll_{length}"] = float(
+                        prefix_nll[0, length - 1].detach().cpu()
+                    )
+
+        metrics.update(
+            {
+                "prompt_anchor_count": used_anchors,
+                "prompt_anchor_probe_tokens": total_probe_tokens,
+                "prompt_anchor_probe_latency": total_latency,
+                "prompt_anchor_token_nll_values": all_token_nll,
+            }
+        )
         return metrics
 
     def probe_blockwise_cache_splice(

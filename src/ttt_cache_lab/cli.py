@@ -5,10 +5,12 @@ from pathlib import Path
 
 from rich.console import Console
 
+from ttt_cache_lab.cache.dynamic_controller import DynamicBudgetPolicy
 from ttt_cache_lab.configs import ExperimentConfig, SweepConfig, VersionedExperimentConfig, VersionedSweepConfig
 from ttt_cache_lab.experiments.block_ranker import fit_block_ranker
 from ttt_cache_lab.experiments.blockwise import run_blockwise_exploration
 from ttt_cache_lab.experiments.boundary_analysis import generate_boundary_analysis
+from ttt_cache_lab.experiments.dynamic_probe_model import fit_dynamic_probe_model
 from ttt_cache_lab.experiments.failure_map import FailureThresholds, generate_failure_map
 from ttt_cache_lab.experiments.failures import capture_run_failure
 from ttt_cache_lab.experiments.pareto import generate_pareto
@@ -136,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     blockwise.add_argument("--config", required=True, type=Path)
     blockwise.add_argument("--sparse-ranker-path", type=Path, default=None)
+    blockwise.add_argument("--dynamic-probe-model-path", type=Path, default=None)
     blockwise.add_argument("--block-sizes", type=int, nargs="+", default=[64])
     blockwise.add_argument("--version-gap", type=int, default=4)
     blockwise.add_argument(
@@ -163,6 +166,61 @@ def build_parser() -> argparse.ArgumentParser:
         default=[0.0],
     )
     blockwise.add_argument(
+        "--dynamic-reference-probe-lengths",
+        type=int,
+        nargs="+",
+        default=[1, 2, 4],
+    )
+    blockwise.add_argument(
+        "--dynamic-probe-source",
+        choices=["prompt_anchor", "prompt_suffix", "answer"],
+        default="prompt_anchor",
+        help=(
+            "Use candidate-aware internal prompt anchors by default; answer "
+            "is an oracle-like diagnostic mode"
+        ),
+    )
+    blockwise.add_argument(
+        "--dynamic-trace-full-budget",
+        action="store_true",
+        help=(
+            "Evaluate and record every count up to the risk-derived budget cap "
+            "for calibration"
+        ),
+    )
+    blockwise.add_argument("--dynamic-risk-scale", type=float, default=0.002)
+    blockwise.add_argument("--dynamic-attention-floor", type=float, default=0.01)
+    blockwise.add_argument("--dynamic-uncertainty-weight", type=float, default=0.25)
+    blockwise.add_argument("--dynamic-activation-threshold", type=float, default=0.65)
+    blockwise.add_argument("--dynamic-max-cells", type=int, default=8)
+    blockwise.add_argument("--dynamic-budget-exponent", type=float, default=1.0)
+    blockwise.add_argument(
+        "--dynamic-base-target-reduction",
+        type=float,
+        default=0.05,
+    )
+    blockwise.add_argument(
+        "--dynamic-max-target-reduction",
+        type=float,
+        default=0.35,
+    )
+    blockwise.add_argument(
+        "--dynamic-min-accept-reduction",
+        type=float,
+        default=0.015,
+    )
+    blockwise.add_argument(
+        "--dynamic-marginal-reduction-floor",
+        type=float,
+        default=0.002,
+    )
+    blockwise.add_argument("--dynamic-patience", type=int, default=2)
+    blockwise.add_argument(
+        "--dynamic-objective-scale-floor",
+        type=float,
+        default=1e-3,
+    )
+    blockwise.add_argument(
         "--skip-cache-surgery-oracles",
         action="store_true",
         help="Skip splice baselines and frontier probes for sparse runtime benchmarks",
@@ -186,6 +244,18 @@ def build_parser() -> argparse.ArgumentParser:
             "direct-commit router, or zero-probe direct-recompute gate"
         ),
     )
+
+    dynamic_probe_fit = subparsers.add_parser(
+        "dynamic-probe-model-fit",
+        help=(
+            "Fit KL-supervised prompt-anchor gates whose runtime inputs remain "
+            "KL-free"
+        ),
+    )
+    dynamic_probe_fit.add_argument(
+        "--input-dir", required=True, type=Path, nargs="+"
+    )
+    dynamic_probe_fit.add_argument("--output", required=True, type=Path)
 
     block_ranker = subparsers.add_parser(
         "block-ranker-fit",
@@ -418,18 +488,47 @@ def main(argv: list[str] | None = None) -> None:
             sparse_cost_penalties=tuple(args.sparse_cost_penalties),
             sparse_swap_rounds=args.sparse_swap_rounds,
             reference_probe_lengths=tuple(args.reference_probe_lengths),
+            dynamic_reference_probe_lengths=tuple(
+                args.dynamic_reference_probe_lengths
+            ),
+            dynamic_probe_source=args.dynamic_probe_source,
+            dynamic_trace_full_budget=args.dynamic_trace_full_budget,
             sparse_stale_margins=tuple(args.sparse_stale_margins),
             compute_cache_surgery_oracles=not args.skip_cache_surgery_oracles,
             compute_structured_sparse_search=not args.skip_structured_sparse_search,
             sparse_policy_only=args.sparse_policy_only,
             sparse_policy_variant=args.sparse_policy_variant,
             sparse_ranker_path=args.sparse_ranker_path,
+            dynamic_probe_model_path=args.dynamic_probe_model_path,
+            dynamic_budget_policy=DynamicBudgetPolicy(
+                risk_scale=args.dynamic_risk_scale,
+                attention_floor=args.dynamic_attention_floor,
+                uncertainty_weight=args.dynamic_uncertainty_weight,
+                activation_threshold=args.dynamic_activation_threshold,
+                max_cells=args.dynamic_max_cells,
+                budget_exponent=args.dynamic_budget_exponent,
+                base_target_reduction=args.dynamic_base_target_reduction,
+                max_target_reduction=args.dynamic_max_target_reduction,
+                min_accept_reduction=args.dynamic_min_accept_reduction,
+                marginal_reduction_floor=(
+                    args.dynamic_marginal_reduction_floor
+                ),
+                patience=args.dynamic_patience,
+                objective_scale_floor=args.dynamic_objective_scale_floor,
+            ),
         )
         console.print(f"Wrote {blockwise_artifacts.records_csv}")
         console.print(f"Wrote {blockwise_artifacts.frontier_csv}")
         console.print(f"Wrote {blockwise_artifacts.masks_csv}")
         console.print(f"Wrote {blockwise_artifacts.features_csv}")
         console.print(f"Wrote {blockwise_artifacts.report_markdown}")
+        return
+    if args.command == "dynamic-probe-model-fit":
+        model_path = fit_dynamic_probe_model(
+            list(args.input_dir),
+            output_path=args.output,
+        )
+        console.print(f"Wrote {model_path}")
         return
     if args.command == "block-ranker-fit":
         ranker_path = fit_block_ranker(

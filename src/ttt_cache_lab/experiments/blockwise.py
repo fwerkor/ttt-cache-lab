@@ -13,6 +13,20 @@ from typing import Any
 
 import numpy as np
 
+from ttt_cache_lab.cache.dynamic_controller import (
+    CellRiskLedger,
+    DynamicBudgetDecision,
+    DynamicBudgetPolicy,
+    consensus_probe_score,
+    dynamic_budget_parameters,
+    normalized_probe_scores,
+    run_dynamic_budget_controller,
+)
+from ttt_cache_lab.cache.dynamic_probe_model import (
+    DynamicProbeModel,
+    load_dynamic_probe_model,
+    score_prompt_anchor_point,
+)
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
 from ttt_cache_lab.data.synthetic import TaskSample
@@ -109,12 +123,17 @@ def run_blockwise_exploration(
     sparse_cost_penalties: tuple[float, ...] = (0.0, 0.001, 0.005, 0.01),
     sparse_swap_rounds: int = 4,
     reference_probe_lengths: tuple[int, ...] = (1,),
+    dynamic_reference_probe_lengths: tuple[int, ...] = (1, 2, 4),
+    dynamic_probe_source: str = "prompt_anchor",
+    dynamic_trace_full_budget: bool = False,
     sparse_stale_margins: tuple[float, ...] = (0.0,),
     compute_cache_surgery_oracles: bool = True,
     compute_structured_sparse_search: bool = True,
     sparse_policy_only: bool = False,
     sparse_policy_variant: str = "reference",
     sparse_ranker_path: Path | None = None,
+    dynamic_probe_model_path: Path | None = None,
+    dynamic_budget_policy: DynamicBudgetPolicy | None = None,
 ) -> BlockwiseArtifacts:
     if not block_sizes or any(block_size <= 0 for block_size in block_sizes):
         raise ValueError("block sizes must be positive")
@@ -142,6 +161,18 @@ def run_blockwise_exploration(
         raise ValueError("reference probe lengths must be positive")
     if len(set(reference_probe_lengths)) != len(reference_probe_lengths):
         raise ValueError("reference probe lengths must be unique")
+    if not dynamic_reference_probe_lengths or any(
+        length <= 0 for length in dynamic_reference_probe_lengths
+    ):
+        raise ValueError("dynamic reference probe lengths must be positive")
+    if len(set(dynamic_reference_probe_lengths)) != len(
+        dynamic_reference_probe_lengths
+    ):
+        raise ValueError("dynamic reference probe lengths must be unique")
+    if dynamic_probe_source not in {"prompt_anchor", "prompt_suffix", "answer"}:
+        raise ValueError(
+            "dynamic_probe_source must be prompt_anchor, prompt_suffix, or answer"
+        )
     if any(margin < 0.0 for margin in sparse_stale_margins):
         raise ValueError("sparse stale margins must be nonnegative")
     if len(set(sparse_stale_margins)) != len(sparse_stale_margins):
@@ -149,6 +180,7 @@ def run_blockwise_exploration(
 
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    dynamic_budget_policy = dynamic_budget_policy or DynamicBudgetPolicy()
     sparse_ranker = (
         load_block_ranker(sparse_ranker_path) if sparse_ranker_path is not None else None
     )
@@ -163,6 +195,15 @@ def run_blockwise_exploration(
         raise ValueError(
             "sparse_policy_variant must be 'reference', 'baseline_reference', "
             "'committed', or 'recompute'"
+        )
+    dynamic_probe_model = (
+        load_dynamic_probe_model(dynamic_probe_model_path)
+        if dynamic_probe_model_path is not None
+        else None
+    )
+    if dynamic_probe_model is not None and dynamic_probe_source != "prompt_anchor":
+        raise ValueError(
+            "A dynamic probe model can only be used with prompt_anchor probes"
         )
     backend = build_backend(config.model, seed=config.seed)
     backend.configure_metrics(capture_attention=True)
@@ -323,6 +364,11 @@ def run_blockwise_exploration(
                         sparse_cost_penalties=sparse_cost_penalties,
                         sparse_swap_rounds=sparse_swap_rounds,
                         reference_probe_lengths=reference_probe_lengths,
+                        dynamic_reference_probe_lengths=(
+                            dynamic_reference_probe_lengths
+                        ),
+                        dynamic_probe_source=dynamic_probe_source,
+                        dynamic_trace_full_budget=dynamic_trace_full_budget,
                         sparse_stale_margins=sparse_stale_margins,
                         compute_cache_surgery_oracles=compute_cache_surgery_oracles,
                         compute_structured_sparse_search=compute_structured_sparse_search,
@@ -330,6 +376,9 @@ def run_blockwise_exploration(
                         sparse_policy_variant=sparse_policy_variant,
                         sparse_ranker=sparse_ranker,
                         sparse_ranker_path=sparse_ranker_path,
+                        dynamic_probe_model=dynamic_probe_model,
+                        dynamic_probe_model_path=dynamic_probe_model_path,
+                        dynamic_budget_policy=dynamic_budget_policy,
                     )
                     records.extend(condition_records)
                     frontier_rows.extend(condition_frontier)
@@ -376,6 +425,9 @@ def _explore_condition(
     sparse_cost_penalties: tuple[float, ...],
     sparse_swap_rounds: int,
     reference_probe_lengths: tuple[int, ...],
+    dynamic_reference_probe_lengths: tuple[int, ...],
+    dynamic_probe_source: str,
+    dynamic_trace_full_budget: bool,
     sparse_stale_margins: tuple[float, ...],
     compute_cache_surgery_oracles: bool,
     compute_structured_sparse_search: bool,
@@ -383,6 +435,9 @@ def _explore_condition(
     sparse_policy_variant: str,
     sparse_ranker: dict[str, Any] | None,
     sparse_ranker_path: Path | None,
+    dynamic_probe_model: DynamicProbeModel | None,
+    dynamic_probe_model_path: Path | None,
+    dynamic_budget_policy: DynamicBudgetPolicy,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -403,16 +458,35 @@ def _explore_condition(
     eligible[start_layer:, :] = True
     total_eligible = int(np.count_nonzero(eligible))
     reference_token_ids = _reference_token_ids(backend, sample)
+    answer_dynamic_lengths = (
+        dynamic_reference_probe_lengths if dynamic_probe_source == "answer" else ()
+    )
     effective_reference_lengths = tuple(
         sorted(
             {
                 length
-                for length in reference_probe_lengths
+                for length in (
+                    *reference_probe_lengths,
+                    *answer_dynamic_lengths,
+                )
                 if length <= len(reference_token_ids)
             }
         )
     )
+    effective_structured_reference_lengths = tuple(
+        length
+        for length in reference_probe_lengths
+        if length <= len(reference_token_ids)
+    )
+    effective_dynamic_reference_lengths = tuple(
+        length
+        for length in dynamic_reference_probe_lengths
+        if dynamic_probe_source in {"prompt_anchor", "prompt_suffix"}
+        or length <= len(reference_token_ids)
+    )
     sequence_scorer = getattr(backend, "score_reference_sequence", None)
+    prompt_suffix_scorer = getattr(backend, "score_prompt_suffix", None)
+    prompt_anchor_scorer = getattr(backend, "score_prompt_anchors", None)
     full_reference_log_probabilities = None
     if (
         callable(sequence_scorer)
@@ -456,6 +530,74 @@ def _explore_condition(
         )
         if isinstance(metrics, dict):
             output.extras.update(metrics)
+
+    def enrich_dynamic_probe_metrics(
+        output: BackendOutput,
+        *,
+        past_override: Any | None = None,
+    ) -> None:
+        if dynamic_probe_source != "prompt_suffix":
+            return
+        if (
+            not callable(prompt_suffix_scorer)
+            or output.extras is None
+            or not effective_dynamic_reference_lengths
+        ):
+            return
+        past = output.extras.get("past_key_values")
+        if past is None:
+            past = past_override
+        if past is None:
+            return
+        metrics = prompt_suffix_scorer(
+            baseline=baseline,
+            past=past,
+            probe_lengths=effective_dynamic_reference_lengths,
+        )
+        if isinstance(metrics, dict):
+            output.extras.update(metrics)
+
+    def enrich_prompt_anchor_metrics(
+        output: BackendOutput,
+        mask: np.ndarray,
+    ) -> None:
+        """Capture prompt-anchor scalars before candidate cache compaction."""
+        if dynamic_probe_source != "prompt_anchor":
+            return
+        if (
+            not callable(prompt_anchor_scorer)
+            or output.extras is None
+            or not baseline.extras
+            or not effective_dynamic_reference_lengths
+        ):
+            return
+        stale_past = baseline.extras.get("past_key_values")
+        candidate_past = output.extras.get("past_key_values")
+        if stale_past is None or candidate_past is None:
+            return
+        stale_metrics = prompt_anchor_scorer(
+            baseline=baseline,
+            past=stale_past,
+            block_mask=mask,
+            block_size=block_size,
+            probe_lengths=effective_dynamic_reference_lengths,
+        )
+        candidate_metrics = prompt_anchor_scorer(
+            baseline=baseline,
+            past=candidate_past,
+            block_mask=mask,
+            block_size=block_size,
+            probe_lengths=effective_dynamic_reference_lengths,
+        )
+        if isinstance(candidate_metrics, dict):
+            output.extras.update(candidate_metrics)
+        if isinstance(stale_metrics, dict):
+            output.extras.update(
+                {
+                    f"dynamic_stale_{key}": value
+                    for key, value in stale_metrics.items()
+                }
+            )
 
     kv_scores, attention_scores = _cell_scores(
         old_layers,
@@ -538,11 +680,21 @@ def _explore_condition(
     )
     enrich_local_attention_metrics(stale.output)
     enrich_reference_metrics(stale.output)
+    enrich_dynamic_probe_metrics(
+        stale.output,
+        past_override=(
+            baseline.extras.get("past_key_values") if baseline.extras else None
+        ),
+    )
     sparse_probe = getattr(backend, "probe_blockwise_lora_delta", None)
     sparse_score_fn = getattr(backend, "blockwise_lora_delta_scores", None)
     sparse_cache: dict[bytes, _Evaluation] = {}
 
-    def probe_sparse(mask: np.ndarray) -> _Evaluation:
+    def probe_sparse(
+        mask: np.ndarray,
+        *,
+        capture_dynamic_probe: bool = False,
+    ) -> _Evaluation:
         if not callable(sparse_probe):
             raise RuntimeError("Backend does not implement block-sparse LoRA delta repair")
         output = sparse_probe(
@@ -552,6 +704,9 @@ def _explore_condition(
         )
         enrich_local_attention_metrics(output)
         enrich_reference_metrics(output)
+        if capture_dynamic_probe:
+            enrich_dynamic_probe_metrics(output)
+            enrich_prompt_anchor_metrics(output, mask)
         value = _Evaluation(
             output=_compact_evaluation_output(output),
             logits_kl=kl_divergence(full.logits, output.logits),
@@ -723,6 +878,18 @@ def _explore_condition(
     if sparse_scores is not None:
         direct_available = np.asarray(sparse_scores["available"], dtype=bool) & eligible
         direct_total = int(np.count_nonzero(direct_available))
+        risk_ledger = CellRiskLedger(eligible.shape)
+        risk_ledger.observe(
+            np.asarray(sparse_scores["predicted_delta_norm"], dtype=np.float64),
+            np.asarray(sparse_scores["stale_attention_mass"], dtype=np.float64),
+            current_version=int(condition.get("version_gap", 1)),
+            cumulative=True,
+        )
+        continuous_risk = risk_ledger.estimate(
+            eligible=direct_available,
+            policy=dynamic_budget_policy,
+        )
+        cell_age = risk_ledger.age()
         condition_feature_rows: list[dict[str, Any]] = []
         for layer_index, block_index in np.argwhere(direct_available):
             token_start = int(block_index) * block_size
@@ -754,6 +921,10 @@ def _explore_condition(
                 "attention_predicted_delta": float(
                     sparse_scores["attention_predicted_delta"][layer_index, block_index]
                 ),
+                "continuous_cell_risk": float(
+                    continuous_risk.cell_scores[layer_index, block_index]
+                ),
+                "cell_version_age": int(cell_age[layer_index, block_index]),
             }
             for signed_name in (
                 "signed_correction_norm",
@@ -1971,6 +2142,468 @@ def _explore_condition(
                             )
                         )
 
+            reference_token_id = int(condition.get("reference_token_id", -1))
+            dynamic_objectives: list[tuple[str, int]] = []
+            if dynamic_probe_source == "prompt_suffix":
+                for length in effective_dynamic_reference_lengths:
+                    key = f"prompt_suffix_nll_{length}"
+                    if stale.output.extras and key in stale.output.extras:
+                        dynamic_objectives.append((key, length))
+            elif dynamic_probe_source == "answer":
+                dynamic_objectives.append(("reference_nll", 1))
+                for length in effective_dynamic_reference_lengths:
+                    key = f"reference_token_nll_{length}"
+                    if (
+                        length > 1
+                        and stale.output.extras
+                        and key in stale.output.extras
+                    ):
+                        dynamic_objectives.append((f"reference_nll_{length}", length))
+            dynamic_stale_scores = {
+                objective: _sparse_objective_score(
+                    stale,
+                    reference_token_id=reference_token_id,
+                    objective=objective,
+                )
+                for objective, _ in dynamic_objectives
+            }
+            if dynamic_probe_source != "prompt_anchor" and not dynamic_objectives:
+                dynamic_objectives = [("unavailable_dynamic_probe", 1)]
+                dynamic_stale_scores = {"unavailable_dynamic_probe": math.inf}
+            dynamic_objective = f"{dynamic_probe_source}_nll_consensus"
+            dynamic_probe_length = (
+                max(effective_dynamic_reference_lengths)
+                if effective_dynamic_reference_lengths
+                else 1
+            )
+            dynamic_stale_score = 1.0
+            ranked_cells = sorted(
+                (
+                    tuple(int(value) for value in index)
+                    for index in np.argwhere(direct_available)
+                ),
+                key=lambda index: (
+                    -float(continuous_risk.cell_scores[index]),
+                    index[0],
+                    index[1],
+                ),
+            )
+            dynamic_points: dict[
+                int,
+                tuple[
+                    np.ndarray,
+                    _Evaluation,
+                    float,
+                    float,
+                    list[tuple[str, int]],
+                    dict[str, Any],
+                ],
+            ] = {}
+
+            def evaluate_dynamic_count(count: int) -> float:
+                mask = np.zeros_like(direct_available)
+                for index in ranked_cells[:count]:
+                    mask[index] = True
+                evaluation = (
+                    probe_sparse(mask, capture_dynamic_probe=True)
+                    if dynamic_probe_source in {"prompt_anchor", "prompt_suffix"}
+                    else evaluate_sparse(mask)
+                )
+                point_objectives = dynamic_objectives
+                point_probe_latency = 0.0
+                stale_scores: dict[str, float] = {}
+                candidate_scores: dict[str, float] = {}
+                if dynamic_probe_source == "prompt_anchor":
+                    extras = evaluation.output.extras or {}
+                    shared = sorted(
+                        key
+                        for key in extras
+                        if key.startswith("prompt_anchor_b")
+                        and "_nll_" in key
+                        and f"dynamic_stale_{key}" in extras
+                    )
+                    point_objectives = [
+                        (key, int(key.rsplit("_", 1)[1])) for key in shared
+                    ]
+                    stale_scores = {
+                        key: float(extras[f"dynamic_stale_{key}"])
+                        for key in shared
+                    }
+                    candidate_scores = {
+                        key: float(extras[key]) for key in shared
+                    }
+                    point_probe_latency = float(
+                        extras.get("dynamic_stale_prompt_anchor_probe_latency", 0.0)
+                    ) + float(extras.get("prompt_anchor_probe_latency", 0.0))
+                    if not point_objectives:
+                        point_objectives = [("unavailable_dynamic_probe", 1)]
+                        score = math.inf
+                    else:
+                        score = consensus_probe_score(
+                            stale_scores=stale_scores,
+                            candidate_scores=candidate_scores,
+                            scale_floor=(
+                                dynamic_budget_policy.objective_scale_floor
+                            ),
+                        )
+                else:
+                    candidate_scores = {
+                        objective: _sparse_objective_score(
+                            evaluation,
+                            reference_token_id=reference_token_id,
+                            objective=objective,
+                        )
+                        for objective, _ in dynamic_objectives
+                    }
+                    score = consensus_probe_score(
+                        stale_scores=dynamic_stale_scores,
+                        candidate_scores=candidate_scores,
+                        scale_floor=dynamic_budget_policy.objective_scale_floor,
+                    )
+                    extras = evaluation.output.extras or {}
+                    point_probe_latency = float(
+                        extras.get("prompt_suffix_probe_latency", 0.0)
+                    ) + float(extras.get("reference_probe_latency", 0.0))
+                if stale_scores and candidate_scores:
+                    normalized_scores = normalized_probe_scores(
+                        stale_scores=stale_scores,
+                        candidate_scores=candidate_scores,
+                        scale_floor=dynamic_budget_policy.objective_scale_floor,
+                    )
+                else:
+                    normalized_scores = {}
+                selected_indices = [
+                    [int(index[0]), int(index[1])]
+                    for index in np.argwhere(mask)
+                ]
+                selected_token_blocks = sorted(
+                    {int(index[1]) for index in np.argwhere(mask)}
+                )
+                point_trace = {
+                    "count": count,
+                    "selected_cells": selected_indices,
+                    "selected_token_blocks": selected_token_blocks,
+                    "objectives": [
+                        {
+                            "name": name,
+                            "probe_length": int(length),
+                            "stale_score": float(stale_scores.get(name, math.nan)),
+                            "candidate_score": float(
+                                candidate_scores.get(name, math.nan)
+                            ),
+                            "normalized_score": float(
+                                normalized_scores.get(name, math.inf)
+                            ),
+                        }
+                        for name, length in point_objectives
+                    ],
+                    "aggregate_worst_score": float(score),
+                    "evaluation_only_logits_kl": float(evaluation.logits_kl),
+                    "evaluation_only_kl_gain_vs_stale": float(
+                        stale.logits_kl - evaluation.logits_kl
+                    ),
+                }
+                extras = evaluation.output.extras or {}
+                total_point_latency = (
+                    float(extras.get("cache_maintenance_latency", 0.0))
+                    + float(extras.get("decode_latency", 0.0))
+                    + point_probe_latency
+                )
+                dynamic_points[count] = (
+                    mask,
+                    evaluation,
+                    score,
+                    total_point_latency,
+                    point_objectives,
+                    point_trace,
+                )
+                return score
+
+            target_probe_model = (
+                dynamic_probe_model.target_model(str(condition["update_target"]))
+                if dynamic_probe_model is not None
+                else None
+            )
+            supervised_gate = (
+                dynamic_probe_source == "prompt_anchor"
+                and dynamic_probe_model is not None
+                and target_probe_model is not None
+            )
+            supervised_probability = math.nan
+            supervised_threshold = (
+                target_probe_model.threshold
+                if target_probe_model is not None
+                else math.nan
+            )
+            supervised_probabilities: dict[int, float] = {}
+            diagnostic_count = 0
+            probability_count = 0
+            candidate_schedule = "all"
+            candidate_counts: list[int] = []
+            if supervised_gate:
+                activated_risk, budget_cap, _ = dynamic_budget_parameters(
+                    risk=continuous_risk,
+                    available_cells=direct_total,
+                    policy=dynamic_budget_policy,
+                )
+                candidate_schedule = str(
+                    target_probe_model.metadata.get("candidate_schedule", "all")
+                )
+                if candidate_schedule == "prefix2_plus_cap":
+                    candidate_counts = sorted(
+                        {
+                            count
+                            for count in (1, 2, budget_cap)
+                            if 1 <= count <= budget_cap
+                        }
+                    )
+                else:
+                    candidate_counts = list(range(1, budget_cap + 1))
+                for count in candidate_counts:
+                    evaluate_dynamic_count(count)
+                    probability = score_prompt_anchor_point(
+                        dynamic_probe_model,
+                        update_target=str(condition["update_target"]),
+                        point_trace=dynamic_points[count][5],
+                        risk_score=continuous_risk.score,
+                        control_score=continuous_risk.control_score,
+                        activated_risk=activated_risk,
+                        budget_cap=budget_cap,
+                        token_block_count=block_count,
+                    )
+                    if probability is not None:
+                        supervised_probabilities[count] = probability
+                selection_policy = str(
+                    target_probe_model.metadata.get(
+                        "selection_policy", "max_probability"
+                    )
+                )
+                if supervised_probabilities:
+                    diagnostic_count = max(
+                        supervised_probabilities,
+                        key=lambda count: (
+                            supervised_probabilities[count],
+                            -count,
+                        ),
+                    )
+                    accepted_counts = [
+                        count
+                        for count, probability in supervised_probabilities.items()
+                        if probability >= supervised_threshold
+                    ]
+                    if accepted_counts and selection_policy == "largest_accepted_count":
+                        best_count = max(accepted_counts)
+                    elif accepted_counts:
+                        best_count = max(
+                            accepted_counts,
+                            key=lambda count: (
+                                supervised_probabilities[count],
+                                -count,
+                            ),
+                        )
+                    else:
+                        best_count = 0
+                    probability_count = best_count if best_count > 0 else diagnostic_count
+                    supervised_probability = supervised_probabilities[probability_count]
+                else:
+                    best_count = 0
+                    selection_policy = "max_probability"
+                selected_count = best_count
+                dynamic_decision = DynamicBudgetDecision(
+                    selected_count=selected_count,
+                    selected_score=(
+                        1.0 - supervised_probability
+                        if math.isfinite(supervised_probability)
+                        else 1.0
+                    ),
+                    observed_steps=len(candidate_counts),
+                    budget_cap=budget_cap,
+                    activated_risk=activated_risk,
+                    target_relative_reduction=supervised_threshold,
+                    achieved_relative_reduction=(
+                        max(0.0, supervised_probability - supervised_threshold)
+                        if math.isfinite(supervised_probability)
+                        else 0.0
+                    ),
+                    stop_reason=(
+                        "supervised_gate_accepted"
+                        if selected_count > 0
+                        else "supervised_gate_rejected"
+                    ),
+                )
+                dynamic_objective = "prompt_anchor_supervised_gate"
+            else:
+                dynamic_decision = run_dynamic_budget_controller(
+                    stale_score=dynamic_stale_score,
+                    risk=continuous_risk,
+                    available_cells=direct_total,
+                    evaluate_count=evaluate_dynamic_count,
+                    policy=dynamic_budget_policy,
+                )
+                if dynamic_trace_full_budget:
+                    for count in range(1, dynamic_decision.budget_cap + 1):
+                        if count not in dynamic_points:
+                            evaluate_dynamic_count(count)
+
+            if dynamic_decision.selected_count == 0:
+                dynamic_mask = np.zeros_like(direct_available)
+                dynamic_evaluation = stale
+                dynamic_selected_score = (
+                    supervised_probability
+                    if supervised_gate
+                    else dynamic_stale_score
+                )
+            else:
+                (
+                    dynamic_mask,
+                    dynamic_evaluation,
+                    point_worst_score,
+                    _,
+                    _,
+                    _,
+                ) = dynamic_points[dynamic_decision.selected_count]
+                dynamic_selected_score = (
+                    supervised_probability
+                    if supervised_gate
+                    else point_worst_score
+                )
+            selection_stale_score = (
+                supervised_threshold if supervised_gate else dynamic_stale_score
+            )
+            selection_improvement = (
+                supervised_probability - supervised_threshold
+                if supervised_gate and math.isfinite(supervised_probability)
+                else dynamic_stale_score - dynamic_selected_score
+            )
+            metadata_count = (
+                dynamic_decision.selected_count
+                if dynamic_decision.selected_count > 0
+                else (
+                    probability_count
+                    if supervised_gate
+                    else dynamic_decision.observed_steps
+                )
+            )
+            metadata_point = dynamic_points.get(metadata_count)
+            selected_objectives = (
+                metadata_point[4] if metadata_point is not None else dynamic_objectives
+            )
+            dynamic_budget = dynamic_decision.selected_count / total_eligible
+            observed_point_counts = (
+                set(dynamic_points)
+                if supervised_gate
+                else {
+                    count
+                    for count in dynamic_points
+                    if count <= dynamic_decision.observed_steps
+                }
+            )
+            dynamic_probe_latency = sum(
+                dynamic_points[count][3] for count in observed_point_counts
+            )
+            dynamic_reference_evaluations = sum(
+                len(dynamic_points[count][4]) for count in observed_point_counts
+            )
+            records.append(
+                _record(
+                    condition,
+                    selector="sparse_dynamic_controller",
+                    requested_budget_fraction=dynamic_budget,
+                    mask=dynamic_mask,
+                    eligible=eligible,
+                    evaluation=dynamic_evaluation,
+                    stale_kl=stale.logits_kl,
+                    selection_metadata={
+                        "selection_objective": dynamic_objective,
+                        "selection_stale_score": selection_stale_score,
+                        "selection_raw_score": dynamic_selected_score,
+                        "selection_objective_improvement_vs_stale": (
+                            selection_improvement
+                        ),
+                        "search_probe_count": dynamic_decision.observed_steps,
+                        "search_reference_token_evaluations": (
+                            dynamic_reference_evaluations
+                        ),
+                        "reference_probe_length": dynamic_probe_length,
+                        "dynamic_probe_source": dynamic_probe_source,
+                        "dynamic_probe_answer_free": (
+                            dynamic_probe_source in {"prompt_anchor", "prompt_suffix"}
+                        ),
+                        "dynamic_probe_objectives": json.dumps(
+                            [objective for objective, _ in selected_objectives]
+                        ),
+                        "dynamic_probe_consensus_size": len(selected_objectives),
+                        "dynamic_probe_model_path": (
+                            str(dynamic_probe_model_path)
+                            if dynamic_probe_model_path is not None
+                            else ""
+                        ),
+                        "dynamic_probe_model_used": supervised_gate,
+                        "dynamic_probe_model_probability": supervised_probability,
+                        "dynamic_probe_model_threshold": supervised_threshold,
+                        "dynamic_probe_model_selection_policy": (
+                            selection_policy if supervised_gate else ""
+                        ),
+                        "dynamic_probe_model_candidate_schedule": (
+                            candidate_schedule if supervised_gate else ""
+                        ),
+                        "dynamic_probe_model_candidate_counts": json.dumps(
+                            candidate_counts if supervised_gate else []
+                        ),
+                        "dynamic_probe_model_scores": json.dumps(
+                            supervised_probabilities, sort_keys=True
+                        ),
+                        "dynamic_trace_full_budget": dynamic_trace_full_budget,
+                        "dynamic_probe_trace": json.dumps(
+                            [
+                                dynamic_points[count][5]
+                                for count in sorted(dynamic_points)
+                            ],
+                            sort_keys=True,
+                        ),
+                        "joint_budget_selection": True,
+                        "selected_stale_action": (
+                            dynamic_decision.selected_count == 0
+                        ),
+                        "safety_gate_passed": (
+                            dynamic_decision.selected_count > 0
+                        ),
+                        "continuous_risk_score": continuous_risk.score,
+                        "continuous_risk_raw": continuous_risk.raw_score,
+                        "continuous_risk_uncertainty": (
+                            continuous_risk.uncertainty
+                        ),
+                        "continuous_control_score": (
+                            continuous_risk.control_score
+                        ),
+                        "dynamic_activated_risk": dynamic_decision.activated_risk,
+                        "dynamic_budget_cap_cells": dynamic_decision.budget_cap,
+                        "dynamic_target_relative_reduction": (
+                            dynamic_decision.target_relative_reduction
+                        ),
+                        "dynamic_achieved_relative_reduction": (
+                            dynamic_decision.achieved_relative_reduction
+                        ),
+                        "dynamic_stop_reason": dynamic_decision.stop_reason,
+                        "dynamic_rollback_steps": max(
+                            0,
+                            dynamic_decision.observed_steps
+                            - dynamic_decision.selected_count,
+                        ),
+                        "planner_probe_latency": dynamic_probe_latency,
+                        "per_cell_risk_state": True,
+                    },
+                )
+            )
+            mask_rows.extend(
+                _mask_rows(
+                    condition,
+                    "sparse_dynamic_controller",
+                    dynamic_budget,
+                    dynamic_mask,
+                )
+            )
+
             if not sparse_policy_only:
                 all_direct = direct_available.copy()
                 all_direct_evaluation = evaluate_sparse(all_direct)
@@ -1998,7 +2631,7 @@ def _explore_condition(
                 search_counts = sorted({min(count, direct_total) for count in desired_counts})
                 reference_token_id = int(condition.get("reference_token_id", -1))
                 reference_objectives = [("reference", "reference_nll")]
-                for length in effective_reference_lengths:
+                for length in effective_structured_reference_lengths:
                     if length <= 1:
                         continue
                     key = f"reference_token_nll_{length}"
@@ -2555,8 +3188,16 @@ def _sparse_objective_score(
         return float(reference_nll)
     if objective.startswith("reference_nll_"):
         extras = evaluation.output.extras or {}
-        value = extras.get(f"reference_token_nll_{objective.rsplit('_', 1)[1]}", math.nan)
+        value = extras.get(
+            f"reference_token_nll_{objective.rsplit('_', 1)[1]}",
+            math.nan,
+        )
         return float(value)
+    if objective.startswith("prompt_suffix_nll_"):
+        extras = evaluation.output.extras or {}
+        return float(extras.get(objective, math.nan))
+    if objective == "unavailable_dynamic_probe":
+        return math.inf
     raise ValueError(f"Unsupported sparse objective: {objective}")
 
 
@@ -3096,6 +3737,7 @@ def _record(
         if (
             key.startswith("reference_token_nll_")
             or key.startswith("reference_token_kl_")
+            or key.startswith("prompt_suffix_nll_")
         )
         and isinstance(value, int | float)
     }
@@ -3127,6 +3769,15 @@ def _record(
         "reference_sequence_kl": float(extras.get("reference_sequence_kl", math.nan)),
         "reference_probe_tokens": int(extras.get("reference_probe_tokens", 0)),
         "reference_probe_latency": float(extras.get("reference_probe_latency", 0.0)),
+        "prompt_suffix_probe_tokens": int(
+            extras.get("prompt_suffix_probe_tokens", 0)
+        ),
+        "prompt_suffix_probe_latency": float(
+            extras.get("prompt_suffix_probe_latency", 0.0)
+        ),
+        "prompt_suffix_sequence_nll": float(
+            extras.get("prompt_suffix_sequence_nll", math.nan)
+        ),
         **sequence_metrics,
         **attention_residual_metrics,
         "stale_logits_kl": stale_kl,
