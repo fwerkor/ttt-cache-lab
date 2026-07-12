@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -117,15 +118,46 @@ def run_blockwise_exploration(
     if not callable(splice):
         raise RuntimeError("The selected backend does not implement blockwise cache splicing")
 
+    records_path = output_dir / "blockwise_records.csv"
+    records_jsonl_path = output_dir / "blockwise_records.jsonl"
+    frontier_path = output_dir / "block_frontier.csv"
+    masks_path = output_dir / "block_masks.csv"
     records: list[dict[str, Any]] = []
     frontier_rows: list[dict[str, Any]] = []
     mask_rows: list[dict[str, Any]] = []
+    completed_conditions: set[tuple[int, str, int, int, int]] = set()
+    if config.resume:
+        records = _read_jsonl(records_jsonl_path)
+        frontier_rows = _read_rows(frontier_path)
+        mask_rows = _read_rows(masks_path)
+        completed_conditions = _completed_condition_keys(
+            records,
+            frontier_rows,
+            mask_rows,
+        )
+        records = [row for row in records if _condition_key(row) in completed_conditions]
+        frontier_rows = [row for row in frontier_rows if _condition_key(row) in completed_conditions]
+        mask_rows = [row for row in mask_rows if _condition_key(row) in completed_conditions]
     samples = build_task_samples(config.data, seed=config.seed)
     try:
         for sample_id, raw_sample in enumerate(samples):
             sample = _single_token_sample(raw_sample)
             sample = backend.prepare_sample(sample, context_length=config.data.context_length)
             for target_name in config.updates.targets:
+                pending_block_sizes = tuple(
+                    block_size
+                    for block_size in block_sizes
+                    if (
+                        sample_id,
+                        target_name,
+                        block_size,
+                        version_gap,
+                        config.data.context_length,
+                    )
+                    not in completed_conditions
+                )
+                if not pending_block_sizes:
+                    continue
                 target = parse_update_target(target_name, num_layers=backend.num_layers)
                 backend.restore_after_update()
                 _prepare_target(backend, config, target)
@@ -170,7 +202,7 @@ def run_blockwise_exploration(
                     "context_length": config.data.context_length,
                     "seed": config.seed,
                 }
-                for block_size in block_sizes:
+                for block_size in pending_block_sizes:
                     condition = {
                         **base_condition,
                         "block_size": block_size,
@@ -195,10 +227,11 @@ def run_blockwise_exploration(
                     # Checkpoint each block-size condition. A W4 condition is
                     # expensive enough that waiting for all block sizes can
                     # discard hours of valid work after a later failure.
-                    _write_rows(output_dir / "blockwise_records.csv", records)
-                    _write_jsonl(output_dir / "blockwise_records.jsonl", records)
-                    _write_rows(output_dir / "block_frontier.csv", frontier_rows)
-                    _write_rows(output_dir / "block_masks.csv", mask_rows)
+                    _write_rows(records_path, records)
+                    _write_jsonl(records_jsonl_path, records)
+                    _write_rows(frontier_path, frontier_rows)
+                    _write_rows(masks_path, mask_rows)
+                    completed_conditions.add(_condition_key(condition))
                     _release_accelerator_cache(backend)
     finally:
         backend.restore_after_update()
@@ -206,10 +239,10 @@ def run_blockwise_exploration(
     report_path = output_dir / "blockwise_report.md"
     report_path.write_text(_report(records, frontier_rows), encoding="utf-8")
     return BlockwiseArtifacts(
-        records_csv=output_dir / "blockwise_records.csv",
-        records_jsonl=output_dir / "blockwise_records.jsonl",
-        frontier_csv=output_dir / "block_frontier.csv",
-        masks_csv=output_dir / "block_masks.csv",
+        records_csv=records_path,
+        records_jsonl=records_jsonl_path,
+        frontier_csv=frontier_path,
+        masks_csv=masks_path,
         report_markdown=report_path,
     )
 
@@ -1077,21 +1110,82 @@ def _condition_seed(condition: dict[str, Any]) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
+def _condition_key(row: dict[str, Any]) -> tuple[int, str, int, int, int]:
+    return (
+        int(row["sample_id"]),
+        str(row["update_target"]),
+        int(row["block_size"]),
+        int(row["version_gap"]),
+        int(row["context_length"]),
+    )
+
+
+def _completed_condition_keys(
+    records: list[dict[str, Any]],
+    frontier_rows: list[dict[str, Any]],
+    mask_rows: list[dict[str, Any]],
+) -> set[tuple[int, str, int, int, int]]:
+    if not records or not frontier_rows or not mask_rows:
+        return set()
+    return (
+        {_condition_key(row) for row in records}
+        & {_condition_key(row) for row in frontier_rows}
+        & {_condition_key(row) for row in mask_rows}
+    )
+
+
+def _read_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file() or path.stat().st_size == 0:
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file() or path.stat().st_size == 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError(f"Expected object in {path}:{line_number}")
+            rows.append(payload)
+    return rows
+
+
+def _commit_temp_file(path: Path, temporary: Path) -> None:
+    os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     fields = sorted({field for row in rows for field in row})
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        if fields:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        handle.flush()
+        os.fsync(handle.fileno())
+    _commit_temp_file(path, temporary)
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    with temporary.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    _commit_temp_file(path, temporary)
 
 
 def _report(records: list[dict[str, Any]], frontier_rows: list[dict[str, Any]]) -> str:

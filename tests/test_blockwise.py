@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import UserDict
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,10 +9,15 @@ import numpy as np
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.blockwise import (
     _compact_evaluation_output,
+    _completed_condition_keys,
     _Evaluation,
     _greedy_sparse_objective_masks,
     _logit_selection_metrics,
+    _read_jsonl,
+    _read_rows,
     _reference_token_id,
+    _write_jsonl,
+    _write_rows,
 )
 from ttt_cache_lab.models.interface import BackendOutput
 
@@ -101,3 +107,30 @@ def test_compact_evaluation_output_drops_device_resident_state() -> None:
     assert "past_key_values" not in compact.extras
     assert "hidden_states" not in compact.extras
     assert "lora_cache" not in compact.extras
+
+
+def test_blockwise_checkpoint_round_trip_requires_all_artifacts(tmp_path: Path) -> None:
+    condition = {
+        "sample_id": 7,
+        "update_target": "lora.mlp_middle",
+        "block_size": 32,
+        "version_gap": 4,
+        "context_length": 4096,
+    }
+    records = [{**condition, "selector": "stale", "logits_kl": 1.0}]
+    frontier = [{**condition, "token_block": 0, "marginal_kl_gain": 0.1}]
+    masks = [{**condition, "selector": "oracle", "layer": 0, "token_block": 0}]
+
+    records_path = tmp_path / "blockwise_records.jsonl"
+    frontier_path = tmp_path / "block_frontier.csv"
+    masks_path = tmp_path / "block_masks.csv"
+    _write_jsonl(records_path, records)
+    _write_rows(frontier_path, frontier)
+    _write_rows(masks_path, masks)
+
+    loaded_records = _read_jsonl(records_path)
+    loaded_frontier = _read_rows(frontier_path)
+    loaded_masks = _read_rows(masks_path)
+    assert len(_completed_condition_keys(loaded_records, loaded_frontier, loaded_masks)) == 1
+    assert _completed_condition_keys(loaded_records, loaded_frontier, []) == set()
+    assert not list(tmp_path.glob(".*.tmp-*"))
