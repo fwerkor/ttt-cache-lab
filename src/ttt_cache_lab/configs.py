@@ -196,6 +196,17 @@ class AdapterConfig(BaseModel):
     static_adapter_sequence: list[int] = Field(default_factory=lambda: [0, 1, 2, 0, 1, 2])
 
 
+class TaskViabilityConfig(BaseModel):
+    """Preflight checks that prevent degenerate task configurations from running."""
+
+    enabled: bool = False
+    probe_samples: int = Field(default=16, ge=1)
+    min_mean_score: float = Field(default=0.05, ge=0.0, le=1.0)
+    max_mean_score: float = Field(default=0.95, ge=0.0, le=1.0)
+    min_nonzero_fraction: float = Field(default=0.10, ge=0.0, le=1.0)
+    max_perfect_fraction: float = Field(default=0.90, ge=0.0, le=1.0)
+
+
 class VersionedExperimentConfig(BaseModel):
     name: str
     seed: int = 0
@@ -210,6 +221,7 @@ class VersionedExperimentConfig(BaseModel):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     measurement: MeasurementConfig = Field(default_factory=MeasurementConfig)
     adapter: AdapterConfig = Field(default_factory=AdapterConfig)
+    task_viability: TaskViabilityConfig = Field(default_factory=TaskViabilityConfig)
     version_steps: list[int] = Field(default_factory=lambda: [1, 2, 4, 8, 16])
     cached_version: int = 0
 

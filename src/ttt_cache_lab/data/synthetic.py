@@ -45,10 +45,7 @@ def neutral_background_sentences(count: int, *, offset: int = 0) -> list[str]:
     for index in range(offset, offset + count):
         adjective = _NEUTRAL_ADJECTIVES[index % len(_NEUTRAL_ADJECTIVES)]
         subject = _NEUTRAL_SUBJECTS[(index // len(_NEUTRAL_ADJECTIVES)) % len(_NEUTRAL_SUBJECTS)]
-        topic = _NEUTRAL_TOPICS[
-            (index // (len(_NEUTRAL_ADJECTIVES) * len(_NEUTRAL_SUBJECTS)))
-            % len(_NEUTRAL_TOPICS)
-        ]
+        topic = _NEUTRAL_TOPICS[(index // (len(_NEUTRAL_ADJECTIVES) * len(_NEUTRAL_SUBJECTS))) % len(_NEUTRAL_TOPICS)]
         sentences.append(f"{adjective} {subject} {topic}.")
     return sentences
 
@@ -76,31 +73,121 @@ class SyntheticTaskFactory:
     def __init__(self, seed: int) -> None:
         self.rng = random.Random(seed)
 
-    def passkey(self, *, context_length: int, answer_length: int) -> TaskSample:
+    def passkey(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
         answer = "".join(str(self.rng.randrange(10)) for _ in range(answer_length))
-        filler_tokens = [f"tok{self.rng.randrange(10_000)}" for _ in range(max(1, context_length // 8))]
-        insert_at = self.rng.randrange(len(filler_tokens))
-        filler_tokens.insert(insert_at, f"The secret passkey is {answer}.")
-        prompt = " ".join(filler_tokens) + "\nQuestion: What is the secret passkey?\nAnswer:"
-        return TaskSample(prompt=prompt, answer=answer, metadata={"insert_at": insert_at, "task": "passkey"})
+        record_count = _difficulty_value(
+            difficulty,
+            easy=min(16, max(12, context_length // 256)),
+            medium=min(64, max(32, context_length // 96)),
+            hard=min(192, max(128, context_length // 32)),
+        )
+        revision_ids = self.rng.sample(range(10_000, 99_999), record_count)
+        active_revision = revision_ids[self.rng.randrange(record_count)]
+        value_records: list[str] = []
+        for revision in revision_ids:
+            value = (
+                answer
+                if revision == active_revision
+                else "".join(str(self.rng.randrange(10)) for _ in range(answer_length))
+            )
+            value_records.append(f"Passkey revision R{revision} stores value {value}.")
 
-    def key_value(self, *, context_length: int, answer_length: int) -> TaskSample:
+        anchor: str
+        routing_records: list[str] = []
+        hop_count = 1
+        if difficulty == "easy":
+            anchor = f"The active passkey revision is R{active_revision}."
+        else:
+            slot_count = 6 if difficulty == "medium" else min(80, record_count // 2)
+            slot_ids = self.rng.sample(range(1_000, 9_999), slot_count)
+            active_slot = slot_ids[self.rng.randrange(slot_count)]
+            slot_revisions = self.rng.sample(revision_ids, slot_count)
+            slot_revisions[slot_ids.index(active_slot)] = active_revision
+            for slot, revision in zip(slot_ids, slot_revisions, strict=True):
+                routing_records.append(f"Routing slot S{slot} selects revision R{revision}.")
+            hop_count = 2
+            if difficulty == "medium":
+                anchor = f"The active routing slot is S{active_slot}."
+            else:
+                profile_count = min(40, slot_count // 2)
+                profile_ids = self.rng.sample(range(100, 999), profile_count)
+                active_profile = profile_ids[self.rng.randrange(profile_count)]
+                profile_slots = self.rng.sample(slot_ids, profile_count)
+                profile_slots[profile_ids.index(active_profile)] = active_slot
+                for profile, slot in zip(profile_ids, profile_slots, strict=True):
+                    routing_records.append(f"Profile P{profile} uses routing slot S{slot}.")
+                anchor = f"The currently active profile is P{active_profile}."
+                hop_count = 3
+
+        evidence = value_records + routing_records
+        self.rng.shuffle(evidence)
+        prompt = "\n".join(
+            [
+                anchor,
+                *evidence,
+                (
+                    "Question: Follow the active profile or slot mappings, if present, until you "
+                    "reach a passkey revision. Return that revision's stored value. Reply with only "
+                    "the decimal digits, without words or punctuation."
+                ),
+                "Answer:",
+            ]
+        )
+        return TaskSample(
+            prompt=prompt,
+            answer=answer,
+            metadata={
+                "task": "passkey",
+                "active_revision": active_revision,
+                "record_count": record_count,
+                "hop_count": hop_count,
+                "synthetic_difficulty": difficulty,
+            },
+        )
+
+    def key_value(
+        self,
+        *,
+        context_length: int,
+        answer_length: int,
+        difficulty: SyntheticDifficulty = "hard",
+    ) -> TaskSample:
         key = f"key_{self.rng.randrange(10_000)}"
         value = "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(answer_length))
-        pairs = [
-            f"key_{i}: value_{self.rng.randrange(10_000)}"
-            for i in range(max(1, context_length // 16))
-            if f"key_{i}" != key
-        ]
+        pair_count = max(
+            8,
+            _difficulty_value(
+                difficulty,
+                easy=context_length // 128,
+                medium=context_length // 64,
+                hard=context_length // 32,
+            ),
+        )
+        pairs = [f"key_{i}: value_{self.rng.randrange(10_000)}" for i in range(pair_count) if f"key_{i}" != key]
         if not pairs:
             pairs.append(f"key_fallback: value_{self.rng.randrange(10_000)}")
         insert_at = self.rng.randrange(len(pairs))
         pairs.insert(insert_at, f"{key}: {value}")
-        prompt = "\n".join(pairs) + f"\nQuestion: What is the value for {key}?\nAnswer:"
+        prompt = "\n".join(pairs) + (
+            f"\nQuestion: What is the value for {key}? Reply with only the exact value, "
+            "without an explanation.\nAnswer:"
+        )
         return TaskSample(
             prompt=prompt,
             answer=value,
-            metadata={"insert_at": insert_at, "task": "key_value", "key": key},
+            metadata={
+                "insert_at": insert_at,
+                "task": "key_value",
+                "key": key,
+                "pair_count": len(pairs),
+                "synthetic_difficulty": difficulty,
+            },
         )
 
     def multi_needle(
@@ -130,8 +217,7 @@ class SyntheticTaskFactory:
             filler.insert(pos, f"Record {key} has code {value}.")
         target_key, answer = needles[target_index]
         prompt = " ".join(filler) + (
-            f"\nQuestion: What code is stored in {target_key}? "
-            "Reply with only the exact code.\nAnswer:"
+            f"\nQuestion: What code is stored in {target_key}? Reply with only the exact code.\nAnswer:"
         )
         return TaskSample(
             prompt=prompt,
@@ -231,13 +317,9 @@ class SyntheticTaskFactory:
         used_entities: set[str] = set()
 
         def next_entity() -> str:
-            candidate = "entity_" + "".join(
-                chr(ord("a") + self.rng.randrange(26)) for _ in range(6)
-            )
+            candidate = "entity_" + "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(6))
             while candidate in used_entities:
-                candidate = "entity_" + "".join(
-                    chr(ord("a") + self.rng.randrange(26)) for _ in range(6)
-                )
+                candidate = "entity_" + "".join(chr(ord("a") + self.rng.randrange(26)) for _ in range(6))
             used_entities.add(candidate)
             return candidate
 
@@ -371,9 +453,7 @@ class SyntheticTaskFactory:
             items = unique + common
             self.rng.shuffle(items)
             lists.append(items)
-        prompt = "\n".join(
-            f"List {index + 1}: {', '.join(items)}" for index, items in enumerate(lists)
-        ) + (
+        prompt = "\n".join(f"List {index + 1}: {', '.join(items)}" for index, items in enumerate(lists)) + (
             "\nQuestion: Which exact token_* entries occur in every list? Return all and only those "
             "entries as a comma-separated set with no explanation.\nAnswer:"
         )
@@ -400,11 +480,21 @@ class SyntheticTaskFactory:
     ) -> list[TaskSample]:
         if task == "passkey":
             return [
-                self.passkey(context_length=context_length, answer_length=answer_length) for _ in range(num_samples)
+                self.passkey(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
+                for _ in range(num_samples)
             ]
         if task == "key_value":
             return [
-                self.key_value(context_length=context_length, answer_length=answer_length) for _ in range(num_samples)
+                self.key_value(
+                    context_length=context_length,
+                    answer_length=answer_length,
+                    difficulty=difficulty,
+                )
+                for _ in range(num_samples)
             ]
         if task == "multi_needle":
             return [

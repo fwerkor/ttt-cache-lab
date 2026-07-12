@@ -68,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     task_probe.add_argument("--max-samples", type=int, default=None)
     task_probe.add_argument("--min-mean-score", type=float, default=None)
     task_probe.add_argument("--max-mean-score", type=float, default=None)
+    task_probe.add_argument("--min-nonzero-fraction", type=float, default=None)
+    task_probe.add_argument("--max-perfect-fraction", type=float, default=None)
 
     static_run = subparsers.add_parser("static-run", help="Run a fixed multi-adapter cache experiment")
     static_run.add_argument("--config", required=True, type=Path)
@@ -313,6 +315,8 @@ def main(argv: list[str] | None = None) -> None:
             max_samples=args.max_samples,
             min_mean_score=args.min_mean_score,
             max_mean_score=args.max_mean_score,
+            min_nonzero_fraction=args.min_nonzero_fraction,
+            max_perfect_fraction=args.max_perfect_fraction,
         )
         console.print(f"Wrote {probe_artifacts.records_jsonl}")
         console.print(f"Wrote {probe_artifacts.records_csv}")
