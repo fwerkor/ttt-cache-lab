@@ -38,6 +38,7 @@ from ttt_cache_lab.experiments.run_metadata import (
     record_run_fields,
     write_run_metadata,
 )
+from ttt_cache_lab.experiments.task_probe import run_configured_task_probe
 from ttt_cache_lab.metrics.tensor import kl_divergence, relative_error, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
@@ -69,6 +70,7 @@ class StaticAdapterExperimentRunner:
         data = build_task_samples(self.config.data, seed=self.config.seed)
         backend = build_backend(self.config.model, seed=self.config.seed)
         backend.configure_metrics(capture_attention=self.config.metrics.compute_attention_metrics)
+        run_configured_task_probe(self.config, backend=backend, samples=data)
         run_metadata = collect_run_metadata(self.config)
         metadata_path = write_run_metadata(self.config.output_dir, run_metadata)
         strategies = [
