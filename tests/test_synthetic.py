@@ -83,13 +83,8 @@ def test_multi_hop_sources_have_one_outgoing_edge() -> None:
 
 def test_aggregation_reference_matches_ledger_majority() -> None:
     sample = SyntheticTaskFactory(7).aggregation(context_length=4096, answer_length=4)
-    ledger = sample.prompt.split("BEGIN LEDGER\n", maxsplit=1)[1].split(
-        "\nEND LEDGER", maxsplit=1
-    )[0]
-    counts = {
-        label: ledger.splitlines().count(label)
-        for label in ("TARGET_EVENT", "OTHER_EVENT")
-    }
+    ledger = sample.prompt.split("BEGIN LEDGER\n", maxsplit=1)[1].split("\nEND LEDGER", maxsplit=1)[0]
+    counts = {label: ledger.splitlines().count(label) for label in ("TARGET_EVENT", "OTHER_EVENT")}
     assert sample.answer == max(counts, key=lambda label: counts[label])
     assert counts[sample.answer] == int(sample.metadata["majority_count"])
     assert min(counts.values()) == int(sample.metadata["minority_count"])
@@ -103,6 +98,32 @@ def test_variable_tracking_distractors_never_reassign_target() -> None:
 
 
 def test_synthetic_difficulty_controls_structural_complexity() -> None:
+    easy_passkey = SyntheticTaskFactory(7).passkey(
+        context_length=16384,
+        answer_length=4,
+        difficulty="easy",
+    )
+    hard_passkey = SyntheticTaskFactory(7).passkey(
+        context_length=16384,
+        answer_length=4,
+        difficulty="hard",
+    )
+    assert int(easy_passkey.metadata["record_count"]) < int(hard_passkey.metadata["record_count"])
+    assert int(easy_passkey.metadata["hop_count"]) < int(hard_passkey.metadata["hop_count"])
+    assert len(easy_passkey.prompt.splitlines()) < len(hard_passkey.prompt.splitlines())
+
+    easy_key_value = SyntheticTaskFactory(7).key_value(
+        context_length=16384,
+        answer_length=4,
+        difficulty="easy",
+    )
+    hard_key_value = SyntheticTaskFactory(7).key_value(
+        context_length=16384,
+        answer_length=4,
+        difficulty="hard",
+    )
+    assert int(easy_key_value.metadata["pair_count"]) < int(hard_key_value.metadata["pair_count"])
+
     easy_needle = SyntheticTaskFactory(7).multi_needle(
         context_length=16384,
         answer_length=4,
@@ -168,14 +189,10 @@ def test_synthetic_difficulty_controls_structural_complexity() -> None:
         hard_aggregation.metadata["minority_count"]
     )
     assert easy_semantic_events < hard_semantic_events
-    assert int(easy_aggregation.metadata["margin"]) > int(
-        hard_aggregation.metadata["margin"]
-    )
+    assert int(easy_aggregation.metadata["margin"]) > int(hard_aggregation.metadata["margin"])
 
     easy_edges = easy_hop.prompt.count(" points to ")
     hard_edges = hard_hop.prompt.count(" points to ")
     assert easy_edges < hard_edges
 
-    assert int(easy_set.metadata["unique_per_list"]) < int(
-        hard_set.metadata["unique_per_list"]
-    )
+    assert int(easy_set.metadata["unique_per_list"]) < int(hard_set.metadata["unique_per_list"])

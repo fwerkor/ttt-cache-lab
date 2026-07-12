@@ -71,6 +71,21 @@ def test_task_probe_threshold_failure_keeps_artifacts(tmp_path: Path) -> None:
     assert (output_dir / "task_probe_summary.json").exists()
 
 
+def test_task_probe_fraction_thresholds_keep_artifacts(tmp_path: Path) -> None:
+    output_dir = tmp_path / "probe"
+    with pytest.raises(RuntimeError, match="perfect fraction"):
+        run_task_probe(
+            _config(tmp_path),
+            output_dir=output_dir,
+            max_samples=2,
+            max_perfect_fraction=0.5,
+        )
+
+    assert (output_dir / "task_probe.jsonl").exists()
+    assert (output_dir / "task_probe.csv").exists()
+    assert (output_dir / "task_probe_summary.json").exists()
+
+
 def test_task_probe_rejects_invalid_thresholds(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="between 0 and 1"):
         run_task_probe(

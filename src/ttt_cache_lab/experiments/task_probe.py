@@ -6,6 +6,7 @@ import math
 import os
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import mean
@@ -13,7 +14,9 @@ from typing import Any
 
 from ttt_cache_lab.configs import VersionedExperimentConfig
 from ttt_cache_lab.data.loader import build_task_samples
+from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.models.factory import build_backend
+from ttt_cache_lab.models.interface import ModelBackend
 
 
 @dataclass(frozen=True)
@@ -70,28 +73,55 @@ def run_task_probe(
     max_samples: int | None = None,
     min_mean_score: float | None = None,
     max_mean_score: float | None = None,
+    min_nonzero_fraction: float | None = None,
+    max_perfect_fraction: float | None = None,
+) -> TaskProbeArtifacts:
+    backend = build_backend(config.model, seed=config.seed)
+    backend.configure_metrics(capture_attention=False)
+    samples = build_task_samples(config.data, seed=config.seed)
+    return run_task_probe_with_backend(
+        config,
+        backend=backend,
+        samples=samples,
+        output_dir=output_dir,
+        max_samples=max_samples,
+        min_mean_score=min_mean_score,
+        max_mean_score=max_mean_score,
+        min_nonzero_fraction=min_nonzero_fraction,
+        max_perfect_fraction=max_perfect_fraction,
+    )
+
+
+def run_task_probe_with_backend(
+    config: VersionedExperimentConfig,
+    *,
+    backend: ModelBackend,
+    samples: Sequence[TaskSample],
+    output_dir: Path,
+    max_samples: int | None = None,
+    min_mean_score: float | None = None,
+    max_mean_score: float | None = None,
+    min_nonzero_fraction: float | None = None,
+    max_perfect_fraction: float | None = None,
 ) -> TaskProbeArtifacts:
     if max_samples is not None and max_samples < 1:
         raise ValueError("max_samples must be at least 1")
-    _validate_threshold("min_mean_score", min_mean_score)
-    _validate_threshold("max_mean_score", max_mean_score)
-    if (
-        min_mean_score is not None
-        and max_mean_score is not None
-        and min_mean_score > max_mean_score
+    for name, value in (
+        ("min_mean_score", min_mean_score),
+        ("max_mean_score", max_mean_score),
+        ("min_nonzero_fraction", min_nonzero_fraction),
+        ("max_perfect_fraction", max_perfect_fraction),
     ):
+        _validate_threshold(name, value)
+    if min_mean_score is not None and max_mean_score is not None and min_mean_score > max_mean_score:
         raise ValueError("min_mean_score cannot exceed max_mean_score")
 
-    samples = build_task_samples(config.data, seed=config.seed)
-    if max_samples is not None:
-        samples = samples[:max_samples]
-    if not samples:
+    selected_samples = list(samples[:max_samples] if max_samples is not None else samples)
+    if not selected_samples:
         raise ValueError("Task probe selected no samples")
 
-    backend = build_backend(config.model, seed=config.seed)
-    backend.configure_metrics(capture_attention=False)
     records: list[TaskProbeRecord] = []
-    for sample_id, raw_sample in enumerate(samples):
+    for sample_id, raw_sample in enumerate(selected_samples):
         sample = backend.prepare_sample(raw_sample, context_length=config.data.context_length)
         started = time.perf_counter()
         output = backend.prefill(sample.prompt)
@@ -109,9 +139,7 @@ def run_task_probe(
                 model_name=str(config.model.model_name_or_path or config.model.backend),
                 context_length=config.data.context_length,
                 neutral_padding_tokens=int(sample.metadata.get("neutral_padding_tokens", 0)),
-                synthetic_difficulty=str(
-                    sample.metadata.get("synthetic_difficulty", config.data.synthetic_difficulty)
-                ),
+                synthetic_difficulty=str(sample.metadata.get("synthetic_difficulty", config.data.synthetic_difficulty)),
                 prompt_format="chat_template" if config.model.use_chat_template else "plain",
                 answer=sample.answer,
                 generated_text=str(extras.get("generated_text", "")),
@@ -153,12 +181,44 @@ def run_task_probe(
             f"Task probe mean score {summary.mean_score:.6f} exceeds the required maximum "
             f"{max_mean_score:.6f}; artifacts were written to {output_dir}"
         )
+    if min_nonzero_fraction is not None and summary.nonzero_fraction < min_nonzero_fraction:
+        raise RuntimeError(
+            f"Task probe nonzero fraction {summary.nonzero_fraction:.6f} is below the required "
+            f"minimum {min_nonzero_fraction:.6f}; artifacts were written to {output_dir}"
+        )
+    if max_perfect_fraction is not None and summary.perfect_fraction > max_perfect_fraction:
+        raise RuntimeError(
+            f"Task probe perfect fraction {summary.perfect_fraction:.6f} exceeds the required "
+            f"maximum {max_perfect_fraction:.6f}; artifacts were written to {output_dir}"
+        )
     return TaskProbeArtifacts(
         records_jsonl=records_jsonl,
         records_csv=records_csv,
         summary_json=summary_json,
         records=tuple(records),
         summary=summary,
+    )
+
+
+def run_configured_task_probe(
+    config: VersionedExperimentConfig,
+    *,
+    backend: ModelBackend,
+    samples: Sequence[TaskSample],
+) -> TaskProbeArtifacts | None:
+    viability = config.task_viability
+    if not viability.enabled or not config.metrics.compute_task_metrics:
+        return None
+    return run_task_probe_with_backend(
+        config,
+        backend=backend,
+        samples=samples,
+        output_dir=config.output_dir / "task_probe",
+        max_samples=min(viability.probe_samples, len(samples)),
+        min_mean_score=viability.min_mean_score,
+        max_mean_score=viability.max_mean_score,
+        min_nonzero_fraction=viability.min_nonzero_fraction,
+        max_perfect_fraction=viability.max_perfect_fraction,
     )
 
 
