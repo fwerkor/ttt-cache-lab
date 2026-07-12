@@ -51,6 +51,46 @@ class _SearchPoint:
     probe_count: int
 
 
+_EVALUATION_HEAVY_EXTRA_KEYS = frozenset(
+    {
+        "past_key_values",
+        "hidden_states",
+        "lora_cache",
+        "prompt_state",
+    }
+)
+
+
+def _compact_evaluation_output(output: BackendOutput) -> BackendOutput:
+    """Drop device-resident candidate state after all probe metrics are computed."""
+    extras = output.extras or {}
+    compact_extras = {
+        key: value
+        for key, value in extras.items()
+        if key not in _EVALUATION_HEAVY_EXTRA_KEYS
+    }
+    return BackendOutput(
+        logits=output.logits,
+        cache_tensor=np.empty((0,), dtype=np.float32),
+        hidden_tensor=np.empty((0,), dtype=np.float32),
+        parameter_version=output.parameter_version,
+        extras=compact_extras,
+    )
+
+
+def _release_accelerator_cache(backend: ModelBackend) -> None:
+    """Return released candidate buffers to the active accelerator allocator."""
+    torch = getattr(backend, "torch", None)
+    if torch is None:
+        return
+    for name in ("npu", "cuda"):
+        accelerator = getattr(torch, name, None)
+        empty_cache = getattr(accelerator, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+            return
+
+
 def run_blockwise_exploration(
     config: VersionedExperimentConfig,
     *,
@@ -243,11 +283,14 @@ def run_blockwise_exploration(
                     frontier_rows.extend(condition_frontier)
                     mask_rows.extend(condition_masks)
                     feature_rows.extend(condition_features)
-                _write_rows(output_dir / "blockwise_records.csv", records)
-                _write_jsonl(output_dir / "blockwise_records.jsonl", records)
-                _write_rows(output_dir / "block_frontier.csv", frontier_rows)
-                _write_rows(output_dir / "block_masks.csv", mask_rows)
-                _write_rows(output_dir / "block_features.csv", feature_rows)
+                    # Checkpoint each expensive block-size condition so a later
+                    # failure cannot discard all previously completed search.
+                    _write_rows(output_dir / "blockwise_records.csv", records)
+                    _write_jsonl(output_dir / "blockwise_records.jsonl", records)
+                    _write_rows(output_dir / "block_frontier.csv", frontier_rows)
+                    _write_rows(output_dir / "block_masks.csv", mask_rows)
+                    _write_rows(output_dir / "block_features.csv", feature_rows)
+                    _release_accelerator_cache(backend)
     finally:
         backend.restore_after_update()
 
@@ -381,17 +424,18 @@ def _explore_condition(
             block_mask=mask,
             block_size=block_size,
         )
+        enrich_reference_metrics(output)
         value = _Evaluation(
-            output=output,
+            output=_compact_evaluation_output(output),
             logits_kl=kl_divergence(full.logits, output.logits),
             top1_agreement=top1_agreement(full.logits, output.logits),
         )
+        del output
         cache[key] = value
         return value
 
     empty = np.zeros_like(eligible)
     stale = evaluate(empty)
-    enrich_reference_metrics(stale.output)
     sparse_probe = getattr(backend, "probe_blockwise_lora_delta", None)
     sparse_score_fn = getattr(backend, "blockwise_lora_delta_scores", None)
     sparse_cache: dict[bytes, _Evaluation] = {}
@@ -405,11 +449,13 @@ def _explore_condition(
             block_size=block_size,
         )
         enrich_reference_metrics(output)
-        return _Evaluation(
-            output=output,
+        value = _Evaluation(
+            output=_compact_evaluation_output(output),
             logits_kl=kl_divergence(full.logits, output.logits),
             top1_agreement=top1_agreement(full.logits, output.logits),
         )
+        del output
+        return value
 
     def evaluate_sparse(mask: np.ndarray) -> _Evaluation:
         key = np.ascontiguousarray(mask, dtype=np.uint8).tobytes()

@@ -8,6 +8,7 @@ import numpy as np
 from ttt_cache_lab.data.synthetic import TaskSample
 from ttt_cache_lab.experiments.blockwise import (
     _beam_sparse_objective_masks,
+    _compact_evaluation_output,
     _condition_seed,
     _Evaluation,
     _greedy_sparse_objective_masks,
@@ -269,3 +270,40 @@ def test_joint_search_rejects_improvement_below_stale_margin() -> None:
 
     assert int(np.count_nonzero(accepted.mask)) == 1
     assert int(np.count_nonzero(rejected.mask)) == 0
+
+
+
+def test_compact_evaluation_output_drops_heavy_state_and_keeps_probe_metrics() -> None:
+    heavy_cache = object()
+    output = BackendOutput(
+        logits=np.asarray([[1.0, 2.0]], dtype=np.float64),
+        cache_tensor=np.ones((8, 8), dtype=np.float64),
+        hidden_tensor=np.ones((8, 8), dtype=np.float64),
+        parameter_version=3,
+        extras={
+            "past_key_values": heavy_cache,
+            "hidden_states": heavy_cache,
+            "lora_cache": heavy_cache,
+            "prompt_state": heavy_cache,
+            "attention_summary": np.asarray([[0.25, 0.75]]),
+            "cache_mode": "oracle_layer_token_block_splice",
+            "strategy_flops": 123.0,
+            "reference_token_nll_2": 0.125,
+        },
+    )
+
+    compact = _compact_evaluation_output(output)
+
+    assert compact.logits is output.logits
+    assert compact.cache_tensor.size == 0
+    assert compact.hidden_tensor.size == 0
+    assert compact.parameter_version == 3
+    assert compact.extras is not None
+    assert compact.extras["cache_mode"] == "oracle_layer_token_block_splice"
+    assert compact.extras["strategy_flops"] == 123.0
+    assert compact.extras["reference_token_nll_2"] == 0.125
+    assert "attention_summary" in compact.extras
+    assert "past_key_values" not in compact.extras
+    assert "hidden_states" not in compact.extras
+    assert "lora_cache" not in compact.extras
+    assert "prompt_state" not in compact.extras
