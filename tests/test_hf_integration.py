@@ -361,7 +361,8 @@ def test_blockwise_cache_splice_selects_layer_token_cells(tiny_llama_dir: Path) 
         block_mask=np.ones_like(mask),
         block_size=block_size,
     )
-    np.testing.assert_allclose(empty.logits, baseline.logits, rtol=1e-5, atol=1e-5)
+    stale = backend._reuse_old_prefix_cache(baseline)
+    np.testing.assert_allclose(empty.logits, stale.logits, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(complete.logits, full.logits, rtol=1e-5, atol=1e-5)
 
 
