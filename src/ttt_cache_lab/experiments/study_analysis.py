@@ -124,6 +124,16 @@ def _analyze_e2(
         metrics=(
             "task_score",
             "task_drop_vs_full",
+            "task_delta_vs_base",
+            "task_regression_vs_base",
+            "below_base",
+            "adaptation_gain_available",
+            "adaptation_gain_retention",
+            "positive_adaptation_gain_available",
+            "positive_adaptation_gain_retention",
+            "positive_adaptation_gain_reference",
+            "positive_adaptation_gain_retained",
+            "lost_positive_adaptation_gain",
             "logits_kl",
             "top1_agreement",
             "attention_shift",
@@ -133,6 +143,17 @@ def _analyze_e2(
             "flops_fraction",
         ),
     )
+    for row in summary:
+        available = float(row.get("positive_adaptation_gain_available_mean", 0.0))
+        unconditional = float(row.get("positive_adaptation_gain_retention_mean", 0.0))
+        reference = float(row.get("positive_adaptation_gain_reference_mean", 0.0))
+        retained = float(row.get("positive_adaptation_gain_retained_mean", 0.0))
+        row["positive_adaptation_gain_retention_conditional_mean"] = (
+            unconditional / available if available > 0.0 else 0.0
+        )
+        row["positive_adaptation_gain_retention_weighted"] = (
+            retained / reference if reference > 0.0 else 0.0
+        )
     csv_path = output_dir / "e2_version_drift.csv"
     _write_dicts(csv_path, summary)
 
@@ -185,7 +206,40 @@ def _analyze_e2(
         ),
         encoding="utf-8",
     )
-    return [csv_path, boundary_csv, boundary_md, svg_path]
+    base_delta_svg = output_dir / "e2_task_delta_vs_base_by_gap.svg"
+    base_delta_svg.write_text(
+        _line_svg(
+            summary,
+            x_field="version_gap",
+            y_field="task_delta_vs_base_mean",
+            series_fields=condition_fields(enriched, "cache_strategy", "update_target"),
+            title="E2 task change versus pre-update model",
+            x_label="version gap",
+            y_label="task score minus pre-update baseline",
+        ),
+        encoding="utf-8",
+    )
+    gain_retention_svg = output_dir / "e2_adaptation_gain_retention_by_gap.svg"
+    gain_retention_svg.write_text(
+        _line_svg(
+            summary,
+            x_field="version_gap",
+            y_field="positive_adaptation_gain_retention_weighted",
+            series_fields=condition_fields(enriched, "cache_strategy", "update_target"),
+            title="E2 retained positive adaptation gain versus cache-version gap",
+            x_label="version gap",
+            y_label="retained fraction of fresh-cache adaptation gain",
+        ),
+        encoding="utf-8",
+    )
+    return [
+        csv_path,
+        boundary_csv,
+        boundary_md,
+        svg_path,
+        base_delta_svg,
+        gain_retention_svg,
+    ]
 
 
 def _analyze_e3(
