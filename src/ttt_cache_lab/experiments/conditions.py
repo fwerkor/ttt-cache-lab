@@ -106,10 +106,30 @@ def with_full_reference_metrics(rows: Sequence[dict[str, str]]) -> list[dict[str
         item = dict(row)
         task_score = _number(row, "task_score")
         full_task_score = _number(reference, "task_score")
+        baseline_task_score = _number(row, "baseline_task_score")
+        adaptation_gain = full_task_score - baseline_task_score
+        task_delta_vs_base = task_score - baseline_task_score
         latency = _preferred_number(row, ("end_to_end_latency", "latency_units"))
         full_latency = _preferred_number(reference, ("end_to_end_latency", "latency_units"))
         item["full_task_score"] = str(full_task_score)
         item["task_drop_vs_full"] = str(full_task_score - task_score)
+        item["task_delta_vs_base"] = str(task_delta_vs_base)
+        item["task_regression_vs_base"] = str(max(0.0, -task_delta_vs_base))
+        item["below_base"] = str(float(task_delta_vs_base < -1e-12))
+        item["adaptation_gain_available"] = str(float(abs(adaptation_gain) > 1e-12))
+        item["adaptation_gain_retention"] = str(
+            task_delta_vs_base / adaptation_gain if abs(adaptation_gain) > 1e-12 else 0.0
+        )
+        positive_gain = adaptation_gain > 1e-12
+        item["positive_adaptation_gain_available"] = str(float(positive_gain))
+        item["positive_adaptation_gain_retention"] = str(
+            task_delta_vs_base / adaptation_gain if positive_gain else 0.0
+        )
+        item["positive_adaptation_gain_reference"] = str(adaptation_gain if positive_gain else 0.0)
+        item["positive_adaptation_gain_retained"] = str(task_delta_vs_base if positive_gain else 0.0)
+        item["lost_positive_adaptation_gain"] = str(
+            float(positive_gain and task_delta_vs_base < -1e-12)
+        )
         item["full_end_to_end_latency"] = str(full_latency)
         item["speedup_vs_full"] = str(full_latency / latency if latency > 0.0 else 0.0)
         enriched.append(item)

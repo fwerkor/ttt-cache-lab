@@ -139,6 +139,8 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
         "e2_version_drift.csv",
         "e2_first_boundary.csv",
         "e2_task_drop_by_gap.svg",
+        "e2_task_delta_vs_base_by_gap.svg",
+        "e2_adaptation_gain_retention_by_gap.svg",
         "e3_records.csv",
         "e4_planner_comparison.csv",
         "e4_quality_cost.svg",
@@ -160,6 +162,14 @@ def test_generate_dedicated_e1_to_e7_outputs(tmp_path: Path) -> None:
     assert (output / "e3_failure_map" / "attention_shift_heatmap.svg").exists()
     assert (output / "e4_pareto" / "pareto.csv").exists()
     assert (output / "e4_pareto" / "pareto.svg").exists()
+    with (output / "e2_version_drift.csv").open(newline="", encoding="utf-8") as handle:
+        e2_rows = list(csv.DictReader(handle))
+    stale_e2 = next(row for row in e2_rows if row["cache_strategy"] == "stale_reuse")
+    assert "task_delta_vs_base_mean" in stale_e2
+    assert "below_base_mean" in stale_e2
+    assert "adaptation_gain_retention_mean" in stale_e2
+    assert "positive_adaptation_gain_retention_conditional_mean" in stale_e2
+    assert "positive_adaptation_gain_retention_weighted" in stale_e2
     with (output / "e5_safe_region.csv").open(newline="", encoding="utf-8") as handle:
         e5_rows = list(csv.DictReader(handle))
     assert "relative_error_mean" in e5_rows[0]
