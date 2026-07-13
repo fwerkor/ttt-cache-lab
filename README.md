@@ -100,11 +100,11 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 | ID | 模型 / 任务 | 精确条件 | 数据状态 | 最终验收产物 / 备注 |
 |---|---|---|---|---|
-| W1-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | q/k/v/mlp 的 early/middle/late 位置；window=1/2/4/8/16/32；gap=1/4/16；full/stale/suffix 配对参照 | ◐ | `formal_20260712` 的 seed 7/17/29 均成功；待核对 `minimal_safe_windows.csv` 完整条件后验收 |
+| W1-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | q/k/v/mlp 的 early/middle/late 位置；window=1/2/4/8/16/32；gap=1/4/16；full/stale/suffix 配对参照 | ◐ | `formal_20260712` 的 seed 7/17/29 均有 `.success`，但顶层 `run_metadata.json` 与 `minimal_safe_windows.csv` 均缺失，暂不验收 |
 | W1-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W1-1.5B 相同的配对 window 矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
-| W2-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | 8 个 target/position 条件；gap=1/4/16；逐层 hidden/K/V drift；32 probe tokens | ◐ | `formal_20260712` 的 seed 7/17/29 均成功；待核对 `propagation_profiles.csv` 完整条件后验收 |
+| W2-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | 8 个 target/position 条件；gap=1/4/16；逐层 hidden/K/V drift；32 probe tokens | ◐ | `formal_20260712` 的 seed 7/17/29 均有 `.success`、metadata 和原始传播记录，但缺少要求的 `propagation_profiles.csv`，暂不验收 |
 | W2-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W2-1.5B 相同的逐层传播矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
-| W3-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=8 | 8 个 target/position 条件；gap=1/4/16；local-boundary 与 stale-suffix 信号；held-out predictor | ◐ | `formal_20260712` 的 seed 7/17/29 均成功；待核对 `boundary_predictor_summary.csv` 完整条件后验收 |
+| W3-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=8 | 8 个 target/position 条件；gap=1/4/16；local-boundary 与 stale-suffix 信号；held-out predictor | ◐ | `formal_20260712` 的 seed 7/17/29 均有 `.success`、metadata 和原始边界记录，但缺少要求的 `boundary_predictor_summary.csv`，暂不验收 |
 | W3-7B | Qwen2.5-7B · multi-hop · 8K · n=8 | 与 W3-1.5B 相同的 boundary predictor 矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
 | W4/B1 oracle | Qwen2.5-1.5B · multi-hop · 4K · n=16 | target=k/q/mlp/v-middle；gap=4；block=32/64/128；budget=1/14、2/14；random/raw-drift/attention-weighted/layer-prefix/greedy/per-token oracle | ◐ | seed 7 正在运行且产物持续增长；seed 17/29 待运行；需 `block_frontier.csv`、`block_masks.csv`、`blockwise_report.md` |
 | B2 static ranker | W4 calibration artifacts | zero-probe sparse block ranker；跨样本切分；confidence/safety gate | ◐ | 代码已实现；需 held-out KL 收益、误伤率、选中 cells 与 planner latency |
