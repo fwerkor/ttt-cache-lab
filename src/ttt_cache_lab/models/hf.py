@@ -477,22 +477,30 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.devices)
         start = time.perf_counter()
         pending: list[tuple[Any, Any]] = []
-        squared_norm = self.torch.zeros((), dtype=self.torch.float64, device=self.device)
+        # Accumulate in bounded float32 chunks. Converting a large output-head
+        # perturbation to float64 creates a multi-GiB temporary on accelerator.
+        squared_norm = self.torch.zeros((), dtype=self.torch.float32, device=self.device)
+        norm_chunk_elements = 1 << 20
         for param in selected:
             if not param.is_floating_point():
                 continue
             noise = self.torch.randn_like(param)
             pending.append((param, noise))
-            squared_norm += self.torch.sum(noise.detach().double() ** 2).to(self.device)
+            flat_noise = noise.detach().reshape(-1)
+            for start_index in range(0, int(flat_noise.numel()), norm_chunk_elements):
+                chunk = flat_noise[start_index : start_index + norm_chunk_elements].float()
+                squared_norm += self.torch.sum(chunk * chunk).to(self.device)
         raw_norm = float(self.torch.sqrt(squared_norm).cpu())
         scale = update_norm / raw_norm if raw_norm > 0.0 else 0.0
         self._last_raw_update_norm = raw_norm
         self._last_applied_update_norm = update_norm if raw_norm > 0.0 else 0.0
         with self.torch.no_grad():
             for param, noise in pending:
-                delta = noise * scale
-                param.add_(delta)
-                self._deltas.append((param, delta))
+                # Reuse the perturbation buffer as the stored delta instead of
+                # allocating a second tensor as large as the selected weight.
+                noise.mul_(scale)
+                param.add_(noise)
+                self._deltas.append((param, noise))
         synchronize(self.torch, self.devices)
         self._last_adaptation_s = time.perf_counter() - start
         self.parameter_version += 1
