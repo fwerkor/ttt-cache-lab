@@ -51,7 +51,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 ## 论文实验进度 / Paper experiment progress
 
-> 最后人工核对：**2026-07-13 10:36 +08:00**。本节是论文数据的人工维护清单；不做复杂自动同步，需要更新时直接核对运行产物并修改勾选。
+> 最后人工核对：**2026-07-13 10:37 +08:00**。本节是论文数据的人工维护清单；不做复杂自动同步，需要更新时直接核对运行产物并修改勾选。
 
 ### 状态规则
 
@@ -85,14 +85,14 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 | 队列 | 覆盖范围 | 总数 | 成功 | 失败 | 运行中 | 未开始 | 当前状态 |
 |---|---|---:|---:|---:|---:|---:|---|
-| `small0` | Qwen2.5-1.5B：W1-W4 + E3 calibration | 30 | 9 | 0 | 1 | 20 | W1/W2/W3 的 3 个 seed 已完成；W4 seed 7 正在生成 blockwise oracle 产物 |
-| `seven13` | Qwen2.5-7B：E1/E2/W1-W3/E3/E5/E6 | 63 | 0 | 6 | 1 | 56 | E2 controlled seed 7 在答案专属 loss 修复后又于 output-head 随机扰动范数计算处 OOM；已修复大张量范数/Delta 临时分配，归档失败目录并启动干净重跑。E2 LongBench-v2 seed 7 仅有部分产物，未验收 |
+| `small0` | Qwen2.5-1.5B：W1-W4 + E3 calibration | 30 | 10 | 0 | 1 | 19 | W1/W2/W3 的 3 个 seed 已完成；W4 seed 7 已生成 `.success`、完整 blockwise 数据与报告，seed 17 正在运行 |
+| `seven13` | Qwen2.5-7B：E1/E2/W1-W3/E3/E5/E6 | 63 | 0 | 6 | 1 | 56 | E2 controlled seed 7 的答案专属 loss 与大张量扰动内存修复均已合入；干净重跑已通过 32 样本 task probe（mean score=0.5，无全零/全一退化），正在执行正式条件。E2 LongBench-v2 seed 7 仅有部分产物，未验收 |
 | `fourteen4567` | Qwen2.5-14B：E2/E3/E6 | 30 | 0 | 24 | 0 | 6 | 已结束的 E2/E3 共 24 个 seed 全部在 LoRA 更新阶段 NPU OOM；E6 8K seed 7 已停止且仅有部分产物，无 `.success`，不计为完成 |
 | `arch13` | Llama/Gemma/Mistral/MoE 架构筛查 | 36 | 0 | 0 | 0 | 36 | 尚未启动 |
 | `sevenlong4567` | Qwen2.5-7B：32K/64K E6 | 6 | 0 | 0 | 0 | 6 | 尚未启动 |
 | `longall` | Qwen2.5-14B：32K E6 | 3 | 0 | 0 | 0 | 3 | 尚未启动 |
 | `thirtysix` | Qwen2.5-32B：E2/E3/E5/E6 | 51 | 0 | 0 | 0 | 51 | 尚未启动 |
-| **合计** |  | **219** | **9** | **30** | **2** | **178** | 当前仅 W4 seed 7 与修复后的 E2 7B controlled seed 7 在运行；无新增正式验收完成项 |
+| **合计** |  | **219** | **10** | **30** | **2** | **177** | W4 seed 7 新增完成；当前运行 W4 seed 17 与修复后的 E2 7B controlled seed 7 |
 
 稳定性处理原则：暂停会继续批量产生 OOM 的大模型队列；保留可恢复的 W4；先用单个 seed、最小目标集合和内存峰值保护验证 7B，再逐步放开 14B/32B。2026-07-13 已进一步消除 output-head 随机扰动路径中的 float64 全量临时张量和重复 Delta 缓冲。失败的 seed 不作为论文数据，修复后从检查点或干净目录重跑。
 
@@ -106,7 +106,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 | W2-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W2-1.5B 相同的逐层传播矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
 | W3-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=8 | 8 个 target/position 条件；gap=1/4/16；local-boundary 与 stale-suffix 信号；held-out predictor | ◐ | `formal_20260712` 的 seed 7/17/29 均有 `.success`、metadata 和原始边界记录，但缺少要求的 `boundary_predictor_summary.csv`，暂不验收 |
 | W3-7B | Qwen2.5-7B · multi-hop · 8K · n=8 | 与 W3-1.5B 相同的 boundary predictor 矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
-| W4/B1 oracle | Qwen2.5-1.5B · multi-hop · 4K · n=16 | target=k/q/mlp/v-middle；gap=4；block=32/64/128；budget=1/14、2/14；random/raw-drift/attention-weighted/layer-prefix/greedy/per-token oracle | ◐ | seed 7 正在运行且产物持续增长；seed 17/29 待运行；需 `block_frontier.csv`、`block_masks.csv`、`blockwise_report.md` |
+| W4/B1 oracle | Qwen2.5-1.5B · multi-hop · 4K · n=16 | target=k/q/mlp/v-middle；gap=4；block=32/64/128；budget=1/14、2/14；random/raw-drift/attention-weighted/layer-prefix/greedy/per-token oracle | ◐ | seed 7 已成功并生成 `block_frontier.csv`、`block_masks.csv`、`blockwise_report.md`；seed 17 正在运行，seed 29 待运行 |
 | B2 static ranker | W4 calibration artifacts | zero-probe sparse block ranker；跨样本切分；confidence/safety gate | ◐ | 代码已实现；需 held-out KL 收益、误伤率、选中 cells 与 planner latency |
 | B3 one-probe router | W4 calibration artifacts | prompt-anchor probe length=1/2/4；reference/baseline-reference policy | ◐ | 代码已实现；需 probe 成本、总延迟与 held-out quality |
 | B4 committed router | W4 calibration + 独立 guard split | zero-probe direct commit/recompute gate；trust-band calibration | ◐ | 代码已实现；需无 KL runtime 评估与 false-safe 置信上界 |
