@@ -230,25 +230,61 @@ def run_one(queue: str, job: Job, seed: int) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue", required=True, choices=sorted(build_queues()))
+    parser.add_argument("--job", help="Run only the exact named job in the selected queue")
+    parser.add_argument("--seed", type=int, choices=SEEDS, help="Run only one seed")
+    parser.add_argument(
+        "--continue-on-failure",
+        action="store_true",
+        help="Continue after a failed run; the safe default is fail-fast",
+    )
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
     jobs = build_queues()[args.queue]
+    if args.job is not None:
+        jobs = [job for job in jobs if job.name == args.job]
+        if not jobs:
+            parser.error(f"queue {args.queue!r} has no job named {args.job!r}")
     if args.list:
         for job in jobs:
-            print(job)
+            seeds = (args.seed,) if args.seed is not None else job.seeds
+            print(dataclasses.replace(job, seeds=seeds))
         return 0
-    print(f"queue={args.queue} visible={os.environ.get('ASCEND_RT_VISIBLE_DEVICES')} jobs={len(jobs)} runs={sum(len(j.seeds) for j in jobs)}", flush=True)
+    selected_runs = sum(1 if args.seed is not None else len(job.seeds) for job in jobs)
+    print(
+        f"queue={args.queue} visible={os.environ.get('ASCEND_RT_VISIBLE_DEVICES')} "
+        f"jobs={len(jobs)} runs={selected_runs} fail_fast={not args.continue_on_failure}",
+        flush=True,
+    )
     ok = bad = 0
+    aborted = False
     for job in jobs:
-        for seed in job.seeds:
+        seeds = (args.seed,) if args.seed is not None else job.seeds
+        for seed in seeds:
             if run_one(args.queue, job, seed):
                 ok += 1
             else:
                 bad += 1
-    done = STATUS_ROOT / f"{args.queue}.done.json"
-    done.write_text(json.dumps({"queue": args.queue, "finished": utcnow(), "success": ok, "failed": bad}, indent=2) + "\n", encoding="utf-8")
-    print(f"[queue-done] {args.queue} success={ok} failed={bad}", flush=True)
-    return 0
+                if not args.continue_on_failure:
+                    aborted = True
+                    break
+        if aborted:
+            break
+    full_queue = args.job is None and args.seed is None
+    if full_queue and not aborted:
+        done = STATUS_ROOT / f"{args.queue}.done.json"
+        done.write_text(
+            json.dumps(
+                {"queue": args.queue, "finished": utcnow(), "success": ok, "failed": bad},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"[queue-done] {args.queue} success={ok} failed={bad}", flush=True)
+    else:
+        state = "aborted" if aborted else "selection-done"
+        print(f"[queue-{state}] {args.queue} success={ok} failed={bad}", flush=True)
+    return 1 if aborted else 0
 
 
 if __name__ == "__main__":
