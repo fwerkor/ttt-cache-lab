@@ -108,6 +108,13 @@ def build_queues() -> dict[str, list[Job]]:
 
 
 def queue_parallelism(queue: str) -> str:
+    override = os.environ.get("FORMAL_MODEL_PARALLELISM")
+    if override is not None:
+        if override not in {"single", "model_shard"}:
+            raise ValueError(
+                "FORMAL_MODEL_PARALLELISM must be 'single' or 'model_shard'"
+            )
+        return override
     return "single" if queue == "small0" else "model_shard"
 
 
@@ -252,6 +259,7 @@ def main() -> int:
     selected_runs = sum(1 if args.seed is not None else len(job.seeds) for job in jobs)
     print(
         f"queue={args.queue} visible={os.environ.get('ASCEND_RT_VISIBLE_DEVICES')} "
+        f"parallelism={queue_parallelism(args.queue)} "
         f"jobs={len(jobs)} runs={selected_runs} fail_fast={not args.continue_on_failure}",
         flush=True,
     )
