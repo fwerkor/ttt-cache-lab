@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -265,7 +266,7 @@ def test_answer_supervised_loss_projects_only_answer_positions(
     original_forward = output_embeddings.forward
     projected_shapes: list[tuple[int, ...]] = []
 
-    def recording_forward(hidden_states: torch.Tensor) -> torch.Tensor:
+    def recording_forward(hidden_states: Any) -> Any:
         projected_shapes.append(tuple(hidden_states.shape))
         return original_forward(hidden_states)
 
