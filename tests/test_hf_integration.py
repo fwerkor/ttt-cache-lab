@@ -181,6 +181,84 @@ def test_output_head_update_supports_tied_embeddings(tiny_llama_dir: Path) -> No
     assert torch.allclose(output_weight.detach(), before, rtol=1e-5, atol=1e-6)
 
 
+def test_answer_supervised_loss_matches_masked_causal_lm_loss(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(prompt="key is alpha Answer :", answer="alpha beta", metadata={}),
+        context_length=16,
+    )
+    target = parse_update_target("lora.k:1", num_layers=backend.num_layers)
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    prompt_ids = backend._prepared_input_ids[sample.prompt]
+    answer_ids = backend.tokenizer(
+        sample.answer, return_tensors="pt", add_special_tokens=False
+    )["input_ids"]
+    input_ids = torch.cat([prompt_ids, answer_ids], dim=1).to(backend.device)
+    labels = torch.full_like(input_ids, -100)
+    labels[:, -answer_ids.shape[1] :] = answer_ids.to(backend.device)
+    attention_mask = torch.ones_like(input_ids, device=backend.device)
+
+    reference = backend.model(
+        input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_cache=False
+    ).loss
+    reference.backward()
+    reference_gradients = [
+        parameter.grad.detach().clone()
+        for module in backend._active_lora_modules
+        for parameter in module.lora_parameters()
+        if parameter.grad is not None
+    ]
+    backend.model.zero_grad(set_to_none=True)
+    selective = backend._answer_supervised_loss(
+        input_ids=input_ids, attention_mask=attention_mask, answer_ids=answer_ids
+    )
+    selective.backward()
+    selective_gradients = [
+        parameter.grad.detach().clone()
+        for module in backend._active_lora_modules
+        for parameter in module.lora_parameters()
+        if parameter.grad is not None
+    ]
+
+    assert float(selective.detach()) == pytest.approx(
+        float(reference.detach()), rel=1e-6, abs=1e-7
+    )
+    assert len(selective_gradients) == len(reference_gradients)
+    for actual, expected in zip(selective_gradients, reference_gradients, strict=True):
+        assert torch.allclose(actual, expected, rtol=1e-5, atol=1e-7)
+
+
+def test_answer_supervised_loss_projects_only_answer_positions(
+    tiny_llama_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = _backend(tiny_llama_dir)
+    sample = backend.prepare_sample(
+        TaskSample(prompt="key is alpha Answer :", answer="alpha beta", metadata={}),
+        context_length=16,
+    )
+    answer_ids = backend.tokenizer(
+        sample.answer, return_tensors="pt", add_special_tokens=False
+    )["input_ids"]
+    prompt_ids = backend._prepared_input_ids[sample.prompt]
+    input_ids = torch.cat([prompt_ids, answer_ids], dim=1).to(backend.device)
+    attention_mask = torch.ones_like(input_ids, device=backend.device)
+    output_embeddings = backend.model.get_output_embeddings()
+    original_forward = output_embeddings.forward
+    projected_shapes: list[tuple[int, ...]] = []
+
+    def recording_forward(hidden_states: torch.Tensor) -> torch.Tensor:
+        projected_shapes.append(tuple(hidden_states.shape))
+        return original_forward(hidden_states)
+
+    monkeypatch.setattr(output_embeddings, "forward", recording_forward)
+    loss = backend._answer_supervised_loss(
+        input_ids=input_ids, attention_mask=attention_mask, answer_ids=answer_ids
+    )
+
+    assert torch.isfinite(loss)
+    assert projected_shapes == [(1, int(answer_ids.shape[1]), backend.hidden_size)]
+
+
 def test_hf_lora_delta_and_native_layer_restart(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     sample = backend.prepare_sample(

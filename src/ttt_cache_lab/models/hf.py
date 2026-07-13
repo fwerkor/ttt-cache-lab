@@ -775,6 +775,73 @@ class HuggingFaceBackend:
             freeze_base_model=freeze_base_model,
         )
 
+    def _answer_supervised_loss(
+        self,
+        *,
+        input_ids: Any,
+        attention_mask: Any,
+        answer_ids: Any,
+    ) -> Any:
+        """Compute the masked causal-LM loss without materializing prompt logits.
+
+        The update labels mask every prompt token, so the standard causal-LM
+        loss path computes a full sequence-by-vocabulary logits tensor only to
+        discard almost all of it. Decoder hidden states are still computed for
+        the complete sequence; only the output projection is restricted to the
+        positions that predict answer tokens.
+        """
+
+        answer_token_count = int(answer_ids.shape[1])
+        sequence_length = int(input_ids.shape[1])
+        prediction_start = sequence_length - answer_token_count - 1
+        prediction_stop = sequence_length - 1
+        if prediction_start < 0 or prediction_stop <= prediction_start:
+            raise ValueError("Answer supervision requires at least one prompt token")
+
+        backbone = getattr(self.model, "base_model", None)
+        if backbone is None or backbone is self.model:
+            get_decoder = getattr(self.model, "get_decoder", None)
+            backbone = get_decoder() if callable(get_decoder) else None
+        if backbone is None or backbone is self.model:
+            for attribute in ("model", "transformer", "language_model"):
+                candidate = getattr(self.model, attribute, None)
+                if candidate is not None and candidate is not self.model:
+                    backbone = candidate
+                    break
+        if backbone is None or backbone is self.model:
+            raise RuntimeError(
+                f"Cannot locate decoder backbone for {type(self.model).__name__}; "
+                "answer-only LoRA supervision is unavailable"
+            )
+
+        decoder_outputs = backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+            return_dict=True,
+        )
+        hidden_states = getattr(decoder_outputs, "last_hidden_state", None)
+        if hidden_states is None:
+            hidden_states = decoder_outputs[0]
+        supervised_hidden = hidden_states[:, prediction_start:prediction_stop, :]
+        if int(supervised_hidden.shape[1]) != answer_token_count:
+            raise RuntimeError("Answer supervision positions do not match tokenized answer length")
+
+        output_embeddings = self.model.get_output_embeddings()
+        if output_embeddings is None:
+            raise RuntimeError(f"{type(self.model).__name__} has no output embedding layer")
+        try:
+            output_device = next(output_embeddings.parameters()).device
+        except StopIteration as exc:
+            raise RuntimeError("Output embedding layer has no parameters") from exc
+        supervised_hidden = supervised_hidden.to(output_device)
+        answer_logits = output_embeddings(supervised_hidden).float()
+        answer_targets = answer_ids.to(answer_logits.device)
+        return self.torch.nn.functional.cross_entropy(
+            answer_logits.reshape(-1, int(answer_logits.shape[-1])),
+            answer_targets.reshape(-1),
+        )
+
     def train_lora_step(
         self,
         sample: TaskSample,
@@ -807,14 +874,10 @@ class HuggingFaceBackend:
             self.model.eval()
             return 0.0
         input_ids = self.torch.cat([prompt_ids, answer_ids], dim=1).to(self.device)
-        labels = self.torch.full_like(input_ids, -100)
-        labels[:, -answer_ids.shape[1] :] = answer_ids.to(self.device)
         attention_mask = self.torch.ones_like(input_ids, device=self.device)
         # Long-context LoRA updates otherwise retain one full activation stack
-        # per decoder layer. That defeats model sharding because the first
-        # shard can reach the device limit before a single update is applied.
-        # Checkpoint only the training forward; inference cache behaviour and
-        # timing remain unchanged.
+        # per decoder layer. Checkpoint only the training forward, and project
+        # to the vocabulary only at answer-supervised positions.
         checkpointing = self.parallelism == "model_shard" and hasattr(
             self.model, "gradient_checkpointing_enable"
         )
@@ -823,13 +886,11 @@ class HuggingFaceBackend:
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
         try:
-            outputs = self.model(
+            loss = self._answer_supervised_loss(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                labels=labels,
-                use_cache=False,
+                answer_ids=answer_ids,
             )
-            loss = outputs.loss
             loss.backward()
         finally:
             if checkpointing and hasattr(self.model, "gradient_checkpointing_disable"):
