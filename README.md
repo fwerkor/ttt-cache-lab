@@ -51,7 +51,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 ## 论文实验进度 / Paper experiment progress
 
-> 最后人工核对：**2026-07-12**。本节是论文数据的人工维护清单；不做复杂自动同步，需要更新时直接核对运行产物并修改勾选。
+> 最后人工核对：**2026-07-13 09:20 +08:00**。本节是论文数据的人工维护清单；不做复杂自动同步，需要更新时直接核对运行产物并修改勾选。
 
 ### 状态规则
 
@@ -79,17 +79,34 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 > 这里的“已验收”刻意采用保守口径。已有 Ascend smoke/stress 与 B/W 探索结果用于验证实现和选择研究路线；在最终论文规模产物完成核对前，不计入 252 个正式 seed 运行。
 
+### 当前执行批次：`formal_20260712`
+
+该批次是正式矩阵的分阶段执行子集，共 **219 个 seed-run**。批次结果只有通过完整性和质量验收后，才会计入上方冻结主矩阵的“已验收”列。
+
+| 队列 | 覆盖范围 | 总数 | 成功 | 失败 | 运行中 | 未开始 | 当前状态 |
+|---|---|---:|---:|---:|---:|---:|---|
+| `small0` | Qwen2.5-1.5B：W1-W4 + E3 calibration | 30 | 9 | 0 | 1 | 20 | W1/W2/W3 的 3 个 seed 已完成；W4 seed 7 正在生成 blockwise oracle 产物 |
+| `seven13` | Qwen2.5-7B：E1/E2/W1-W3/E3/E5/E6 | 63 | 0 | 6 | 1 | 56 | E1 3 个 seed 与 E2 controlled 3 个 seed 均在 LoRA 更新阶段 NPU OOM；E2 LongBench-v2 seed 7 仍在运行 |
+| `fourteen4567` | Qwen2.5-14B：E2/E3/E6 | 30 | 0 | 24 | 1 | 5 | 已结束的 E2/E3 共 24 个 seed 全部在 LoRA 更新阶段 NPU OOM；E6 8K seed 7 仍在运行 |
+| `arch13` | Llama/Gemma/Mistral/MoE 架构筛查 | 36 | 0 | 0 | 0 | 36 | 尚未启动 |
+| `sevenlong4567` | Qwen2.5-7B：32K/64K E6 | 6 | 0 | 0 | 0 | 6 | 尚未启动 |
+| `longall` | Qwen2.5-14B：32K E6 | 3 | 0 | 0 | 0 | 3 | 尚未启动 |
+| `thirtysix` | Qwen2.5-32B：E2/E3/E5/E6 | 51 | 0 | 0 | 0 | 51 | 尚未启动 |
+| **合计** |  | **219** | **9** | **30** | **3** | **177** | 大模型失败已确认均为 NPU OOM；后续改为低并发、逐任务预检通过后再扩大运行 |
+
+稳定性处理原则：暂停会继续批量产生 OOM 的大模型队列；保留可恢复的 W4；先用单个 seed、最小目标集合和内存峰值保护验证 7B，再逐步放开 14B/32B。失败的 30 个 seed 不作为论文数据，修复后从检查点或干净目录重跑。
+
 ### W/B：机制发现与 Planner 探索线
 
 | ID | 模型 / 任务 | 精确条件 | 数据状态 | 最终验收产物 / 备注 |
 |---|---|---|---|---|
-| W1-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | q/k/v/mlp 的 early/middle/late 位置；window=1/2/4/8/16/32；gap=1/4/16；full/stale/suffix 配对参照 | ◐ | `minimal_safe_windows.csv`；已有探索结果，待按最终产物核对 |
-| W1-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W1-1.5B 相同的配对 window 矩阵 | ◐ | `minimal_safe_windows.csv`；待最终运行/产物核对 |
-| W2-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | 8 个 target/position 条件；gap=1/4/16；逐层 hidden/K/V drift；32 probe tokens | ◐ | `propagation_profiles.csv`；已有探索结果，待正式验收 |
-| W2-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W2-1.5B 相同的逐层传播矩阵 | ◐ | `propagation_profiles.csv`；待最终运行/产物核对 |
-| W3-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=8 | 8 个 target/position 条件；gap=1/4/16；local-boundary 与 stale-suffix 信号；held-out predictor | ◐ | `boundary_predictor_summary.csv`；已有探索结果，待正式验收 |
-| W3-7B | Qwen2.5-7B · multi-hop · 8K · n=8 | 与 W3-1.5B 相同的 boundary predictor 矩阵 | ◐ | `boundary_predictor_summary.csv`；待最终运行/产物核对 |
-| W4/B1 oracle | Qwen2.5-1.5B · multi-hop · 4K · n=16 | target=k/q/mlp/v-middle；gap=4；block=32/64/128；budget=1/14、2/14；random/raw-drift/attention-weighted/layer-prefix/greedy/per-token oracle | ◐ | 当前长任务；需 `block_frontier.csv`、`block_masks.csv`、`blockwise_report.md` |
+| W1-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | q/k/v/mlp 的 early/middle/late 位置；window=1/2/4/8/16/32；gap=1/4/16；full/stale/suffix 配对参照 | ◐ | `formal_20260712` 的 seed 7/17/29 均成功；待核对 `minimal_safe_windows.csv` 完整条件后验收 |
+| W1-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W1-1.5B 相同的配对 window 矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
+| W2-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=16 | 8 个 target/position 条件；gap=1/4/16；逐层 hidden/K/V drift；32 probe tokens | ◐ | `formal_20260712` 的 seed 7/17/29 均成功；待核对 `propagation_profiles.csv` 完整条件后验收 |
+| W2-7B | Qwen2.5-7B · multi-hop · 8K · n=16 | 与 W2-1.5B 相同的逐层传播矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
+| W3-1.5B | Qwen2.5-1.5B · multi-hop · 4K · n=8 | 8 个 target/position 条件；gap=1/4/16；local-boundary 与 stale-suffix 信号；held-out predictor | ◐ | `formal_20260712` 的 seed 7/17/29 均成功；待核对 `boundary_predictor_summary.csv` 完整条件后验收 |
+| W3-7B | Qwen2.5-7B · multi-hop · 8K · n=8 | 与 W3-1.5B 相同的 boundary predictor 矩阵 | ⬜ | 当前批次尚未启动；需先通过稳定版 7B 单-seed 内存预检 |
+| W4/B1 oracle | Qwen2.5-1.5B · multi-hop · 4K · n=16 | target=k/q/mlp/v-middle；gap=4；block=32/64/128；budget=1/14、2/14；random/raw-drift/attention-weighted/layer-prefix/greedy/per-token oracle | ◐ | seed 7 正在运行且产物持续增长；seed 17/29 待运行；需 `block_frontier.csv`、`block_masks.csv`、`blockwise_report.md` |
 | B2 static ranker | W4 calibration artifacts | zero-probe sparse block ranker；跨样本切分；confidence/safety gate | ◐ | 代码已实现；需 held-out KL 收益、误伤率、选中 cells 与 planner latency |
 | B3 one-probe router | W4 calibration artifacts | prompt-anchor probe length=1/2/4；reference/baseline-reference policy | ◐ | 代码已实现；需 probe 成本、总延迟与 held-out quality |
 | B4 committed router | W4 calibration + 独立 guard split | zero-probe direct commit/recompute gate；trust-band calibration | ◐ | 代码已实现；需无 KL runtime 评估与 false-safe 置信上界 |
