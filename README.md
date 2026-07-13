@@ -51,7 +51,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 ## 论文实验进度 / Paper experiment progress
 
-> 最后人工核对：**2026-07-13 11:46 +08:00**。本节是论文数据的人工维护清单；不做复杂自动同步，需要更新时直接核对运行产物并修改勾选。
+> 最后人工核对：**2026-07-13 21:35 +08:00**。本节是论文数据的人工维护清单；不做复杂自动同步，需要更新时直接核对运行产物并修改勾选。
 
 ### 状态规则
 
@@ -88,13 +88,13 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 | 队列 | 覆盖范围 | 总数 | 成功 | 失败 | 运行中 | 部分/中断 | 未开始 | 当前状态 |
 |---|---|---:|---:|---:|---:|---:|---:|---|
 | `small0` | Qwen2.5-1.5B：W1-W4 + E3 calibration | 30 | 10 | 0 | 1 | 1 | 18 | E3 aggregation seed 7 使用 NPU 1、3 运行；其余 E3 seed 已串行排队。W4 seed 17 已按优先级暂停，仅保留部分产物，不计完成 |
-| `seven13` | Qwen2.5-7B：E1/E2/W1-W3/E3/E5/E6 | 63 | 0 | 5 | 1 | 1 | 56 | E1 LongBench-v2 seed 7 使用 NPU 4-7 干净重跑；seed 17/29 与两组 E2 的全部 seed 已按 E1→E2 顺序串行排队。旧失败目录不计完成 |
+| `seven13` | Qwen2.5-7B：E1/E2/W1-W3/E3/E5/E6 | 63 | 1 | 4 | 1 | 1 | 56 | E1 LongBench-v2 seed 7 已通过验收；seed 17 正在 NPU 4-7 上运行。seed 29 仍保留旧 OOM 失败记录，等待前序 seed 完成后干净重跑；两组 E2 的全部 seed 继续串行排队 |
 | `fourteen4567` | Qwen2.5-14B：E2/E3/E6 | 30 | 0 | 24 | 0 | 1 | 5 | 24 个 E2/E3 seed 保留失败记录；E6 8K seed 7 仅有部分产物。待 7B E1-E3 路径稳定后再处理 14B |
 | `arch13` | Llama/Gemma/Mistral/MoE 架构筛查 | 36 | 0 | 0 | 0 | 1 | 35 | A1 Llama-3.2-3B seed 7 已中断且仅有部分产物；A 系列暂停 |
 | `sevenlong4567` | Qwen2.5-7B：32K/64K E6 | 6 | 0 | 0 | 0 | 0 | 6 | 暂停，当前不占用算力 |
 | `longall` | Qwen2.5-14B：32K E6 | 3 | 0 | 0 | 0 | 0 | 3 | 暂停，当前不占用算力 |
 | `thirtysix` | Qwen2.5-32B：E2/E3/E5/E6 | 51 | 0 | 0 | 0 | 0 | 51 | 暂停，待 7B 主线稳定后再启动 |
-| **合计** |  | **219** | **10** | **29** | **2** | **4** | **174** | 当前仅 E1 seed 7 与 E3 seed 7 实际计算；后续 E1/E2/E3 单 seed 串行、fail-fast |
+| **合计** |  | **219** | **11** | **28** | **2** | **4** | **174** | E1 seed 7 新增验收完成；当前运行 E1 seed 17 与 E3 seed 7，后续 E1/E2/E3 单 seed 串行、fail-fast |
 
 稳定性处理原则：A/W/B 暂停；E1/E2 使用 4 卡模型分片，E3 使用 2 卡模型分片；每次只运行一个 seed，完整检查 `.success`、`run_metadata.json`、主结果、汇总文件且不存在 `run_failure.json` 后才继续。2026-07-13 已合入答案专属 loss、output-head 大张量扰动内存修复与显式多卡覆盖；旧失败和中断产物全部保留但不作为论文数据。
 
@@ -126,7 +126,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 | 配置 | 模型 | 任务 / 分区 | 上下文 | 内部条件 | Seed 7 | Seed 17 | Seed 29 | 备注 |
 |---|---|---|---:|---|:---:|:---:|:---:|---|
-| [`baseline_e1_qwen_7b_longbench_v2`](configs/paper/baseline/e1_qwen_7b_longbench_v2.yaml) | Qwen2.5-7B | LongBench-v2 · validation | 16K | n=96; offset=0; target=q/k/v/qv; norm=1e-3; r=8; v=0; cache=full/base-reuse/per-adapter/aLoRA/LRAgent/ForkKV/base+delta; repeat=0w+1t; parallel=single; adapter-seq=0/1/2/3/0/2/1/3 | ◐ | ⬜ | ⬜ | seed 7 正在 4 卡模型分片重跑；17/29 串行排队，未完成前不勾选 |
+| [`baseline_e1_qwen_7b_longbench_v2`](configs/paper/baseline/e1_qwen_7b_longbench_v2.yaml) | Qwen2.5-7B | LongBench-v2 · validation | 16K | n=96; offset=0; target=q/k/v/qv; norm=1e-3; r=8; v=0; cache=full/base-reuse/per-adapter/aLoRA/LRAgent/ForkKV/base+delta; repeat=0w+1t; parallel=single; adapter-seq=0/1/2/3/0/2/1/3 | ✅ | ◐ | ⬜ | seed 7 已有 `.success`、`run_metadata.json`、完整 `records.jsonl`、`summary.csv` 与 `version_summary.csv`，且无 `run_failure.json`；seed 17 正在 4 卡模型分片运行；seed 29 的旧 OOM 记录不验收，等待干净重跑 |
 
 </details>
 
