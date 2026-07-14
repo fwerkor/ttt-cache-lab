@@ -29,6 +29,13 @@ data:
   max_generation_tokens: 32
   synthetic_difficulty: easy
   scorer: exact_match
+task_viability:
+  enabled: true
+  probe_samples: 32
+  min_mean_score: 0.05
+  max_mean_score: 0.95
+  min_nonzero_fraction: 0.10
+  max_perfect_fraction: 0.90
 updates:
   targets:
   - lora.q_middle

@@ -83,6 +83,12 @@ def test_a1_architecture_screening_meets_frozen_sample_floor() -> None:
     }
     assert all(config.experiment_id == "architecture_screen" for config in configs)
     assert all(config.data.num_samples >= 48 for config in configs)
+    assert all(config.task_viability.enabled for config in configs)
+    assert all(config.task_viability.probe_samples == 32 for config in configs)
+    assert all(config.task_viability.min_mean_score == 0.05 for config in configs)
+    assert all(config.task_viability.max_mean_score == 0.95 for config in configs)
+    assert all(config.task_viability.min_nonzero_fraction == 0.10 for config in configs)
+    assert all(config.task_viability.max_perfect_fraction == 0.90 for config in configs)
 
 
 def test_needle_absence_uses_answer_prefix_scoring() -> None:
