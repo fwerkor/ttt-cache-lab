@@ -284,7 +284,9 @@ E2 参数版本漂移
 │
 └── 当前状态
     ├── Qwen2.5-7B
-    │   ├── controlled seed 7：[运行]
+    │   ├── controlled seed 7：[运行（OOM 后干净重跑）]
+    │   │   ├── 上一轮写入 147 条记录后因 NPU OOM 失败（额外申请 2.03 GiB 时仅余 1.28 GiB），已归档且不计论文数据
+    │   │   └── 当前重跑已写入 567 条记录，无当前 run_failure.json；尚缺 .success 与 version_summary.csv，不能验收
     │   ├── controlled seed 17/29：[待重跑]
     │   │   └── 旧运行因 NPU OOM 失败，不计论文数据；将在 seed 7 验收后干净重跑
     │   └── realistic：[已排队]
