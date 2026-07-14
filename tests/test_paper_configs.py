@@ -72,6 +72,19 @@ def test_synthetic_paper_configs_use_explicit_nontruncating_generation_budgets()
     )
 
 
+def test_a1_architecture_screening_meets_frozen_sample_floor() -> None:
+    paths = sorted(Path("configs/paper/architecture").glob("a1_*.yaml"))
+    assert len(paths) == 12
+    configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
+    assert {config.data.task for config in configs} == {
+        "multi_hop_tracing",
+        "multi_needle",
+        "variable_tracking",
+    }
+    assert all(config.experiment_id == "architecture_screen" for config in configs)
+    assert all(config.data.num_samples >= 48 for config in configs)
+
+
 def test_needle_absence_uses_answer_prefix_scoring() -> None:
     paths = sorted(Path("configs/paper/calibration").glob("e3_qwen_*_needle_absent.yaml"))
     assert len(paths) == 4
