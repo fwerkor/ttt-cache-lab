@@ -210,11 +210,36 @@ def test_discovery_gate_configs_cover_window_and_propagation_axes() -> None:
     assert all(paired_windows.issubset(set(config.cache.strategies)) for config in boundary)
 
 
-def test_study_manifest_expands_every_config_to_three_seeds() -> None:
-    _, jobs = expand_study(Path("configs/paper/study.yaml"))
-    config_count = len(_main_study_paths())
-    assert len(jobs) == config_count * 3
-    assert {job.seed for job in jobs} == {7, 17, 29}
+def test_study_manifests_expand_core_and_extended_matrices_to_three_seeds() -> None:
+    _, core_jobs = expand_study(Path("configs/paper/study.yaml"))
+    _, extended_jobs = expand_study(Path("configs/paper/study_extended.yaml"))
+    assert len(core_jobs) == 47 * 3
+    assert len(extended_jobs) == 84 * 3
+    assert {job.seed for job in core_jobs} == {7, 17, 29}
+    assert {job.seed for job in extended_jobs} == {7, 17, 29}
+    assert {(job.name, job.seed) for job in core_jobs} < {
+        (job.name, job.seed) for job in extended_jobs
+    }
     dependent_stages = {"validation", "test", "delta", "scaling", "ablation", "workload"}
-    assert all(job.required_paths for job in jobs if dependent_stages.intersection(job.tags))
-    assert all(not job.required_paths for job in jobs if {"baseline", "calibration", "drift"}.intersection(job.tags))
+    assert all(
+        job.required_paths for job in core_jobs if dependent_stages.intersection(job.tags)
+    )
+    assert all(
+        not job.required_paths
+        for job in core_jobs
+        if {"baseline", "calibration", "drift", "architecture"}.intersection(job.tags)
+    )
+
+
+def test_core_calibration_configs_use_only_failure_map_actions() -> None:
+    manifest, _ = expand_study(Path("configs/paper/study.yaml"))
+    calibration_paths = [
+        Path(job.config) for job in manifest.jobs if "calibration" in job.tags
+    ]
+    expected = {"full_recompute", "stale_reuse", "delta_correction", "layerwise_recompute"}
+    for path in calibration_paths:
+        config = VersionedExperimentConfig.from_yaml(path)
+        if path.name == "e3_qwen_1_5b_aggregation.yaml":
+            assert expected <= set(config.cache.strategies)
+        else:
+            assert set(config.cache.strategies) == expected
