@@ -31,7 +31,7 @@ task_viability:
   probe_samples: 32
   min_mean_score: 0.05
   max_mean_score: 1.0
-  min_nonzero_fraction: 0.10
+  min_nonzero_fraction: 0.1
   max_perfect_fraction: 1.0
 updates:
   targets:
@@ -55,12 +55,8 @@ cache:
   strategies:
   - full_recompute
   - stale_reuse
-  - frozen_reuse
-  - periodic_refresh
-  - threshold_refresh
   - delta_correction
   - layerwise_recompute
-  - adaptive
   refresh_period: 4
   update_norm_threshold: 0.01
   version_gap_threshold: 8
