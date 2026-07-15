@@ -48,7 +48,15 @@ def glob_jobs(prefix: str, pattern: str, *, runner: str = "versioned", mode: str
     return [Job(f"{prefix}_{p.stem}", str(p.relative_to(ROOT)), runner, SEEDS, mode) for p in sorted(ROOT.glob(pattern))]
 
 
-def build_queues() -> dict[str, list[Job]]:
+def manifest_configs(matrix: str) -> set[str]:
+    manifest_name = "study.yaml" if matrix == "core" else "study_extended.yaml"
+    payload = yaml.safe_load(
+        (ROOT / "configs" / "paper" / manifest_name).read_text(encoding="utf-8")
+    )
+    return {str(job["config"]) for job in payload["jobs"]}
+
+
+def build_queues(*, matrix: str = "core", include_discovery: bool = False) -> dict[str, list[Job]]:
     small0 = [
         Job("w1_qwen_1_5b", "configs/paper/discovery/w1_qwen_1_5b_multi_hop_window_sweep.yaml", "sweep"),
         Job("w2_qwen_1_5b", "configs/paper/discovery/w2_qwen_1_5b_propagation.yaml"),
@@ -96,7 +104,7 @@ def build_queues() -> dict[str, list[Job]]:
     for context in (8192, 16384, 32768):
         thirtysix.append(Job(f"e6_qwen_32b_{context}_fixed", f"configs/paper/scaling/e6_qwen_32b_{context}.yaml", mode="e6_fixed"))
 
-    return {
+    queues = {
         "small0": small0,
         "seven13": seven13,
         "arch13": arch13,
@@ -104,6 +112,19 @@ def build_queues() -> dict[str, list[Job]]:
         "sevenlong4567": sevenlong4567,
         "longall": longall,
         "thirtysix": thirtysix,
+    }
+    allowed = manifest_configs(matrix)
+    if include_discovery:
+        allowed.update(
+            job.config
+            for jobs in queues.values()
+            for job in jobs
+            if "/discovery/" in job.config
+        )
+    return {
+        queue: [job for job in jobs if job.config in allowed]
+        for queue, jobs in queues.items()
+        if any(job.config in allowed for job in jobs)
     }
 
 
@@ -236,7 +257,19 @@ def run_one(queue: str, job: Job, seed: int) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--queue", required=True, choices=sorted(build_queues()))
+    all_queue_names = sorted(build_queues(matrix="extended", include_discovery=True))
+    parser.add_argument("--queue", required=True, choices=all_queue_names)
+    parser.add_argument(
+        "--matrix",
+        choices=("core", "extended"),
+        default="core",
+        help="Select the default 47-config core matrix or the archived 84-config extended matrix.",
+    )
+    parser.add_argument(
+        "--include-discovery",
+        action="store_true",
+        help="Also expose paused W/B discovery jobs in their hardware queues.",
+    )
     parser.add_argument("--job", help="Run only the exact named job in the selected queue")
     parser.add_argument("--seed", type=int, choices=SEEDS, help="Run only one seed")
     parser.add_argument(
@@ -246,7 +279,13 @@ def main() -> int:
     )
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
-    jobs = build_queues()[args.queue]
+    queues = build_queues(matrix=args.matrix, include_discovery=args.include_discovery)
+    if args.queue not in queues:
+        parser.error(
+            f"queue {args.queue!r} has no jobs in matrix={args.matrix!r}; "
+            "use --matrix extended or --include-discovery only when explicitly requested"
+        )
+    jobs = queues[args.queue]
     if args.job is not None:
         jobs = [job for job in jobs if job.name == args.job]
         if not jobs:
