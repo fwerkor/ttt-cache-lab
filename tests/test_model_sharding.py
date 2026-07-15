@@ -28,6 +28,9 @@ def test_qwen2_moe_uses_llama_like_layer_paths() -> None:
     assert plan.device_map["model.layers.23"] == "npu:2"
     assert plan.device_map["model.norm"] == "npu:2"
     assert plan.device_map["lm_head"] == "npu:2"
+    counts = Counter(plan.layer_to_device)
+    assert counts["npu:0"] < counts["npu:1"]
+    assert counts["npu:0"] < counts["npu:2"]
 
 
 def test_gemma3_uses_nested_text_config_and_language_model_paths() -> None:

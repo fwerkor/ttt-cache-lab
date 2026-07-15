@@ -114,6 +114,23 @@ def test_chat_template_prompt_preparation_preserves_context_and_format(tiny_llam
     assert output.extras["token_length"] == 24
 
 
+def test_prefill_can_skip_hidden_state_history(tiny_llama_dir: Path) -> None:
+    backend = _backend(tiny_llama_dir)
+    backend.configure_metrics(capture_attention=False, capture_hidden_states=False)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 4},
+        ),
+        context_length=16,
+    )
+    output = backend.prefill(sample.prompt)
+    assert output.hidden_tensor.shape == (1, backend.hidden_size)
+    assert output.extras is not None
+    assert output.extras["hidden_states"] == ()
+
+
 def test_neutral_padding_is_deterministic_diverse_and_special_free(tiny_llama_dir: Path) -> None:
     backend = _backend(tiny_llama_dir)
     first = backend._neutral_padding_ids(24, dtype=torch.long, prompt="prompt-a")

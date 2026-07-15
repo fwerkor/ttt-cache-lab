@@ -213,7 +213,10 @@ class ToyBackend:
             return 2.5 * base
         return 1.0 * base
 
-    def configure_metrics(self, *, capture_attention: bool) -> None:
+    def configure_metrics(
+        self, *, capture_attention: bool, capture_hidden_states: bool = True
+    ) -> None:
+        del capture_hidden_states
         self._capture_attention_metrics = capture_attention
 
     def estimate_flops(self, decision: StrategyDecision, *, context_length: int) -> float:

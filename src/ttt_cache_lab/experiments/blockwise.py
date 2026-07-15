@@ -206,7 +206,7 @@ def run_blockwise_exploration(
             "A dynamic probe model can only be used with prompt_anchor probes"
         )
     backend = build_backend(config.model, seed=config.seed)
-    backend.configure_metrics(capture_attention=True)
+    backend.configure_metrics(capture_attention=True, capture_hidden_states=True)
     splice = getattr(backend, "probe_blockwise_cache_splice", None)
     if not callable(splice):
         raise RuntimeError("The selected backend does not implement blockwise cache splicing")

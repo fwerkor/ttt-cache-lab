@@ -77,7 +77,7 @@ def run_task_probe(
     max_perfect_fraction: float | None = None,
 ) -> TaskProbeArtifacts:
     backend = build_backend(config.model, seed=config.seed)
-    backend.configure_metrics(capture_attention=False)
+    backend.configure_metrics(capture_attention=False, capture_hidden_states=False)
     samples = build_task_samples(config.data, seed=config.seed)
     return run_task_probe_with_backend(
         config,

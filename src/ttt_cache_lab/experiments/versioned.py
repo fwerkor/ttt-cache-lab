@@ -98,7 +98,15 @@ class VersionedExperimentRunner:
             capture_attention=(
                 self.config.metrics.compute_attention_metrics
                 or self.config.metrics.compute_boundary_compatibility_metrics
-            )
+            ),
+            capture_hidden_states=(
+                self.config.metrics.compute_layerwise_propagation_metrics
+                or self.config.metrics.compute_boundary_compatibility_metrics
+                or any(
+                    name == "layerwise_recompute" or name.startswith("windowed_recompute_")
+                    for name in self.config.cache.strategies
+                )
+            ),
         )
         run_configured_task_probe(self.config, backend=backend, samples=data)
         run_metadata = collect_run_metadata(self.config)

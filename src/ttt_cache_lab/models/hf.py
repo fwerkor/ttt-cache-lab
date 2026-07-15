@@ -169,6 +169,7 @@ class HuggingFaceBackend:
         self._neutral_padding_pool: tuple[int, ...] | None = None
         self._alora_base_cache: dict[str, tuple[Any, np.ndarray]] = {}
         self._capture_attention_metrics = False
+        self._capture_hidden_state_history = True
         self._last_attention_summary: np.ndarray | None = None
         self._last_attention_head_summary: np.ndarray | None = None
         self._last_attention_input_summary: np.ndarray | None = None
@@ -423,17 +424,58 @@ class HuggingFaceBackend:
             raise ValueError(f"Unsupported torch_dtype: {dtype}")
         return mapping[dtype]
 
+    def _decoder_backbone(self) -> Any:
+        backbone = getattr(self.model, "model", None)
+        language_model = getattr(backbone, "language_model", None)
+        if language_model is not None:
+            return language_model
+        if backbone is not None:
+            return backbone
+        transformer = getattr(self.model, "transformer", None)
+        return transformer if transformer is not None else self.model
+
+    def _prefill_backbone(self, input_ids: Any, *, attention_mask: Any | None = None) -> Any:
+        kwargs: dict[str, Any] = {
+            "input_ids": input_ids,
+            "use_cache": True,
+            "output_hidden_states": self._capture_hidden_state_history,
+            "return_dict": True,
+        }
+        if attention_mask is not None:
+            kwargs["attention_mask"] = attention_mask
+        return self._decoder_backbone()(**kwargs)
+
+    def _prefill_hidden_payload(self, prefill: Any) -> tuple[np.ndarray, tuple[Any, ...]]:
+        history = getattr(prefill, "hidden_states", None)
+        if self._capture_hidden_state_history and history:
+            materialized = tuple(hidden.detach() for hidden in history)
+            return self._summarize_hidden(materialized), materialized
+        last_hidden = getattr(prefill, "last_hidden_state", None)
+        if last_hidden is None:
+            return np.zeros((1, 1), dtype=np.float64), ()
+        summary = (
+            last_hidden.detach()
+            .float()
+            .mean(dim=tuple(range(last_hidden.ndim - 1)))
+            .cpu()
+            .numpy()
+        )
+        return np.expand_dims(summary, axis=0).astype(np.float64), ()
+
     def prefill(self, prompt: str) -> BackendOutput:
         state = self._encode_prompt(prompt)
         reset_peak_memory(self.torch, self.devices)
         synchronize(self.torch, self.devices)
         start = time.perf_counter()
         self._set_lora_capture(True)
-        with self.torch.no_grad():
-            prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
+        try:
+            with self.torch.no_grad():
+                prefill = self._prefill_backbone(state.prefix_ids)
+        finally:
             self._set_lora_capture(False)
         synchronize(self.torch, self.devices)
         prefill_s = time.perf_counter() - start
+        hidden_tensor, hidden_states = self._prefill_hidden_payload(prefill)
         with self.torch.no_grad():
             probe_logits, generated_text, decode_s, generated_tokens = self._generate_answer(
                 state, prefill.past_key_values
@@ -442,11 +484,11 @@ class HuggingFaceBackend:
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
-            hidden_tensor=self._summarize_hidden(prefill.hidden_states),
+            hidden_tensor=hidden_tensor,
             parameter_version=self.parameter_version,
             extras={
                 "past_key_values": prefill.past_key_values,
-                "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
+                "hidden_states": hidden_states,
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.devices),
@@ -518,11 +560,14 @@ class HuggingFaceBackend:
         synchronize(self.torch, self.devices)
         start = time.perf_counter()
         self._set_lora_capture(True)
-        with self.torch.no_grad():
-            prefill = self.model(input_ids=state.prefix_ids, use_cache=True, output_hidden_states=True)
+        try:
+            with self.torch.no_grad():
+                prefill = self._prefill_backbone(state.prefix_ids)
+        finally:
             self._set_lora_capture(False)
         synchronize(self.torch, self.devices)
         prefill_s = time.perf_counter() - start
+        hidden_tensor, hidden_states = self._prefill_hidden_payload(prefill)
         with self.torch.no_grad():
             probe_logits, generated_text, decode_s, generated_tokens = self._generate_answer(
                 state, prefill.past_key_values
@@ -531,11 +576,11 @@ class HuggingFaceBackend:
         return BackendOutput(
             logits=self._to_numpy(probe_logits),
             cache_tensor=self._summarize_past(prefill.past_key_values),
-            hidden_tensor=self._summarize_hidden(prefill.hidden_states),
+            hidden_tensor=hidden_tensor,
             parameter_version=self.parameter_version,
             extras={
                 "past_key_values": prefill.past_key_values,
-                "hidden_states": tuple(hidden.detach() for hidden in prefill.hidden_states),
+                "hidden_states": hidden_states,
                 "prompt_state": state,
                 "lora_cache": self._snapshot_lora_cache(),
                 "memory_allocated": memory_allocated(self.torch, self.devices),
@@ -603,8 +648,11 @@ class HuggingFaceBackend:
             return self._last_alora_s or max(1e-6, (self._last_prefill_s or 1.0) * 0.25)
         return max(1e-6, (self._last_prefill_s or 1.0) / 10.0)
 
-    def configure_metrics(self, *, capture_attention: bool) -> None:
+    def configure_metrics(
+        self, *, capture_attention: bool, capture_hidden_states: bool = True
+    ) -> None:
         self._capture_attention_metrics = capture_attention
+        self._capture_hidden_state_history = capture_hidden_states
 
     def estimate_flops(self, decision: StrategyDecision, *, context_length: int) -> float:
         full = self._full_prefill_flops(max(1, context_length))

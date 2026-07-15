@@ -23,10 +23,52 @@ def build_model_shard_plan(config: Any, *, device_type: str, device_ids: list[in
     text_config = _text_config(config)
     num_layers = _num_hidden_layers(config)
     devices = tuple(f"{device_type}:{device_id}" for device_id in device_ids)
-    layer_devices = tuple(
-        devices[min(len(devices) - 1, layer * len(devices) // num_layers)] for layer in range(num_layers)
-    )
     model_type = str(getattr(config, "model_type", "")).lower()
+    reserve_first_device = (
+        device_type == "npu"
+        and len(devices) > 1
+        and model_type
+        in {
+            "llama",
+            "mistral",
+            "qwen2",
+            "qwen2_moe",
+            "qwen3",
+            "gemma",
+            "gemma2",
+            "gemma3",
+            "gemma3_text",
+        }
+    )
+    if reserve_first_device:
+        weights = [0.75, *([1.0] * (len(devices) - 1))]
+        raw_quotas = [num_layers * weight / sum(weights) for weight in weights]
+        quotas = [max(1, int(value)) for value in raw_quotas]
+        while sum(quotas) > num_layers:
+            index = max(
+                range(len(quotas)),
+                key=lambda item: (quotas[item] - raw_quotas[item], quotas[item], -item),
+            )
+            if quotas[index] <= 1:
+                break
+            quotas[index] -= 1
+        while sum(quotas) < num_layers:
+            index = max(
+                range(len(quotas)),
+                key=lambda item: (raw_quotas[item] - quotas[item], item),
+            )
+            quotas[index] += 1
+        expanded = [
+            device
+            for device, quota in zip(devices, quotas, strict=True)
+            for _ in range(quota)
+        ]
+        layer_devices = tuple(expanded[:num_layers])
+    else:
+        layer_devices = tuple(
+            devices[min(len(devices) - 1, layer * len(devices) // num_layers)]
+            for layer in range(num_layers)
+        )
     tied = bool(
         getattr(config, "tie_word_embeddings", False)
         or getattr(text_config, "tie_word_embeddings", False)
