@@ -56,14 +56,14 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 - 仓库：`main`
 - 默认核心冻结矩阵：**47 个配置 × 3 seeds = 141 个正式 seed-run**
 - 扩展可选矩阵：`configs/paper/study_extended.yaml`，保留原 **84 个配置 / 252 seed-run**，不作为投稿前强制完成条件
-- 严格完成配置：**1/47**
-- 已正式验收的单 seed：**6/141**
+- 严格完成配置：**2/47**
+- 已正式验收的单 seed：**7/141**
   - E1：seed 7、17、29；该配置三 seed 已全部验收
   - E2：Qwen2.5-7B controlled seed 7
-  - E3：Qwen2.5-1.5B aggregation 的 seed 7、17
+  - E3：Qwen2.5-1.5B aggregation 的 seed 7、17、29；该配置三 seed 已全部验收
 - 当前正在运行：
   - E2 Qwen2.5-7B controlled seed 17
-  - E3 1.5B aggregation seed 29
+  - E3 1.5B common_words seed 7
 - 当前策略：**优先完成核心 E1、E2、E3；A、W、B 仍按依赖关系调度**
 - 当前核心矩阵剩余估算：约 **19,664 NPU·小时**；8 卡理想连续运行约 **102 天**，按约 6 卡有效利用约 **137 天**
 
@@ -273,7 +273,7 @@ E2 参数版本漂移
     │   │   ├── .success、run_metadata.json、records.jsonl、summary.csv、version_summary.csv 均完整
     │   │   ├── records.jsonl 共 10,752 条记录
     │   │   └── 无 run_failure.json 或 .failed
-    │   ├── seed 17：[运行；已写入 2,415 / 10,752 条记录，无当前失败标记]
+    │   ├── seed 17：[运行；已写入 3,087 / 10,752 条记录，无当前失败标记]
     │   └── seed 29：[待干净重跑；旧 OOM 结果不计论文数据]
     ├── Qwen2.5-7B realistic：[已排队]
     ├── Qwen2.5-32B controlled：[暂停]
@@ -324,13 +324,18 @@ E3 Failure Map
     ├── 1.5B aggregation
     │   ├── seed 7：[完成]
     │   ├── seed 17：[完成]
-    │   └── seed 29：[运行]
-    │       ├── 已写入 64,464 / 64,512 条记录
-    │       └── 尚缺 .success 与 version_summary.csv，不能验收
+    │   └── seed 29：[完成]
+    │       ├── .success、run_metadata.json、records.jsonl、summary.csv、version_summary.csv 均完整且非空
+    │       ├── records.jsonl 共 64,512 条，全部为有效 JSON
+    │       ├── .success 返回码为 0
+    │       └── 无 run_failure.json 或 .failed
+    ├── 1.5B common_words
+    │   ├── seed 7：[运行；已写入 3,072 / 64,512 条记录，无当前失败标记]
+    │   └── seed 17、29：[待做]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B 三个核心任务：[待做]
     ├── 32B 三个核心任务：[暂停]
-    └── 正式完成度：0/12 配置，2/36 seed
+    └── 正式完成度：1/12 配置，3/36 seed
 ```
 
 
