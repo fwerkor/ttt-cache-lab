@@ -7,6 +7,10 @@ from pathlib import Path
 
 from ttt_cache_lab.experiments.conditions import condition_fields, with_full_reference_metrics
 
+FAILURE_MAP_CORE_STRATEGIES = frozenset(
+    {"full_recompute", "stale_reuse", "delta_correction", "layerwise_recompute"}
+)
+
 
 @dataclass(frozen=True)
 class FailureThresholds:
@@ -60,7 +64,11 @@ def generate_failure_map(
 ) -> Path:
     thresholds = thresholds or FailureThresholds()
     output_dir.mkdir(parents=True, exist_ok=True)
-    rows = _read_rows(input_csv)
+    rows = [
+        row
+        for row in _read_rows(input_csv)
+        if row.get("cache_strategy", "") in FAILURE_MAP_CORE_STRATEGIES
+    ]
     cells = _aggregate_cells(rows)
     csv_path = output_dir / "failure_map.csv"
     _write_cells(cells, csv_path)
