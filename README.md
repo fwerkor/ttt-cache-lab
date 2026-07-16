@@ -282,7 +282,7 @@ E2 参数版本漂移
     │   │   ├── records.jsonl 共 10,752 条，全部为有效 JSON；summary.csv 共 10,752 条数据行
     │   │   ├── .success 返回码为 0
     │   │   └── 无 run_failure.json 或 .failed
-    │   └── seed 29：[运行；已写入 336 / 10,752 条记录，无当前失败标记；尚缺 `.success` 与 `version_summary.csv`；旧 OOM 结果不计论文数据]
+    │   └── seed 29：[运行；已写入 756 / 10,752 条记录，无当前失败标记；尚缺 `.success` 与 `version_summary.csv`；旧 OOM 结果不计论文数据]
     ├── Qwen2.5-7B realistic：[已排队]
     ├── Qwen2.5-32B controlled：[暂停]
     └── 正式完成度：0/3 配置，2/9 seed
@@ -338,7 +338,7 @@ E3 Failure Map
     │       ├── .success 返回码为 0
     │       └── 无 run_failure.json 或 .failed
     ├── 1.5B common_words
-    │   ├── seed 7：[运行；已写入 29,280 / 64,512 条记录，无当前失败标记；尚缺 `.success` 与 `version_summary.csv`]
+    │   ├── seed 7：[运行；已写入 30,360 / 64,512 条记录，无当前失败标记；尚缺 `.success` 与 `version_summary.csv`]
     │   └── seed 17、29：[待做]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B 三个核心任务：[待做]
