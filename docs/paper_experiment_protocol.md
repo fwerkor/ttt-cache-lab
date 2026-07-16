@@ -26,6 +26,7 @@ The experiment framework must not claim production serving integration, universa
 | E7 | Which planner components matter? | Held-out LongBench v2 component ablations |
 | E8 | What happens during a sustained capacity-limited trace? | A 7B global-cache-manager trace with LRU eviction, p95/p99 latency, and false-safe rate |
 | A1 | Do the discovered failure boundaries transfer across decoder structures? | Three-task lightweight screening on dense GQA, sliding-window attention, local/global attention, and sparse MoE models |
+| W-F | Why can selective recomputation work, and what is its oracle upper bound? | Frozen W1 finite-window, W2 propagation, W3 boundary-prediction, and W4 blockwise-oracle evidence on Qwen2.5-1.5B |
 
 ## 3. Task hierarchy
 
@@ -57,7 +58,7 @@ The original six-task 7B/14B/32B grid remains in `configs/paper/study_extended.y
 
 E3 records only four actions in the formal failure map: full recomputation, stale reuse, delta correction, and layerwise recomputation. The already-running 1.5B aggregation configuration is an eight-strategy superset whose config hash is preserved; failure-map generation filters that artifact to the four core actions.
 
-Before expanding E3 beyond the ongoing Qwen2.5-1.5B calibration, W1-W4 form a discovery gate. W1 evaluates finite recompute windows as paired strategies within one model/update trajectory and reports both the smallest safe interval and the smallest interval that improves or preserves quality relative to paired stale reuse; it also records any KL monotonicity violations as the window grows. Window sizes must not be compared across independently retrained runs. W2 records per-layer hidden/K/V drift and classifies whether propagation decays, persists, or amplifies. W3 evaluates local-boundary and whole-stale-suffix signals using sample-held-out prediction. W4 evaluates layer-token cache-splice masks at equal cache-cell budgets. Every W4 block size and selector must share the same trained adapter state and old/full cache pair. W4 is an oracle cache-surgery study, so its quality gains are not reported as deployable speedups until a real sparse-recompute or copy-on-write path exists. These experiments use calibration samples only. The selected 32B E3 expansion and any learned planner proceed only if the corresponding discovery mechanism produces a reproducible quality-cost advantage. The 14B expansion remains optional in the extended matrix. Otherwise that mechanism is reported as a negative result and the main study remains a failure-boundary measurement.
+W1-W4 are frozen as a separate mandatory mechanism matrix in `configs/paper/discovery/w_frozen_matrix.yaml`. It contains four Qwen2.5-1.5B calibration configurations and expands to 12 seed-runs over seeds 7, 17, and 29. Existing runs may be reused only when their source config and seed match the frozen matrix; target, window, gap, block size, budget, selector, and analysis thresholds may no longer be changed after observing results. W1 evaluates finite recompute windows as paired strategies within one model/update trajectory and reports both the smallest safe interval and the smallest interval that improves or preserves quality relative to paired stale reuse; it also records any KL monotonicity violations as the window grows. Window sizes must not be compared across independently retrained runs. W2 records per-layer hidden/K/V drift and classifies whether propagation decays, persists, or amplifies. W3 evaluates local-boundary and whole-stale-suffix signals using sample-held-out prediction. W4 evaluates layer-token cache-splice masks at equal cache-cell budgets. Every W4 block size and selector must share the same trained adapter state and old/full cache pair. W4 is an oracle cache-surgery study, so its quality gains are not reported as deployable speedups until a real sparse-recompute or copy-on-write path exists. These experiments use calibration samples only. W may be reopened only if the frozen W4 upper bound is too weak to justify a planner or if the selected B route requires a signal, granularity, or action absent from W1-W4. Otherwise negative W results are retained and no new W conditions are selected.
 
 ### 3.2 Real long-context tasks
 
@@ -129,11 +130,12 @@ A strategy is eligible only when it is safe across every compatible calibration 
 The execution order is fixed:
 
 1. run E1 and E2, which do not consume the failure map;
-2. run all core `calibration` jobs;
-3. merge calibration records and generate the failure map;
-4. run validation jobs and freeze baseline/planner hyperparameters;
-5. run E4/E5/E6/E7/E8 test stages without modifying the map;
-6. merge each stage and generate statistics and experiment-specific analyses.
+2. run the frozen W-F mechanism matrix and retain all matched positive or negative results;
+3. run all core `calibration` jobs;
+4. merge calibration records and generate the failure map;
+5. freeze the B route, then run validation jobs and freeze baseline/planner hyperparameters;
+6. run E4/E5/E6/E7/E8 test stages without modifying the map;
+7. merge each stage and generate statistics and experiment-specific analyses.
 
 Any change to the failure map after observing test results invalidates that test run.
 
@@ -173,7 +175,7 @@ The run metadata records git commit, config hash, package versions, dtype, atten
 
 ## 9. Main model/task matrix
 
-The default core matrix contains 47 configurations and expands to 141 jobs at three seeds. The original 84-configuration/252-job matrix is retained as `configs/paper/study_extended.yaml` and is not a submission prerequisite. Twelve A1 jobs still cover four additional architectures across multi-hop tracing, multi-needle retrieval, and variable tracking.
+The core effect matrix contains 47 configurations and expands to 141 jobs at three seeds. The mandatory W-F mechanism matrix contributes 4 configurations and 12 jobs, so the submission-required frozen denominator is 51 configurations and 153 seed-runs. The original 84-configuration/252-job matrix is retained as `configs/paper/study_extended.yaml` and is not a submission prerequisite. Twelve A1 jobs still cover four additional architectures across multi-hop tracing, multi-needle retrieval, and variable tracking.
 
 The principal core results are:
 
@@ -188,12 +190,15 @@ The selected 32B runs are primary headline evidence, not optional smoke tests. I
 
 ## 10. Execution
 
-Generate the stable job matrix:
+Generate the stable core job matrix and inspect the frozen W-F queue:
 
 ```bash
 python -m ttt_cache_lab.cli study-plan \
   --manifest configs/paper/study.yaml
+python scripts/formal_matrix_20260712.py --queue small0 --list
 ```
+
+The hardware runner reads both `configs/paper/study.yaml` and `configs/paper/discovery/w_frozen_matrix.yaml` for the default core queue. `--include-discovery` is reserved for non-frozen extensions and must not be used to change the submission denominator.
 
 
 The archived extended matrix can be inspected or run explicitly with:

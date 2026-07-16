@@ -1,0 +1,66 @@
+name: ttt-cache-fse-paper-w-mechanism-matrix
+frozen_on: 2026-07-16
+protocol_version: 1
+output_dir: runs/paper/discovery/frozen
+seeds:
+- 7
+- 17
+- 29
+policy:
+  role: mandatory_mechanism_evidence
+  calibration_only: true
+  allow_condition_changes: false
+  reuse_existing_matching_runs: true
+  reopen_only_if:
+  - the W4 oracle upper bound is too weak to support a planner
+  - the frozen B route requires a signal, block granularity, or action absent from W1-W4
+jobs:
+- name: w1_qwen_1_5b_finite_window
+  config: configs/paper/discovery/w1_qwen_1_5b_multi_hop_window_sweep.yaml
+  runner: sweep
+  seeds: [7, 17, 29]
+  tags: [w_frozen, mechanism, finite_window]
+  required_seed_artifacts:
+  - merged_records.csv
+  - version_summary.csv
+  required_analysis_artifacts:
+  - analysis/window/window_cells.csv
+  - analysis/window/minimal_safe_windows.csv
+- name: w2_qwen_1_5b_propagation
+  config: configs/paper/discovery/w2_qwen_1_5b_propagation.yaml
+  runner: versioned
+  seeds: [7, 17, 29]
+  tags: [w_frozen, mechanism, propagation]
+  required_seed_artifacts:
+  - records.jsonl
+  - propagation_records.csv
+  - version_summary.csv
+  required_analysis_artifacts:
+  - analysis/propagation/layerwise_propagation.csv
+  - analysis/propagation/propagation_profiles.csv
+- name: w3_qwen_1_5b_boundary_predictor
+  config: configs/paper/discovery/w3_qwen_1_5b_boundary_predictor.yaml
+  runner: versioned
+  seeds: [7, 17, 29]
+  tags: [w_frozen, mechanism, boundary]
+  required_seed_artifacts:
+  - records.jsonl
+  - boundary_records.csv
+  - version_summary.csv
+  required_analysis_artifacts:
+  - analysis/boundary/boundary_metric_evaluation.csv
+  - analysis/boundary/boundary_predictor_summary.csv
+- name: w4_qwen_1_5b_blockwise_oracle
+  config: configs/paper/discovery/w4_qwen_1_5b_blockwise_oracle.yaml
+  runner: blockwise
+  seeds: [7, 17, 29]
+  tags: [w_frozen, mechanism, oracle]
+  runner_args:
+    block_sizes: [32, 64, 128]
+    version_gap: 4
+    budget_fractions: [0.01, 0.02, 0.05, 0.10, 0.20]
+  required_seed_artifacts:
+  - blockwise_records.csv
+  - block_frontier.csv
+  - block_masks.csv
+  - blockwise_report.md

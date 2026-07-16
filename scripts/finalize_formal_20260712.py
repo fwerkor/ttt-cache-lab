@@ -33,19 +33,39 @@ def successful_result_dirs() -> list[Path]:
 
 
 def merge_e3() -> None:
-    inputs = [d / "records.jsonl" for d in successful_result_dirs() if "/e3_" in str(d) and (d / "records.jsonl").exists()]
+    inputs = [
+        d / "records.jsonl" for d in successful_result_dirs() if "/e3_" in str(d) and (d / "records.jsonl").exists()
+    ]
     if not inputs:
         print("[finalize] no successful E3 records found", flush=True)
         return
     merged_dir = FINAL_ROOT / "e3_merged"
     merged_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-m", "ttt_cache_lab.cli", "merge-records", "--input", *map(str, inputs), "--output-dir", str(merged_dir)]
+    cmd = [
+        sys.executable,
+        "-m",
+        "ttt_cache_lab.cli",
+        "merge-records",
+        "--input",
+        *map(str, inputs),
+        "--output-dir",
+        str(merged_dir),
+    ]
     if not run(cmd, log_name="e3_merge.log"):
         return
     merged = merged_dir / "merged_records.csv"
     if merged.exists():
         run(
-            [sys.executable, "-m", "ttt_cache_lab.cli", "failure-map", "--input", str(merged), "--output-dir", str(FINAL_ROOT / "failure_map")],
+            [
+                sys.executable,
+                "-m",
+                "ttt_cache_lab.cli",
+                "failure-map",
+                "--input",
+                str(merged),
+                "--output-dir",
+                str(FINAL_ROOT / "failure_map"),
+            ],
             log_name="e3_failure_map.log",
         )
 
@@ -55,23 +75,38 @@ def analyze_w() -> None:
         rel_name = seed_dir.parent.name
         analysis = seed_dir / "analysis"
         if "w1_" in rel_name:
-            inputs = sorted(seed_dir.rglob("records.jsonl"))
-            if not inputs:
-                continue
-            merged_dir = analysis / "merged"
-            cmd = [sys.executable, "-m", "ttt_cache_lab.cli", "merge-records", "--input", *map(str, inputs), "--output-dir", str(merged_dir)]
-            if run(cmd, log_name=f"{rel_name}-{seed_dir.name}-merge.log"):
-                merged = merged_dir / "merged_records.csv"
-                if merged.exists():
-                    run(
-                        [sys.executable, "-m", "ttt_cache_lab.cli", "window-analysis", "--input", str(merged), "--output-dir", str(analysis / "window")],
-                        log_name=f"{rel_name}-{seed_dir.name}-analysis.log",
-                    )
+            # The sweep-level file preserves the sweep axes required by
+            # window-analysis. merge-records emits summary.csv and drops those
+            # axes, so using it here silently skipped W1 finalization.
+            merged = seed_dir / "merged_records.csv"
+            if merged.exists():
+                run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "ttt_cache_lab.cli",
+                        "window-analysis",
+                        "--input",
+                        str(merged),
+                        "--output-dir",
+                        str(analysis / "window"),
+                    ],
+                    log_name=f"{rel_name}-{seed_dir.name}-analysis.log",
+                )
         elif "w2_" in rel_name:
             source = seed_dir / "propagation_records.csv"
             if source.exists():
                 run(
-                    [sys.executable, "-m", "ttt_cache_lab.cli", "propagation-analysis", "--input", str(source), "--output-dir", str(analysis / "propagation")],
+                    [
+                        sys.executable,
+                        "-m",
+                        "ttt_cache_lab.cli",
+                        "propagation-analysis",
+                        "--input",
+                        str(source),
+                        "--output-dir",
+                        str(analysis / "propagation"),
+                    ],
                     log_name=f"{rel_name}-{seed_dir.name}-analysis.log",
                 )
         elif "w3_" in rel_name:
@@ -79,7 +114,18 @@ def analyze_w() -> None:
             summary = seed_dir / "summary.csv"
             if boundary.exists() and summary.exists():
                 run(
-                    [sys.executable, "-m", "ttt_cache_lab.cli", "boundary-analysis", "--boundary-input", str(boundary), "--summary-input", str(summary), "--output-dir", str(analysis / "boundary")],
+                    [
+                        sys.executable,
+                        "-m",
+                        "ttt_cache_lab.cli",
+                        "boundary-analysis",
+                        "--boundary-input",
+                        str(boundary),
+                        "--summary-input",
+                        str(summary),
+                        "--output-dir",
+                        str(analysis / "boundary"),
+                    ],
                     log_name=f"{rel_name}-{seed_dir.name}-analysis.log",
                 )
 
@@ -113,8 +159,14 @@ def write_summary() -> None:
     for item in statuses:
         key = str(item["state"])
         counts[key] = counts.get(key, 0) + 1
-    lines = ["# Formal experiment queue status", "", f"- Successful runs: {counts.get('success', 0)}", f"- Failed runs: {counts.get('failed', 0)}", ""]
-    for queue in sorted({str(item['queue']) for item in statuses}):
+    lines = [
+        "# Formal experiment queue status",
+        "",
+        f"- Successful runs: {counts.get('success', 0)}",
+        f"- Failed runs: {counts.get('failed', 0)}",
+        "",
+    ]
+    for queue in sorted({str(item["queue"]) for item in statuses}):
         q = [item for item in statuses if item["queue"] == queue]
         lines.append(f"## {queue}")
         lines.append("")

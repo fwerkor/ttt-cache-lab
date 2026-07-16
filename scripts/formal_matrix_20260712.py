@@ -45,15 +45,22 @@ class Job:
 
 
 def glob_jobs(prefix: str, pattern: str, *, runner: str = "versioned", mode: str = "normal") -> list[Job]:
-    return [Job(f"{prefix}_{p.stem}", str(p.relative_to(ROOT)), runner, SEEDS, mode) for p in sorted(ROOT.glob(pattern))]
+    return [
+        Job(f"{prefix}_{p.stem}", str(p.relative_to(ROOT)), runner, SEEDS, mode) for p in sorted(ROOT.glob(pattern))
+    ]
 
 
 def manifest_configs(matrix: str) -> set[str]:
     manifest_name = "study.yaml" if matrix == "core" else "study_extended.yaml"
-    payload = yaml.safe_load(
-        (ROOT / "configs" / "paper" / manifest_name).read_text(encoding="utf-8")
-    )
-    return {str(job["config"]) for job in payload["jobs"]}
+    manifest_paths = [
+        ROOT / "configs" / "paper" / manifest_name,
+        ROOT / "configs" / "paper" / "discovery" / "w_frozen_matrix.yaml",
+    ]
+    configs: set[str] = set()
+    for manifest_path in manifest_paths:
+        payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        configs.update(str(job["config"]) for job in payload["jobs"])
+    return configs
 
 
 def build_queues(*, matrix: str = "core", include_discovery: bool = False) -> dict[str, list[Job]]:
@@ -75,7 +82,9 @@ def build_queues(*, matrix: str = "core", include_discovery: bool = False) -> di
     seven13 += glob_jobs("e3", "configs/paper/calibration/e3_qwen_7b_*.yaml")
     seven13 += glob_jobs("e5", "configs/paper/delta/e5_qwen_7b_*.yaml")
     for context in (4096, 8192, 16384):
-        seven13.append(Job(f"e6_qwen_7b_{context}_fixed", f"configs/paper/scaling/e6_qwen_7b_{context}.yaml", mode="e6_fixed"))
+        seven13.append(
+            Job(f"e6_qwen_7b_{context}_fixed", f"configs/paper/scaling/e6_qwen_7b_{context}.yaml", mode="e6_fixed")
+        )
 
     arch13 = glob_jobs("a1", "configs/paper/architecture/*.yaml")
 
@@ -85,7 +94,9 @@ def build_queues(*, matrix: str = "core", include_discovery: bool = False) -> di
     ]
     fourteen4567 += glob_jobs("e3", "configs/paper/calibration/e3_qwen_14b_*.yaml")
     for context in (8192, 16384):
-        fourteen4567.append(Job(f"e6_qwen_14b_{context}_fixed", f"configs/paper/scaling/e6_qwen_14b_{context}.yaml", mode="e6_fixed"))
+        fourteen4567.append(
+            Job(f"e6_qwen_14b_{context}_fixed", f"configs/paper/scaling/e6_qwen_14b_{context}.yaml", mode="e6_fixed")
+        )
 
     sevenlong4567 = [
         Job("e6_qwen_7b_32768_fixed", "configs/paper/scaling/e6_qwen_7b_32768.yaml", mode="e6_fixed"),
@@ -102,7 +113,9 @@ def build_queues(*, matrix: str = "core", include_discovery: bool = False) -> di
     thirtysix += glob_jobs("e3", "configs/paper/calibration/e3_qwen_32b_*.yaml")
     thirtysix += glob_jobs("e5", "configs/paper/delta/e5_qwen_32b_*.yaml")
     for context in (8192, 16384, 32768):
-        thirtysix.append(Job(f"e6_qwen_32b_{context}_fixed", f"configs/paper/scaling/e6_qwen_32b_{context}.yaml", mode="e6_fixed"))
+        thirtysix.append(
+            Job(f"e6_qwen_32b_{context}_fixed", f"configs/paper/scaling/e6_qwen_32b_{context}.yaml", mode="e6_fixed")
+        )
 
     queues = {
         "small0": small0,
@@ -115,12 +128,7 @@ def build_queues(*, matrix: str = "core", include_discovery: bool = False) -> di
     }
     allowed = manifest_configs(matrix)
     if include_discovery:
-        allowed.update(
-            job.config
-            for jobs in queues.values()
-            for job in jobs
-            if "/discovery/" in job.config
-        )
+        allowed.update(job.config for jobs in queues.values() for job in jobs if "/discovery/" in job.config)
     return {
         queue: [job for job in jobs if job.config in allowed]
         for queue, jobs in queues.items()
@@ -132,9 +140,7 @@ def queue_parallelism(queue: str) -> str:
     override = os.environ.get("FORMAL_MODEL_PARALLELISM")
     if override is not None:
         if override not in {"single", "model_shard"}:
-            raise ValueError(
-                "FORMAL_MODEL_PARALLELISM must be 'single' or 'model_shard'"
-            )
+            raise ValueError("FORMAL_MODEL_PARALLELISM must be 'single' or 'model_shard'")
         return override
     return "single" if queue == "small0" else "model_shard"
 
@@ -183,7 +189,11 @@ def prepare_config(job: Job, seed: int, output_dir: Path, queue: str) -> Path:
             payload["data"].setdefault("adapter_activation_marker", "<|adapter_activation|>")
         if job.mode == "e6_fixed":
             cache = payload["cache"]
-            cache["strategies"] = [s for s in cache.get("strategies", []) if s in {"full_recompute", "stale_reuse", "periodic_refresh", "threshold_refresh"}]
+            cache["strategies"] = [
+                s
+                for s in cache.get("strategies", [])
+                if s in {"full_recompute", "stale_reuse", "periodic_refresh", "threshold_refresh"}
+            ]
             cache["failure_map_path"] = None
     destination = CONFIG_ROOT / queue / f"{job.name}.seed-{seed}.yaml"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -198,7 +208,23 @@ def command_for(job: Job, config: Path) -> list[str]:
     if job.runner == "sweep":
         return base + ["versioned-sweep", "--config", str(config)]
     if job.runner == "blockwise":
-        return base + ["blockwise-explore", "--config", str(config), "--block-sizes", "32", "64", "128", "--version-gap", "4", "--budget-fractions", "0.01", "0.02", "0.05", "0.10", "0.20"]
+        return base + [
+            "blockwise-explore",
+            "--config",
+            str(config),
+            "--block-sizes",
+            "32",
+            "64",
+            "128",
+            "--version-gap",
+            "4",
+            "--budget-fractions",
+            "0.01",
+            "0.02",
+            "0.05",
+            "0.10",
+            "0.20",
+        ]
     return base + ["versioned-run", "--config", str(config), "--version-summary"]
 
 
@@ -227,13 +253,15 @@ def run_one(queue: str, job: Job, seed: int) -> bool:
     append_status(queue, {"event": "start", "job": job.name, "seed": seed, "time": utcnow(), "config": str(config)})
     print(f"[start] {queue}/{job.name}/seed-{seed}", flush=True)
     env = os.environ.copy()
-    env.update({
-        "PYTHONPATH": str(ROOT / "src"),
-        "HF_DATASETS_OFFLINE": "1",
-        "TRANSFORMERS_OFFLINE": "1",
-        "TOKENIZERS_PARALLELISM": "false",
-        "PYTORCH_NPU_ALLOC_CONF": env.get("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"),
-    })
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "src"),
+            "HF_DATASETS_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "TOKENIZERS_PARALLELISM": "false",
+            "PYTORCH_NPU_ALLOC_CONF": env.get("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"),
+        }
+    )
     rc = 1
     for attempt in (1, 2):
         started = time.monotonic()
@@ -241,7 +269,7 @@ def run_one(queue: str, job: Job, seed: int) -> bool:
             handle.write(f"\n===== attempt {attempt} started {utcnow()} =====\n")
             handle.flush()
             rc = subprocess.run(cmd, cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT, check=False).returncode
-            handle.write(f"\n===== attempt {attempt} exit={rc} duration_s={time.monotonic()-started:.3f} =====\n")
+            handle.write(f"\n===== attempt {attempt} exit={rc} duration_s={time.monotonic() - started:.3f} =====\n")
         if rc == 0:
             break
         time.sleep(20)
@@ -249,8 +277,14 @@ def run_one(queue: str, job: Job, seed: int) -> bool:
     marker = success if rc == 0 else failed
     other = failed if rc == 0 else success
     other.unlink(missing_ok=True)
-    marker.write_text(json.dumps({"event": event, "time": utcnow(), "config": str(config), "log": str(log), "return_code": rc}) + "\n", encoding="utf-8")
-    append_status(queue, {"event": event, "job": job.name, "seed": seed, "time": utcnow(), "return_code": rc, "log": str(log)})
+    marker.write_text(
+        json.dumps({"event": event, "time": utcnow(), "config": str(config), "log": str(log), "return_code": rc})
+        + "\n",
+        encoding="utf-8",
+    )
+    append_status(
+        queue, {"event": event, "job": job.name, "seed": seed, "time": utcnow(), "return_code": rc, "log": str(log)}
+    )
     print(f"[{event}] {queue}/{job.name}/seed-{seed}", flush=True)
     return rc == 0
 
@@ -263,7 +297,7 @@ def main() -> int:
         "--matrix",
         choices=("core", "extended"),
         default="core",
-        help="Select the default 47-config core matrix or the archived 84-config extended matrix.",
+        help="Select the 47-config core or 84-config extended effect matrix; both include the mandatory 4-config W-F matrix.",
     )
     parser.add_argument(
         "--include-discovery",

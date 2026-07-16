@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from ttt_cache_lab.configs import VersionedExperimentConfig, VersionedSweepConfig
 from ttt_cache_lab.experiments.study import expand_study
 
 
 def _versioned_paper_paths() -> list[Path]:
+    manifests = {"w_frozen_matrix.yaml"}
     return sorted(
         path
         for path in Path("configs/paper").glob("*/*.yaml")
-        if not path.name.endswith("_sweep.yaml")
+        if not path.name.endswith("_sweep.yaml") and path.name not in manifests
     )
 
 
@@ -66,10 +69,7 @@ def test_synthetic_paper_configs_use_explicit_nontruncating_generation_budgets()
     synthetic = [config for config in configs if config.data.source == "synthetic"]
     assert synthetic
     assert all(config.data.max_generation_tokens >= 32 for config in synthetic)
-    assert all(
-        config.data.max_generation_tokens >= config.data.answer_length
-        for config in synthetic
-    )
+    assert all(config.data.max_generation_tokens >= config.data.answer_length for config in synthetic)
 
 
 def test_a1_architecture_screening_meets_frozen_sample_floor() -> None:
@@ -148,25 +148,18 @@ def test_controlled_calibration_uses_frozen_model_specific_viability_cells() -> 
     for model_key, model_expected in expected.items():
         paths = sorted(Path("configs/paper/calibration").glob(f"e3_{model_key}_*.yaml"))
         configs = [VersionedExperimentConfig.from_yaml(path) for path in paths]
-        assert all(
-            config.data.context_length == model_expected["context_length"]
-            for config in configs
-        )
-        assert {
-            config.data.task: config.data.synthetic_difficulty for config in configs
-        } == model_expected["difficulties"]
+        assert all(config.data.context_length == model_expected["context_length"] for config in configs)
+        assert {config.data.task: config.data.synthetic_difficulty for config in configs} == model_expected[
+            "difficulties"
+        ]
 
 
 def test_longbench_v2_partitions_are_disjoint_for_qwen_7b() -> None:
     validation = VersionedExperimentConfig.from_yaml(
         Path("configs/paper/validation/e4_qwen_7b_longbench_v2_validation.yaml")
     )
-    test = VersionedExperimentConfig.from_yaml(
-        Path("configs/paper/test/e4_qwen_7b_longbench_v2_test.yaml")
-    )
-    ablation = VersionedExperimentConfig.from_yaml(
-        Path("configs/paper/ablation/e7_qwen_7b_longbench_v2.yaml")
-    )
+    test = VersionedExperimentConfig.from_yaml(Path("configs/paper/test/e4_qwen_7b_longbench_v2_test.yaml"))
+    ablation = VersionedExperimentConfig.from_yaml(Path("configs/paper/ablation/e7_qwen_7b_longbench_v2.yaml"))
     intervals = [
         range(validation.data.sample_offset, validation.data.sample_offset + validation.data.num_samples),
         range(test.data.sample_offset, test.data.sample_offset + test.data.num_samples),
@@ -210,6 +203,26 @@ def test_discovery_gate_configs_cover_window_and_propagation_axes() -> None:
     assert all(paired_windows.issubset(set(config.cache.strategies)) for config in boundary)
 
 
+def test_frozen_w_matrix_has_four_fixed_three_seed_jobs() -> None:
+    path = Path("configs/paper/discovery/w_frozen_matrix.yaml")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert payload["frozen_on"] == "2026-07-16" or str(payload["frozen_on"]) == "2026-07-16"
+    assert payload["seeds"] == [7, 17, 29]
+    assert payload["policy"]["allow_condition_changes"] is False
+    jobs = payload["jobs"]
+    assert len(jobs) == 4
+    assert {job["runner"] for job in jobs} == {"versioned", "sweep", "blockwise"}
+    assert all(job["seeds"] == [7, 17, 29] for job in jobs)
+    assert all(Path(job["config"]).is_file() for job in jobs)
+    assert sum(len(job["seeds"]) for job in jobs) == 12
+    blockwise = next(job for job in jobs if job["runner"] == "blockwise")
+    assert blockwise["runner_args"] == {
+        "block_sizes": [32, 64, 128],
+        "version_gap": 4,
+        "budget_fractions": [0.01, 0.02, 0.05, 0.10, 0.20],
+    }
+
+
 def test_study_manifests_expand_core_and_extended_matrices_to_three_seeds() -> None:
     _, core_jobs = expand_study(Path("configs/paper/study.yaml"))
     _, extended_jobs = expand_study(Path("configs/paper/study_extended.yaml"))
@@ -217,13 +230,9 @@ def test_study_manifests_expand_core_and_extended_matrices_to_three_seeds() -> N
     assert len(extended_jobs) == 84 * 3
     assert {job.seed for job in core_jobs} == {7, 17, 29}
     assert {job.seed for job in extended_jobs} == {7, 17, 29}
-    assert {(job.name, job.seed) for job in core_jobs} < {
-        (job.name, job.seed) for job in extended_jobs
-    }
+    assert {(job.name, job.seed) for job in core_jobs} < {(job.name, job.seed) for job in extended_jobs}
     dependent_stages = {"validation", "test", "delta", "scaling", "ablation", "workload"}
-    assert all(
-        job.required_paths for job in core_jobs if dependent_stages.intersection(job.tags)
-    )
+    assert all(job.required_paths for job in core_jobs if dependent_stages.intersection(job.tags))
     assert all(
         not job.required_paths
         for job in core_jobs
@@ -233,9 +242,7 @@ def test_study_manifests_expand_core_and_extended_matrices_to_three_seeds() -> N
 
 def test_core_calibration_configs_use_only_failure_map_actions() -> None:
     manifest, _ = expand_study(Path("configs/paper/study.yaml"))
-    calibration_paths = [
-        Path(job.config) for job in manifest.jobs if "calibration" in job.tags
-    ]
+    calibration_paths = [Path(job.config) for job in manifest.jobs if "calibration" in job.tags]
     expected = {"full_recompute", "stale_reuse", "delta_correction", "layerwise_recompute"}
     for path in calibration_paths:
         config = VersionedExperimentConfig.from_yaml(path)
