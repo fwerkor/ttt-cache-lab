@@ -66,8 +66,8 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录，seed 29 待运行
 - 当前正在运行：
-  - E2 Qwen2.5-7B LongBench v2 seed 7：5,076 / 10,752 条
-  - E3 1.5B common_words seed 29：13,392 / 32,256 条
+  - E2 Qwen2.5-7B LongBench v2 seed 7：5,580 / 10,752 条
+  - E3 1.5B common_words seed 29：14,592 / 32,256 条
 - 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
 - 当前核心矩阵剩余估算：约 **19,664 NPU·小时**；8 卡理想连续运行约 **102 天**，按约 6 卡有效利用约 **137 天**
 
@@ -288,7 +288,7 @@ E2 参数版本漂移
     │       ├── .success 返回码为 0
     │       └── 无 run_failure.json 或 .failed；旧 OOM 结果不计论文数据
     ├── Qwen2.5-7B realistic
-    │   └── seed 7：[运行，3,888 / 10,752 条；`.success` 与 `version_summary.csv` 尚未生成]
+    │   └── seed 7：[运行，5,580 / 10,752 条；`.success` 与 `version_summary.csv` 尚未生成]
     ├── Qwen2.5-32B controlled：[暂停]
     └── 正式完成度：1/3 配置，3/9 seed
 ```
@@ -353,7 +353,7 @@ E3 Failure Map
     │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
     │   │   ├── `.success` 返回码为 0
     │   │   └── 无 `run_failure.json` 或 `.failed`
-    │   └── seed 29：[运行，10,056 / 32,256 条；`.success` 与 `version_summary.csv` 尚未生成]
+    │   └── seed 29：[运行，14,592 / 32,256 条；`.success` 与 `version_summary.csv` 尚未生成]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B 三个核心任务：[待做]
     ├── 32B 三个核心任务：[暂停]
