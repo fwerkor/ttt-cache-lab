@@ -58,16 +58,16 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 - W-F 机制冻结矩阵：`configs/paper/discovery/w_frozen_matrix.yaml`，**4 个配置 × 3 seeds = 12 个正式 seed-run**
 - 投稿必需冻结证据总量：**51 个配置 / 153 个 seed-run**
 - 扩展可选矩阵：`configs/paper/study_extended.yaml`，保留原 **84 个配置 / 252 seed-run**，不作为投稿前强制完成条件
-- 严格完成配置：**6/51**（核心 3/47；W-F 3/4）
-- 已正式验收的单 seed：**22/153**（核心 12/141；W-F 10/12）
+- 严格完成配置：**7/51**（核心 4/47；W-F 3/4）
+- 已正式验收的单 seed：**23/153**（核心 13/141；W-F 10/12）
   - E1：seed 7、17、29；该配置三 seed 已全部验收
   - E2：Qwen2.5-7B controlled seed 7、17、29，以及 LongBench v2 seed 7；controlled 配置三 seed 已全部验收
-  - E3：Qwen2.5-1.5B aggregation 的 seed 7、17、29，以及 common_words seed 7、17；aggregation 配置三 seed 已全部验收
+  - E3：Qwen2.5-1.5B aggregation 与 common_words 的 seed 7、17、29；两个配置均已完成三 seed 验收
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录，seed 29 待运行
 - 当前正在运行：
-  - E2 Qwen2.5-7B LongBench v2 seed 17：4,122 / 8,640 条
-  - E3 1.5B common_words seed 29：31,128 / 32,256 条
+  - E2 Qwen2.5-7B LongBench v2 seed 17：4,644 / 8,640 条
+  - E3 1.5B multi_hop_tracing seed 7：144 / 32,256 条
 - 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
 - 当前核心矩阵剩余估算：约 **19,664 NPU·小时**；8 卡理想连续运行约 **102 天**，按约 6 卡有效利用约 **137 天**
 
@@ -358,11 +358,16 @@ E3 Failure Map
     │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
     │   │   ├── `.success` 返回码为 0
     │   │   └── 无 `run_failure.json` 或 `.failed`
-    │   └── seed 29：[运行，31,128 / 32,256 条；`.success` 与 `version_summary.csv` 尚未生成]
+    │   └── seed 29：[完成]
+    │       ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │       ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │       ├── `.success` 返回码为 0
+    │       └── 无 `run_failure.json` 或 `.failed`
+    ├── 1.5B multi_hop_tracing：seed 7 [运行，144 / 32,256 条；`.success` 与 `version_summary.csv` 尚未生成]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B 三个核心任务：[待做]
     ├── 32B 三个核心任务：[暂停]
-    └── 正式完成度：1/12 配置，5/36 seed
+    └── 正式完成度：2/12 配置，6/36 seed
 ```
 
 
