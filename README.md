@@ -59,15 +59,15 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 - 投稿必需冻结证据总量：**51 个配置 / 153 个 seed-run**
 - 扩展可选矩阵：`configs/paper/study_extended.yaml`，保留原 **84 个配置 / 252 seed-run**，不作为投稿前强制完成条件
 - 严格完成配置：**7/51**（核心 4/47；W-F 3/4）
-- 已正式验收的单 seed：**24/153**（核心 14/141；W-F 10/12）
+- 已正式验收的单 seed：**25/153**（核心 15/141；W-F 10/12）
   - E1：seed 7、17、29；该配置三 seed 已全部验收
   - E2：Qwen2.5-7B controlled seed 7、17、29，以及 LongBench v2 seed 7、17；controlled 配置三 seed 已全部验收
-  - E3：Qwen2.5-1.5B aggregation 与 common_words 的 seed 7、17、29；两个配置均已完成三 seed 验收
+  - E3：Qwen2.5-1.5B aggregation 与 common_words 的 seed 7、17、29，以及 multi_hop_tracing seed 7；前两个配置均已完成三 seed 验收
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录，seed 29 待运行
 - 当前正在运行：
-  - E2 Qwen2.5-7B LongBench v2 seed 29：3,294 / 8,640 条
-  - E3 1.5B multi_hop_tracing seed 7：31,200 / 32,256 条
+  - E2 Qwen2.5-7B LongBench v2 seed 29：3,834 / 8,640 条
+  - E3 1.5B multi_hop_tracing seed 17：1,296 / 32,256 条
 - 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
 - 当前核心矩阵剩余估算：约 **19,664 NPU·小时**；8 卡理想连续运行约 **102 天**，按约 6 卡有效利用约 **137 天**
 
@@ -298,7 +298,7 @@ E2 参数版本漂移
     │   │   ├── `records.jsonl` 共 8,640 条，全部为有效 JSON；`summary.csv` 共 8,640 条数据行
     │   │   ├── `version_summary.csv` 共 90 条数据行；`.success` 返回码为 0
     │   │   └── 无 `run_failure.json` 或 `.failed`
-    │   └── seed 29：[运行，3,294 / 8,640 条；`.success` 与 `version_summary.csv` 尚未生成]
+    │   └── seed 29：[运行，3,834 / 8,640 条；`.success` 与 `version_summary.csv` 尚未生成]
     ├── Qwen2.5-32B controlled：[暂停]
     └── 正式完成度：1/3 配置，5/9 seed
 ```
@@ -368,11 +368,18 @@ E3 Failure Map
     │       ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
     │       ├── `.success` 返回码为 0
     │       └── 无 `run_failure.json` 或 `.failed`
-    ├── 1.5B multi_hop_tracing：seed 7 [运行，31,200 / 32,256 条；`.success` 与 `version_summary.csv` 尚未生成]
+    ├── 1.5B multi_hop_tracing
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │   │   ├── `version_summary.csv` 共 336 条数据行；`.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   ├── seed 17：[运行，1,296 / 32,256 条；`.success` 与 `version_summary.csv` 尚未生成]
+    │   └── seed 29：[待做]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B 三个核心任务：[待做]
     ├── 32B 三个核心任务：[暂停]
-    └── 正式完成度：2/12 配置，6/36 seed
+    └── 正式完成度：2/12 配置，7/36 seed
 ```
 
 
