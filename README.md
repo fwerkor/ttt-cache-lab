@@ -66,8 +66,8 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录，seed 29 待运行
 - 当前正在运行：
-  - E2 Qwen2.5-7B LongBench v2 seed 17：7,974 / 8,640 条
-  - E3 1.5B multi_hop_tracing seed 7：16,800 / 32,256 条
+  - E2 Qwen2.5-7B LongBench v2 seed 17：8,514 / 8,640 条
+  - E3 1.5B multi_hop_tracing seed 7：18,960 / 32,256 条
 - 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
 - 当前核心矩阵剩余估算：约 **19,664 NPU·小时**；8 卡理想连续运行约 **102 天**，按约 6 卡有效利用约 **137 天**
 
