@@ -175,14 +175,14 @@ def prepare_config(job: Job, seed: int, output_dir: Path, queue: str) -> Path:
         base["output_dir"] = str(output_dir / "base")
         base["seed"] = seed
         base["resume"] = True
-        base["checkpoint_each_target"] = True
+        base["checkpoint_each_target"] = False
         patch_model(base["model"], queue)
         patch_data(base["data"])
     else:
         payload["output_dir"] = str(output_dir)
         payload["seed"] = seed
         payload["resume"] = True
-        payload["checkpoint_each_target"] = True
+        payload["checkpoint_each_target"] = False
         patch_model(payload["model"], queue)
         patch_data(payload["data"])
         if "alora_prefix_reuse" in payload.get("cache", {}).get("strategies", []):
