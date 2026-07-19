@@ -67,7 +67,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W4：seed 7 已验收；seed 17 为未完成目录；seed 29 正在运行
 - 当前正在运行：
   - E3 1.5B multi_hop_tracing seed 29：已启动并生成 `run_metadata.json`，主结果尚未写出
-  - W4 Qwen2.5-1.5B seed 29：6,554 / 11,136 条 blockwise records
+  - W4 Qwen2.5-1.5B seed 29：7,714 / 11,136 条 blockwise records
 - 当前失败且不得计入正式结果：
   - A1 Gemma-3-4B multi_hop_tracing seed 7 与 multi_needle seed 7：task probe 均为 0.000，低于 0.050 下限；保留 `run_failure.json`，需修复任务能力后重跑
 - 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
