@@ -66,7 +66,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录；seed 29 已运行结束但缺少 `run_metadata.json`，暂不得验收
 - 当前正在运行：
-  - E3 1.5B multi_needle seed 7：已启动并生成 `run_metadata.json`，主结果尚未写出
+  - E3 1.5B multi_needle seed 7：task probe 已完成，mean score 0.96875（31/32 非零），`run_metadata.json` 已生成；主结果尚未写出，仍在运行，暂不得验收
 - 当前部分完成且不得计入正式结果：
   - W4 Qwen2.5-1.5B seed 29：`.success` 返回码为 0，11,136 条 blockwise records 及 `block_frontier.csv`、`block_masks.csv`、`blockwise_records.csv`、`blockwise_report.md` 已生成，无 `run_failure.json` 或 `.failed`；但缺少验收必需的 `run_metadata.json`
 - 当前失败且不得计入正式结果：
