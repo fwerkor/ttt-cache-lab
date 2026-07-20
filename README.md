@@ -66,9 +66,9 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录；seed 29 虽有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前正在运行：
-  - E3 1.5B multi_needle seed 17：task probe 与 `run_metadata.json` 已生成，当前约完成 34%，尚无 `.success` 与最终汇总产物
-  - E3 7B multi_needle seed 7：task probe 与 `run_metadata.json` 已生成，当前约完成 13%，尚无 `.success` 与最终汇总产物
-  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前约完成 6%，尚无 `.success` 与最终汇总产物
+  - E3 1.5B multi_needle seed 17：task probe 与 `run_metadata.json` 已生成，当前约完成 48%，尚无 `.success` 与最终汇总产物
+  - E3 7B multi_needle seed 7：task probe 与 `run_metadata.json` 已生成，当前约完成 24%，尚无 `.success` 与最终汇总产物
+  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前约完成 11%，尚无 `.success` 与最终汇总产物
   - W4 seed 17：已重新运行并写出 blockwise 主结果，进程仍在收尾；当前尚无 `.success` 与 `run_metadata.json`，不得计入正式结果
 - 当前失败且不得计入正式结果：
   - A1 Gemma-3-4B multi_hop_tracing seed 7 与 multi_needle seed 7：task probe 均为 0.000，低于 0.050 下限；保留 `run_failure.json`，需修复任务能力后重跑
@@ -394,13 +394,10 @@ E3 Failure Map
     │       └── 无 `run_failure.json` 或 `.failed`
     ├── 1.5B multi_needle
     │   ├── seed 7：[完成]
-    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
-    │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
-    │   │   ├── `version_summary.csv` 共 336 条数据行；`.success` 返回码为 0
+    │   │   ├── `.success` 返回码为 0，`run_metadata.json` 有效
+    │   │   ├── `records.jsonl` 与 `summary.csv` 各 32,256 条，`version_summary.csv` 336 条
     │   │   └── 无 `run_failure.json` 或 `.failed`
-    │   ├── seed 17：[运行中；约完成 34%]
-    │   │   ├── task probe 与 `run_metadata.json` 已生成
-    │   │   └── 尚无 `.success`、`records.jsonl`、`summary.csv` 或 `version_summary.csv`，不得计入正式结果
+    │   ├── seed 17：[运行中；约 48%；不得计入正式结果]
     │   └── seed 29：[待做]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B aggregation
@@ -419,7 +416,7 @@ E3 Failure Map
     │   └── seed 17/29：[待做]
     ├── 7B 其他核心任务：[待做]
     ├── 32B 三个核心任务：[暂停]
-    └── 正式完成度：3/12 配置，11/36 seed
+    └── 正式完成度：3/12 配置，12/36 seed
 ```
 
 
