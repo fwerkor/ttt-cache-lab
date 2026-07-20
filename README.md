@@ -66,10 +66,10 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录；seed 29 虽有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前正在运行：
-  - E3 1.5B multi_needle seed 17：task probe 与 `run_metadata.json` 已生成，当前完成 1,068/1,344（约 79.5%），尚无 `.success` 与最终汇总产物
-  - E3 7B multi_needle seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 239/512（约 46.7%），尚无 `.success` 与最终汇总产物
-  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 112/512（约 21.9%），尚无 `.success` 与最终汇总产物
-  - W4 seed 17：重新运行中，已写出 5,626/11,136 条 blockwise records（约 50.5%）；当前尚无 `.success` 与 `run_metadata.json`，不得计入正式结果
+  - E3 1.5B multi_needle seed 17：task probe 与 `run_metadata.json` 已生成，当前完成 1,277/1,344（约 95.0%），尚无 `.success` 与最终汇总产物
+  - E3 7B multi_needle seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 297/512（约 58.0%），尚无 `.success` 与最终汇总产物
+  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 135/512（约 26.4%），尚无 `.success` 与最终汇总产物
+  - W4 seed 17：重新运行中，已写出 6,786/11,136 条 blockwise records（约 60.9%）；当前尚无 `.success` 与 `run_metadata.json`，不得计入正式结果
 - 当前失败且不得计入正式结果：
   - A1 Gemma-3-4B multi_hop_tracing seed 7 与 multi_needle seed 7：task probe 均为 0.000，低于 0.050 下限；保留 `run_failure.json`，需修复任务能力后重跑
 - 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
