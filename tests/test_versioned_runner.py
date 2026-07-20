@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from ttt_cache_lab.configs import VersionedExperimentConfig
@@ -37,6 +38,11 @@ def test_versioned_runner_writes_version_fields(tmp_path: Path) -> None:
     assert {record.task_name for record in artifacts.records} == {"passkey"}
     assert {record.backend_name for record in artifacts.records} == {"toy"}
     assert all(len(record.run_config_sha256) == 64 for record in artifacts.records)
+    progress = json.loads((tmp_path / "run_progress.json").read_text(encoding="utf-8"))
+    assert progress["status"] == "completed"
+    assert progress["completed_targets"] == 1
+    assert progress["total_targets"] == 1
+    assert progress["fraction_complete"] == 1.0
     output = tmp_path / "version_summary.csv"
     write_version_summary(artifacts.csv_path, output)
     assert output.exists()

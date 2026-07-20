@@ -137,12 +137,17 @@ def build_queues(*, matrix: str = "core", include_discovery: bool = False) -> di
 
 
 def queue_parallelism(queue: str) -> str:
+    # The 1.5B small0 jobs fit comfortably on one accelerator. A global
+    # override previously forced them through Accelerate's model-sharding
+    # hooks and gradient checkpointing without providing a memory benefit.
+    if queue == "small0":
+        return "single"
     override = os.environ.get("FORMAL_MODEL_PARALLELISM")
     if override is not None:
         if override not in {"single", "model_shard"}:
             raise ValueError("FORMAL_MODEL_PARALLELISM must be 'single' or 'model_shard'")
         return override
-    return "single" if queue == "small0" else "model_shard"
+    return "model_shard"
 
 
 def patch_model(model: dict[str, Any], queue: str) -> None:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import csv
+import json
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -149,6 +152,13 @@ class VersionedExperimentRunner:
         records: list[ExperimentRecord] = []
         propagation_records: list[PropagationRecord] = []
         boundary_records: list[BoundaryRecord] = []
+        total_targets = len(data) * len(self.config.updates.targets)
+        completed_targets = 0
+        self._write_progress(
+            status="running",
+            completed_targets=completed_targets,
+            total_targets=total_targets,
+        )
 
         for sample_id, sample in enumerate(data):
             sample = backend.prepare_sample(sample, context_length=self.config.data.context_length)
@@ -317,6 +327,14 @@ class VersionedExperimentRunner:
                         accumulated_adaptation_latency=accumulated_adaptation_latency,
                     )
                 backend.restore_after_update()
+                completed_targets += 1
+                self._write_progress(
+                    status="running",
+                    completed_targets=completed_targets,
+                    total_targets=total_targets,
+                    sample_id=sample_id,
+                    target_name=target_name,
+                )
                 if self.config.checkpoint_each_target:
                     write_records(
                         records,
@@ -363,6 +381,11 @@ class VersionedExperimentRunner:
             )
             boundary_jsonl_path = boundary.jsonl_path
             boundary_csv_path = boundary.csv_path
+        self._write_progress(
+            status="completed",
+            completed_targets=completed_targets,
+            total_targets=total_targets,
+        )
         if all(
             path is None
             for path in (
@@ -379,6 +402,41 @@ class VersionedExperimentRunner:
             propagation_csv_path=propagation_csv_path,
             boundary_jsonl_path=boundary_jsonl_path,
             boundary_csv_path=boundary_csv_path,
+        )
+
+    def _write_progress(
+        self,
+        *,
+        status: str,
+        completed_targets: int,
+        total_targets: int,
+        sample_id: int | None = None,
+        target_name: str | None = None,
+    ) -> None:
+        output_dir = self.config.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        progress_path = output_dir / "run_progress.json"
+        temporary = progress_path.with_name(f".{progress_path.name}.tmp")
+        fraction = completed_targets / total_targets if total_targets else 1.0
+        payload = {
+            "status": status,
+            "updated_at_utc": datetime.now(UTC).isoformat(),
+            "completed_targets": completed_targets,
+            "total_targets": total_targets,
+            "fraction_complete": fraction,
+            "sample_id": sample_id,
+            "target_name": target_name,
+        }
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, progress_path)
+        detail = f" sample={sample_id} target={target_name}" if target_name is not None else ""
+        print(
+            f"[progress] {completed_targets}/{total_targets} "
+            f"({fraction:.1%}) status={status}{detail}",
+            flush=True,
         )
 
     def _append_propagation_records(
