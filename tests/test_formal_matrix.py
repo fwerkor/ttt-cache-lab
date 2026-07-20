@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 def _load_formal_matrix() -> ModuleType:
     path = Path(__file__).parents[1] / "scripts" / "formal_matrix_20260712.py"
@@ -16,13 +18,17 @@ def _load_formal_matrix() -> ModuleType:
     return module
 
 
-def test_small_queue_ignores_global_model_shard_override(monkeypatch) -> None:
+def test_small_queue_ignores_global_model_shard_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _load_formal_matrix()
     monkeypatch.setenv("FORMAL_MODEL_PARALLELISM", "model_shard")
     assert module.queue_parallelism("small0") == "single"
 
 
-def test_large_queue_respects_parallelism_override(monkeypatch) -> None:
+def test_large_queue_respects_parallelism_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = _load_formal_matrix()
     monkeypatch.setenv("FORMAL_MODEL_PARALLELISM", "single")
     assert module.queue_parallelism("seven13") == "single"
