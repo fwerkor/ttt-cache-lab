@@ -51,7 +51,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 
 ## 论文实验进度 / Paper experiment progress
 
-以下状态基于 **2026 年 7 月 19 日实时核对**：
+以下状态基于 **2026 年 7 月 20 日实时核对**：
 
 - 仓库：`main`
 - 核心效果冻结矩阵：`configs/paper/study.yaml`，**47 个配置 × 3 seeds = 141 个正式 seed-run**
@@ -393,11 +393,15 @@ E3 Failure Map
     │       ├── `version_summary.csv` 共 336 条数据行；`.success` 返回码为 0
     │       └── 无 `run_failure.json` 或 `.failed`
     ├── 1.5B multi_needle
-    │   ├── seed 7：[疑似卡死；不得计入正式结果]
-    │   │   ├── task probe 已通过，`run_metadata.json` 有效
-    │   │   ├── 超过 10 小时未生成 `records.jsonl`、`summary.csv`、`version_summary.csv` 或 `.success`
-    │   │   └── 进程仍存活但未出现在 NPU 进程表中，需排查后重跑或恢复
-    │   └── seed 17/29：[待做]
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │   │   ├── `version_summary.csv` 共 336 条数据行；`.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   ├── seed 17：[运行中；约完成 34%]
+    │   │   ├── task probe 与 `run_metadata.json` 已生成
+    │   │   └── 尚无 `.success`、`records.jsonl`、`summary.csv` 或 `version_summary.csv`，不得计入正式结果
+    │   └── seed 29：[待做]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B aggregation
     │   ├── seed 7：[完成]
