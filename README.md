@@ -66,10 +66,10 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 为未完成目录；seed 29 虽有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前正在运行：
-  - E3 1.5B multi_needle seed 17：task probe 与 `run_metadata.json` 已生成，当前约完成 48%，尚无 `.success` 与最终汇总产物
-  - E3 7B multi_needle seed 7：task probe 与 `run_metadata.json` 已生成，当前约完成 24%，尚无 `.success` 与最终汇总产物
-  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前约完成 11%，尚无 `.success` 与最终汇总产物
-  - W4 seed 17：已重新运行并写出 blockwise 主结果，进程仍在收尾；当前尚无 `.success` 与 `run_metadata.json`，不得计入正式结果
+  - E3 1.5B multi_needle seed 17：task probe 与 `run_metadata.json` 已生成，当前完成 858/1,344（约 63.8%），尚无 `.success` 与最终汇总产物
+  - E3 7B multi_needle seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 180/512（约 35.2%），尚无 `.success` 与最终汇总产物
+  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 84/512（约 16.4%），尚无 `.success` 与最终汇总产物
+  - W4 seed 17：重新运行中，已写出 4,582/11,136 条 blockwise records（约 41.1%）；当前尚无 `.success` 与 `run_metadata.json`，不得计入正式结果
 - 当前失败且不得计入正式结果：
   - A1 Gemma-3-4B multi_hop_tracing seed 7 与 multi_needle seed 7：task probe 均为 0.000，低于 0.050 下限；保留 `run_failure.json`，需修复任务能力后重跑
 - 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
@@ -397,7 +397,7 @@ E3 Failure Map
     │   │   ├── `.success` 返回码为 0，`run_metadata.json` 有效
     │   │   ├── `records.jsonl` 与 `summary.csv` 各 32,256 条，`version_summary.csv` 336 条
     │   │   └── 无 `run_failure.json` 或 `.failed`
-    │   ├── seed 17：[运行中；约 48%；不得计入正式结果]
+    │   ├── seed 17：[运行中；858/1,344，约 63.8%；不得计入正式结果]
     │   └── seed 29：[待做]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B aggregation
@@ -562,7 +562,7 @@ W4/B1 Blockwise Oracle
 └── 当前状态
     ├── 配置、block size、budget 和 selector 已冻结
     ├── seed 7：[完成][验收]
-    ├── seed 17：[部分；不得计入正式结果]
+    ├── seed 17：[运行中；4,582/11,136 条 blockwise records，约 41.1%；不得计入正式结果]
     ├── seed 29：[部分；不得计入正式结果；`.success` 与 11,136 条 blockwise records 均存在，但缺少 `run_metadata.json`]
     └── 整体：1/3 seed；[冻结][运行待补齐]
 ```
