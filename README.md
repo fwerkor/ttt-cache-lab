@@ -66,7 +66,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 与 seed 29 均已有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前运行或待补齐验收条件：
-  - E3 1.5B needle_absent seed 29：task probe 与 `run_metadata.json` 已生成，当前完成 1,142/1,344（约 85.0%），尚无 `.success` 与最终汇总产物
+  - E3 1.5B needle_absent seed 29：运行已中断并停在 1,142/1,344（约 85.0%）；当前无对应进程，仅保留 task probe 与 `run_metadata.json`，缺少 `.success`、主结果和最终汇总产物，剩余 202 个 target，未计入正式验收
   - W4 seed 17：`.success` 返回码为 0，11,136 条 blockwise records 及 `block_frontier.csv`、`block_masks.csv`、`blockwise_records.csv`、`blockwise_report.md` 已生成，无 `run_failure.json` 或 `.failed`；但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前失败且不得计入正式结果：
   - A1 Gemma-3-4B multi_hop_tracing seed 7 与 multi_needle seed 7：task probe 均为 0.000，低于 0.050 下限；保留 `run_failure.json`，需修复任务能力后重跑
