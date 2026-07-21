@@ -66,8 +66,8 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 与 seed 29 均已有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前运行或待补齐验收条件：
-  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 422/512（约 82.4%），尚无 `.success` 与最终汇总产物
-  - E3 1.5B needle_absent seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 996/1,344（约 74.1%），尚无 `.success` 与最终汇总产物
+  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 445/512（约 86.9%），尚无 `.success` 与最终汇总产物
+  - E3 1.5B needle_absent seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 1,255/1,344（约 93.4%），尚无 `.success` 与最终汇总产物
   - W4 seed 17：`.success` 返回码为 0，11,136 条 blockwise records 及 `block_frontier.csv`、`block_masks.csv`、`blockwise_records.csv`、`blockwise_report.md` 已生成，无 `run_failure.json` 或 `.failed`；但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前失败且不得计入正式结果：
   - A1 Gemma-3-4B multi_hop_tracing seed 7 与 multi_needle seed 7：task probe 均为 0.000，低于 0.050 下限；保留 `run_failure.json`，需修复任务能力后重跑
