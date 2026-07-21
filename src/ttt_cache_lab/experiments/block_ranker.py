@@ -28,6 +28,7 @@ STATIC_SELECTOR_NAMES = (
     "sparse_attention_input_bound",
     "sparse_predicted_delta_norm",
     "sparse_attention_predicted_delta",
+    "sparse_signed_total_alignment",
 )
 ONE_PROBE_MARGINS = (
     0.0,
@@ -96,6 +97,7 @@ ROUTER_BLOCK_FEATURE_NAMES = (
 BASELINE_REFERENCE_SELECTOR_NAMES = (
     "sparse_input_bound",
     "sparse_predicted_delta_norm",
+    "sparse_signed_total_alignment",
 )
 ZERO_PROBE_RECOMPUTE_FEATURE = "router_baseline_stale_kl"
 ZERO_PROBE_RECOMPUTE_TRIGGER_QUANTILE = 0.875

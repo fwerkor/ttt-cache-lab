@@ -523,6 +523,13 @@ def test_block_sparse_lora_key_delta_repairs_only_selected_tokens(tiny_llama_dir
     assert not scores["available"][0].any()
     assert not scores["available"][2].any()
     assert np.all(scores["stale_attention_mass"][1] >= 0.0)
+    assert scores["signed_correction_vectors"].shape[:2] == (
+        backend.num_layers,
+        4,
+    )
+    assert scores["signed_correction_available"][1].all()
+    assert np.all(np.isfinite(scores["signed_correction_vectors"]))
+    assert np.any(scores["signed_correction_norm"][1] > 0.0)
 
     mask = np.zeros((backend.num_layers, 4), dtype=bool)
     mask[1, 1] = True

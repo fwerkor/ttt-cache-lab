@@ -2119,6 +2119,7 @@ class HuggingFaceBackend:
         exact_delta_norm = np.zeros_like(attention_mass)
         attention_summary = None
         attention_head_summary = None
+        attention_input_summary = None
         if stale.extras is not None:
             candidate = stale.extras.get("attention_summary")
             if isinstance(candidate, np.ndarray) and candidate.ndim == 2:
@@ -2126,6 +2127,9 @@ class HuggingFaceBackend:
             head_candidate = stale.extras.get("attention_head_summary")
             if isinstance(head_candidate, np.ndarray) and head_candidate.ndim == 3:
                 attention_head_summary = head_candidate
+            input_candidate = stale.extras.get("attention_input_summary")
+            if isinstance(input_candidate, np.ndarray) and input_candidate.ndim == 2:
+                attention_input_summary = input_candidate
         module_by_name = {
             str(getattr(module, "lora_name", "")): module
             for module in self._lora_modules
@@ -2178,36 +2182,35 @@ class HuggingFaceBackend:
 
             query_attention = None
             query_value_delta = None
+            query_key_logit_delta = None
+            query_key_values = None
+            query_key_output = None
             output_projection_weight = None
             if (
                 projected is not None
-                and projection == "v"
                 and attention_head_summary is not None
                 and layer < attention_head_summary.shape[0]
             ):
                 if int(projected.shape[2]) == sequence:
-                    value_delta = projected.detach().float()
+                    projected_heads = projected.detach().float()
                 elif int(projected.shape[1]) == sequence:
-                    value_delta = (
+                    projected_heads = (
                         projected.transpose(1, 2).contiguous().detach().float()
                     )
                 else:
-                    value_delta = None
-                if value_delta is not None:
+                    projected_heads = None
+                if projected_heads is not None:
                     query_attention = self.torch.as_tensor(
                         attention_head_summary[layer],
-                        device=value_delta.device,
+                        device=projected_heads.device,
                         dtype=self.torch.float32,
                     )
                     if int(query_attention.shape[-1]) >= sequence:
                         query_attention = query_attention[:, :sequence]
-                        kv_heads = int(value_delta.shape[1])
+                        kv_heads = int(projected_heads.shape[1])
                         query_heads = int(query_attention.shape[0])
                         if kv_heads > 0 and query_heads % kv_heads == 0:
                             repeats = query_heads // kv_heads
-                            query_value_delta = value_delta.mean(
-                                dim=0
-                            ).repeat_interleave(repeats, dim=0)
                             if (
                                 decoder_layers is not None
                                 and layer < len(decoder_layers)
@@ -2243,6 +2246,89 @@ class HuggingFaceBackend:
                                     output_projection_weight = (
                                         candidate_weight.detach().float()
                                     )
+                                if projection == "v":
+                                    query_value_delta = projected_heads.mean(
+                                        dim=0
+                                    ).repeat_interleave(repeats, dim=0)
+                                elif (
+                                    projection == "k"
+                                    and attention_input_summary is not None
+                                    and layer < attention_input_summary.shape[0]
+                                    and attention_module is not None
+                                ):
+                                    q_projection = getattr(
+                                        attention_module,
+                                        "q_proj",
+                                        None,
+                                    )
+                                    value_tensor = layers[layer][1]
+                                    if int(value_tensor.shape[2]) == sequence:
+                                        value_heads = value_tensor.detach().float()
+                                    elif int(value_tensor.shape[1]) == sequence:
+                                        value_heads = (
+                                            value_tensor.transpose(1, 2)
+                                            .contiguous()
+                                            .detach()
+                                            .float()
+                                        )
+                                    else:
+                                        value_heads = None
+                                    if callable(q_projection) and value_heads is not None:
+                                        query_input = self.torch.as_tensor(
+                                            attention_input_summary[layer],
+                                            device=projected_heads.device,
+                                            dtype=projected_heads.dtype,
+                                        ).reshape(1, 1, -1)
+                                        query = q_projection(query_input).detach().float()
+                                        head_dim = int(projected_heads.shape[-1])
+                                        if int(query.shape[-1]) == query_heads * head_dim:
+                                            query = (
+                                                query.reshape(
+                                                    1,
+                                                    1,
+                                                    query_heads,
+                                                    head_dim,
+                                                )
+                                                .transpose(1, 2)
+                                                .contiguous()
+                                            )
+                                            query_position_ids = self.torch.full(
+                                                (1, 1),
+                                                sequence,
+                                                device=query.device,
+                                                dtype=self.torch.long,
+                                            )
+                                            query = self._apply_rotary_to_key_delta(
+                                                query,
+                                                position_ids=query_position_ids,
+                                            )
+                                            if query is not None:
+                                                key_delta = projected_heads.mean(
+                                                    dim=0
+                                                ).repeat_interleave(repeats, dim=0)
+                                                query_key_values = value_heads.mean(
+                                                    dim=0
+                                                ).repeat_interleave(repeats, dim=0)
+                                                scale = float(
+                                                    getattr(
+                                                        attention_module,
+                                                        "scaling",
+                                                        head_dim**-0.5,
+                                                    )
+                                                )
+                                                query_key_logit_delta = (
+                                                    self.torch.sum(
+                                                        query[0, :, 0, None, :]
+                                                        * key_delta,
+                                                        dim=-1,
+                                                    )
+                                                    * scale
+                                                )
+                                                query_key_output = self.torch.sum(
+                                                    query_attention[..., None]
+                                                    * query_key_values,
+                                                    dim=1,
+                                                )
                     else:
                         query_attention = None
 
@@ -2262,8 +2348,16 @@ class HuggingFaceBackend:
                         np.sum(attention_summary[layer, start:end])
                     )
                 if projected is not None:
-                    projected_slice = projected[..., start:end, :].detach().float()
-                    target_slice = target_tensor[..., start:end, :].detach().float()
+                    if int(projected.shape[2]) == sequence:
+                        projected_slice = projected[:, :, start:end, :]
+                    else:
+                        projected_slice = projected[:, start:end, :, :]
+                    if int(target_tensor.shape[2]) == sequence:
+                        target_slice = target_tensor[:, :, start:end, :]
+                    else:
+                        target_slice = target_tensor[:, start:end, :, :]
+                    projected_slice = projected_slice.detach().float()
+                    target_slice = target_slice.detach().float()
                     numerator = float(
                         self.torch.linalg.vector_norm(projected_slice).cpu()
                     )
@@ -2274,12 +2368,30 @@ class HuggingFaceBackend:
                         denominator,
                         1e-12,
                     )
+                correction_heads = None
                 if query_attention is not None and query_value_delta is not None:
                     delta_slice = query_value_delta[:, start:end, :]
                     correction_heads = self.torch.sum(
                         query_attention[:, start:end, None] * delta_slice,
                         dim=1,
                     )
+                elif (
+                    query_attention is not None
+                    and query_key_logit_delta is not None
+                    and query_key_values is not None
+                    and query_key_output is not None
+                ):
+                    attention_slice = query_attention[:, start:end, None]
+                    logit_delta_slice = query_key_logit_delta[:, start:end, None]
+                    value_residual = (
+                        query_key_values[:, start:end, :]
+                        - query_key_output[:, None, :]
+                    )
+                    correction_heads = self.torch.sum(
+                        attention_slice * logit_delta_slice * value_residual,
+                        dim=1,
+                    )
+                if correction_heads is not None:
                     correction = correction_heads.reshape(-1)
                     if (
                         output_projection_weight is not None

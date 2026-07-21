@@ -726,6 +726,7 @@ def _explore_condition(
 
     sparse_scores: dict[str, np.ndarray] | None = None
     if callable(sparse_score_fn) and callable(sparse_probe):
+        sparse_score_started = time.perf_counter()
         try:
             sparse_scores = sparse_score_fn(
                 baseline=baseline,
@@ -734,6 +735,7 @@ def _explore_condition(
             )
         except ValueError:
             sparse_scores = None
+        condition["sparse_score_latency"] = time.perf_counter() - sparse_score_started
     records = [
         _record(
             condition,
@@ -947,6 +949,16 @@ def _explore_condition(
             "sparse_predicted_delta_norm": "predicted_delta_norm",
             "sparse_attention_predicted_delta": "attention_predicted_delta",
         }
+        if isinstance(sparse_scores.get("signed_total_alignment"), np.ndarray):
+            sparse_selectors.update(
+                {
+                    "sparse_signed_correction_norm": "signed_correction_norm",
+                    "sparse_signed_total_alignment": "signed_total_alignment",
+                    "sparse_signed_first_residual_gain": (
+                        "signed_first_residual_gain"
+                    ),
+                }
+            )
         if direct_total > 0:
             if not sparse_policy_only:
                 for selector, score_name in sparse_selectors.items():
