@@ -58,15 +58,14 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
 - W-F 机制冻结矩阵：`configs/paper/discovery/w_frozen_matrix.yaml`，**4 个配置 × 3 seeds = 12 个正式 seed-run**
 - 投稿必需冻结证据总量：**51 个配置 / 153 个 seed-run**
 - 扩展可选矩阵：`configs/paper/study_extended.yaml`，保留原 **84 个配置 / 252 seed-run**，不作为投稿前强制完成条件
-- 严格完成配置：**9/51**（核心 6/47；W-F 3/4）
-- 已正式验收的单 seed：**33/153**（核心 23/141；W-F 10/12）
+- 严格完成配置：**10/51**（核心 7/47；W-F 3/4）
+- 已正式验收的单 seed：**34/153**（核心 24/141；W-F 10/12）
   - E1：seed 7、17、29；该配置三 seed 已全部验收
   - E2：Qwen2.5-7B controlled 与 LongBench v2 的 seed 7、17、29；两个配置均已完成三 seed 验收
-  - E3：Qwen2.5-1.5B aggregation、common_words 与 multi_hop_tracing 的 seed 7、17、29，Qwen2.5-1.5B multi_needle seed 7、17，以及 Qwen2.5-7B aggregation、multi_hop_tracing 与 multi_needle seed 7；前三个配置均已完成三 seed 验收
+  - E3：Qwen2.5-1.5B aggregation、common_words、multi_hop_tracing 与 multi_needle 的 seed 7、17、29，以及 Qwen2.5-7B aggregation、multi_hop_tracing 与 multi_needle seed 7；前四个配置均已完成三 seed 验收
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 与 seed 29 均已有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前运行或待补齐验收条件：
-  - E3 1.5B multi_needle seed 29：task probe 与 `run_metadata.json` 已生成，当前完成 1,182/1,344（约 87.9%），尚无 `.success` 与最终汇总产物
   - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 309/512（约 60.4%），尚无 `.success` 与最终汇总产物
   - W4 seed 17：`.success` 返回码为 0，11,136 条 blockwise records 及 `block_frontier.csv`、`block_masks.csv`、`blockwise_records.csv`、`blockwise_report.md` 已生成，无 `run_failure.json` 或 `.failed`；但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前失败且不得计入正式结果：
