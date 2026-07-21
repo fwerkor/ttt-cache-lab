@@ -66,7 +66,451 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 与 seed 29 均已有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前运行或待补齐验收条件：
-  - E3 1.5B multi_needle seed 29：task probe 与 `run_metadata.json` 已生成，当前完成 1,182/1,344（约 87.9%）
+  - E3 1.5B multi_needle seed 29：task probe 与 `run_metadata.json` 已生成，当前完成 1,182/1,344（约 87.9%），尚无 `.success` 与最终汇总产物
+  - E3 7B common_words seed 7：task probe 与 `run_metadata.json` 已生成，当前完成 309/512（约 60.4%），尚无 `.success` 与最终汇总产物
+  - W4 seed 17：`.success` 返回码为 0，11,136 条 blockwise records 及 `block_frontier.csv`、`block_masks.csv`、`blockwise_records.csv`、`blockwise_report.md` 已生成，无 `run_failure.json` 或 `.failed`；但缺少验收必需的 `run_metadata.json`，不得计入正式结果
+- 当前失败且不得计入正式结果：
+  - A1 Gemma-3-4B multi_hop_tracing seed 7 与 multi_needle seed 7：task probe 均为 0.000，低于 0.050 下限；保留 `run_failure.json`，需修复任务能力后重跑
+- 当前策略：**继续并行推进 E2/E3；W 不再发散探索，仅补齐冻结的 W4；主要方法探索集中到 B2-B6**
+- 当前核心矩阵剩余估算：约 **19,664 NPU·小时**；8 卡理想连续运行约 **102 天**，按约 6 卡有效利用约 **137 天**
+
+状态含义：
+
+- `[完成]`：产物齐全并通过论文数据验收
+- `[运行]`：任务正在运行
+- `[部分]`：有部分结果，但尚不能作为论文数据
+- `[待做]`：尚未开始或没有有效正式结果
+- `[阻塞]`：依赖上游产物
+- `[配置错误]`：当前配置不满足冻结协议，不能直接运行
+- `[暂停]`：按当前资源调度主动暂停
+
+---
+
+# 一、论文实验整体依赖树
+
+```text id="63bocr"
+KV Cache Consistency and Reuse under Inference-Time Parameter Evolution
+│
+├── 0. 共同前置条件与验收协议
+│   │
+│   ├── 0.1 Task viability probe
+│   │   ├── 在正式实验前验证模型确实具备任务能力
+│   │   ├── 防止把模型不会做任务造成的 floor effect 误判为 cache 失效
+│   │   ├── 质量型实验默认要求：
+│   │   │   ├── 平均任务分数 ∈ [0.05, 0.95]
+│   │   │   ├── 非零分数样本比例 ≥ 10%
+│   │   │   └── 满分样本比例 ≤ 90%
+│   │   └── 状态：[代码完成]；正式运行时必须逐配置保留 probe 记录
+│   │
+│   ├── 0.2 固定数据划分
+│   │   ├── LongBench-v2 validation：offset 0，n=96
+│   │   ├── LongBench-v2 main test：
+│   │   │   ├── Qwen2.5-7B：offset 96，n=256
+│   │   │   └── 其他模型：offset 96，n=96
+│   │   ├── E7 ablation test：offset 352，n=96
+│   │   └── selection seed 固定为 2027
+│   │
+│   ├── 0.3 固定随机种子
+│   │   ├── seed 7
+│   │   ├── seed 17
+│   │   └── seed 29
+│   │
+│   └── 0.4 单个 seed 的验收条件
+│       ├── 覆盖配置要求的所有：
+│       │   ├── sample
+│       │   ├── update target
+│       │   ├── cache strategy
+│       │   └── adapter version
+│       ├── 必须存在：
+│       │   ├── .success
+│       │   ├── run_metadata.json
+│       │   ├── records.jsonl
+│       │   ├── summary.csv
+│       │   └── 实验要求的专用汇总文件
+│       ├── 不得存在未解决的 run_failure.json
+│       └── 三个 seed 全部通过后，一个配置才计为完成
+│
+├── 1. 基础现象与主问题成立性
+│   │
+│   ├── E1：静态适配器缓存基线
+│   └── E2：参数版本漂移
+│
+├── 2. 失效机制与可修复边界发现
+│   │
+│   ├── W1：有限重算窗口
+│   ├── W2：逐层误差传播
+│   ├── W3：失效边界预测
+│   ├── W4/B1：层—token 块级 oracle
+│   └── E3：正式 failure map 校准
+│
+├── 3. Planner 构建与冻结
+│   │
+│   ├── B2：静态块排序器
+│   ├── B3：单次 probe router
+│   ├── B4：直接提交/重算门控
+│   ├── B5：动态预算控制器
+│   ├── B6：Planner 正式证据配置
+│   └── E4-V：验证集调参与最终冻结
+│
+├── 4. Planner 最终有效性
+│   └── E4-T：独立测试集 quality-cost frontier
+│
+├── 5. 替代修复方法与扩展实验
+│   │
+│   ├── E5：Delta correction 安全域
+│   ├── E6：上下文长度与模型规模扩展
+│   ├── E7：Planner 消融与失效边界
+│   └── E8：容量压力与尾延迟
+│
+├── 6. 外部有效性
+│   └── A1：跨架构迁移筛查
+│
+└── 7. 统计、图表与论文证据闭环
+    ├── 三 seed 合并
+    ├── paired comparison
+    ├── 95% cluster-bootstrap CI
+    ├── false-safe Wilson CI
+    ├── p50/p90/p95/p99 latency
+    ├── failure map
+    ├── quality-cost Pareto frontier
+    └── 最终表格、图和复现实验包
+```
+
+---
+
+# 二、正式冻结实验矩阵
+
+## 1. E1：静态适配器缓存基线
+
+**研究问题：已有面向静态 adapter 的缓存复用方法，能够解决多少参数变化下的缓存问题？**
+
+```text id="fbze05"
+E1 静态适配器基线
+│
+├── 正式规模：1 个配置 / 3 个 seed-run
+│
+├── 模型
+│   └── Qwen2.5-7B
+│
+├── 数据
+│   └── LongBench-v2 validation
+│       ├── context：16K
+│       ├── n=96
+│       └── offset=0
+│
+├── 参数更新条件
+│   ├── target：q / k / v / qv
+│   ├── update norm：1e-3
+│   ├── LoRA rank：8
+│   ├── adapter version：0
+│   └── adapter sequence：0/1/2/3/0/2/1/3
+│
+├── 对比方法
+│   ├── full recomputation
+│   ├── base reuse
+│   ├── per-adapter cache
+│   ├── aLoRA
+│   ├── LRAgent
+│   ├── ForkKV
+│   └── base+delta
+│
+├── 论文作用
+│   ├── 建立静态 adapter 方法基线
+│   ├── 区分静态 adapter 切换与持续参数演化
+│   └── 证明后续 versioned-cache 问题并未被已有方法完全覆盖
+│
+└── 当前状态
+    ├── seed 7：[完成]
+    ├── seed 17：[完成]
+    ├── seed 29：[完成]
+    │   ├── .success 存在
+    │   ├── run_metadata.json、records.jsonl、summary.csv、version_summary.csv 均完整且非空
+    │   └── 无 run_failure.json 或 .failed
+    └── 配置完成度：1/1
+        单-seed 完成度：3/3
+```
+
+这是当前首个完成全部三 seed 并通过正式验收的冻结配置。
+
+---
+
+## 2. E2：参数版本漂移
+
+**研究问题：随着 adapter 版本不断演化，旧 KV cache 的误差和任务能力损失如何增长？**
+
+```text id="tvk1sv"
+E2 参数版本漂移
+│
+├── 核心规模：3 个配置 / 9 个 seed-run
+│
+├── 2.1 Qwen2.5-7B controlled
+│   ├── variable_tracking · test · easy
+│   ├── context：16K
+│   ├── n=64
+│   └── versions：0/1/2/4/8/16/32
+│
+├── 2.2 Qwen2.5-7B realistic
+│   ├── LongBench-v2 · test
+│   ├── context：16K
+│   ├── n=96
+│   └── versions：0/1/2/4/8/16
+│
+├── 2.3 Qwen2.5-32B controlled
+│   ├── common_words · test · hard
+│   └── versions：0/1/2/4/8/16/32
+│
+├── 已移入扩展矩阵
+│   ├── Qwen2.5-14B controlled / LongBench-v2
+│   └── Qwen2.5-32B LongBench-v2 drift
+│
+├── controlled target：q/k/v/qv、mlp_early/mlp_late、norm、output_head
+├── cache 策略：full / stale / frozen
+│
+├── 必须报告
+│   ├── fresh-cache adaptation gain
+│   ├── stale-cache task drop
+│   ├── KL / distribution drift
+│   ├── gain-retention ratio
+│   ├── 首次越过失效阈值的版本
+│   └── target × version-gap 漂移曲线
+│
+└── 当前状态
+    ├── Qwen2.5-7B controlled
+    │   ├── seed 7：[完成]
+    │   │   ├── .success、run_metadata.json、records.jsonl、summary.csv、version_summary.csv 均完整
+    │   │   ├── records.jsonl 共 10,752 条记录
+    │   │   └── 无 run_failure.json 或 .failed
+    │   ├── seed 17：[完成]
+    │   │   ├── .success、run_metadata.json、records.jsonl、summary.csv、version_summary.csv 均完整且非空
+    │   │   ├── records.jsonl 共 10,752 条，全部为有效 JSON；summary.csv 共 10,752 条数据行
+    │   │   ├── .success 返回码为 0
+    │   │   └── 无 run_failure.json 或 .failed
+    │   └── seed 29：[完成]
+    │       ├── .success、run_metadata.json、records.jsonl、summary.csv、version_summary.csv 均完整且非空
+    │       ├── records.jsonl 共 10,752 条，全部为有效 JSON；summary.csv 共 10,752 条数据行
+    │       ├── .success 返回码为 0
+    │       └── 无 run_failure.json 或 .failed；旧 OOM 结果不计论文数据
+    ├── Qwen2.5-7B realistic
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 8,640 条，全部为有效 JSON；`summary.csv` 共 8,640 条数据行
+    │   │   ├── `.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   ├── seed 17：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 8,640 条，全部为有效 JSON；`summary.csv` 共 8,640 条数据行
+    │   │   ├── `version_summary.csv` 共 90 条数据行；`.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   └── seed 29：[完成]
+    │       ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │       ├── `records.jsonl` 共 8,640 条，全部为有效 JSON；`summary.csv` 共 8,640 条数据行
+    │       ├── `version_summary.csv` 共 90 条数据行；`.success` 返回码为 0
+    │       └── 无 `run_failure.json` 或 `.failed`
+    ├── Qwen2.5-32B controlled：[暂停]
+    └── 正式完成度：2/3 配置，6/9 seed
+```
+
+E2 不依赖 Planner，也不依赖 failure map，是当前应直接推进的主线。
+
+---
+
+## 3. E3：失效图校准
+
+**研究问题：在哪些模型、任务、更新位置和版本差距下，可以安全复用、近似修复或必须重算？**
+
+```text id="8qsu43"
+E3 Failure Map
+│
+├── 核心规模：12 个配置 / 36 个 seed-run
+│
+├── Qwen2.5-1.5B：6 个任务
+│   ├── context：4K，n=96
+│   ├── multi_needle / needle_absent / multi_hop_tracing
+│   └── aggregation / common_words / variable_tracking
+│
+├── Qwen2.5-7B：3 个代表任务
+│   ├── context：8K，n=64
+│   └── multi_needle / multi_hop_tracing / aggregation
+│
+├── Qwen2.5-32B：3 个代表任务
+│   ├── context：16K，n=32
+│   └── multi_needle / multi_hop_tracing / aggregation
+│
+├── 已移入扩展矩阵
+│   ├── 全部 Qwen2.5-14B calibration
+│   └── 7B/32B 的 needle_absent、common_words、variable_tracking
+│
+├── failure-map 核心动作
+│   ├── full recompute
+│   ├── stale reuse
+│   ├── delta correction
+│   └── layerwise recompute
+│
+├── 兼容说明
+│   ├── 已运行的 1.5B aggregation 仍是八策略超集配置，保持原 config hash
+│   └── failure-map 生成器只接纳上述四个核心动作，额外策略不会进入正式策略表
+│
+└── 当前状态
+    ├── 1.5B aggregation
+    │   ├── seed 7：[完成]
+    │   ├── seed 17：[完成]
+    │   └── seed 29：[完成]
+    │       ├── .success、run_metadata.json、records.jsonl、summary.csv、version_summary.csv 均完整且非空
+    │       ├── records.jsonl 共 64,512 条，全部为有效 JSON
+    │       ├── .success 返回码为 0
+    │       └── 无 run_failure.json 或 .failed
+    ├── 1.5B common_words
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │   │   ├── `.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   ├── seed 17：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │   │   ├── `.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   └── seed 29：[完成]
+    │       ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │       ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │       ├── `.success` 返回码为 0
+    │       └── 无 `run_failure.json` 或 `.failed`
+    ├── 1.5B multi_hop_tracing
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │   │   ├── `version_summary.csv` 共 336 条数据行；`.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   ├── seed 17：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │   │   ├── `version_summary.csv` 共 336 条数据行；`.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   └── seed 29：[完成]
+    │       ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │       ├── `records.jsonl` 共 32,256 条，全部为有效 JSON；`summary.csv` 共 32,256 条数据行
+    │       ├── `version_summary.csv` 共 336 条数据行；`.success` 返回码为 0
+    │       └── 无 `run_failure.json` 或 `.failed`
+    ├── 1.5B multi_needle
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success` 返回码为 0，`run_metadata.json` 有效
+    │   │   ├── `records.jsonl` 与 `summary.csv` 各 32,256 条，`version_summary.csv` 336 条
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   ├── seed 17：[完成][验收]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 与 `summary.csv` 各 32,256 条，`version_summary.csv` 336 条；全部 JSON 有效
+    │   │   ├── `.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   └── seed 29：[运行中；365/1,344，约 27.2%；不得计入正式结果]
+    ├── 其他 1.5B 核心任务：[待做]
+    ├── 7B aggregation
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 12,288 条，全部为有效 JSON；`summary.csv` 共 12,288 条数据行
+    │   │   ├── `version_summary.csv` 共 192 条数据行；`.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   └── seed 17/29：[待做]
+    ├── 7B multi_hop_tracing
+    │   ├── seed 7：[完成]
+    │   │   ├── `.success`、`run_metadata.json`、`records.jsonl`、`summary.csv`、`version_summary.csv` 均完整且非空
+    │   │   ├── `records.jsonl` 共 12,288 条，全部为有效 JSON；`summary.csv` 共 12,288 条数据行
+    │   │   ├── `version_summary.csv` 共 192 条数据行；`.success` 返回码为 0
+    │   │   └── 无 `run_failure.json` 或 `.failed`
+    │   └── seed 17/29：[待做]
+    ├── 7B 其他核心任务：[待做]
+    ├── 32B 三个核心任务：[暂停]
+    └── 正式完成度：3/12 配置，14/36 seed
+```
+
+
+---
+
+# 三、W-F 机制冻结与 Planner 探索线
+
+W1-W4 已作为独立的 **W-F 机制冻结矩阵** 纳入投稿必需证据：4 个配置、12 个 seed-run。它与 47 配置的核心效果矩阵分开统计，但同样遵守固定 seeds、固定条件和不可按结果删改的冻结协议。现有结果只有在配置与 seed 完全匹配时才可复用；除非 W4 oracle 上界不足，或最终 B 路线必须引入当前矩阵没有的信号/粒度/动作，否则不再扩展 W。
+
+## 4. W1：有限重算窗口
+
+**研究问题：参数发生变化后，是否只重算有限层数就可以恢复一致性，而不必一直重算到模型末尾？**
+
+```text id="gmclpi"
+W1 有限重算窗口
+│
+├── 条件
+│   ├── target：q/k/v/mlp
+│   ├── position：early/middle/late
+│   ├── window：1/2/4/8/16/32
+│   ├── gap：1/4/16
+│   └── full/stale/suffix 成对比较
+│
+├── 必须产出
+│   ├── smallest safe window
+│   ├── smallest quality-improving window
+│   ├── minimal_safe_windows.csv
+│   └── 随窗口增大时的 KL 非单调异常
+│
+├── W1-1.5B（W-F 冻结配置）
+│   ├── seed 7/17/29 均运行成功
+│   ├── expanded-run metadata、merged_records.csv、version_summary.csv 齐全
+│   ├── 已生成逐 seed 的 window_cells.csv 与 minimal_safe_windows.csv
+│   └── 状态：[完成][冻结]
+│
+└── W1-7B
+    └── 不纳入冻结矩阵；仅在 W4/B 路线失败时重新评估
+```
+
+W1 已从探索数据转为正式机制证据，不再根据结果调整 target、window 或 gap。
+
+---
+
+## 5. W2：逐层误差传播
+
+**研究问题：旧缓存产生的扰动沿后续网络层传播时，是衰减、持续还是放大？**
+
+```text id="fsh4of"
+W2 逐层传播
+│
+├── 观测量
+│   ├── hidden-state drift
+│   ├── K drift
+│   ├── V drift
+│   └── 32 probe token 上的逐层曲线
+│
+├── target/position 条件：8 组
+├── gap：1/4/16
+│
+├── W2-1.5B（W-F 冻结配置）
+│   ├── seed 7/17/29 均运行成功
+│   ├── metadata、原始传播记录和 version_summary.csv 齐全
+│   ├── 已生成逐 seed 的 layerwise_propagation.csv 与 propagation_profiles.csv
+│   └── 状态：[完成][冻结]
+│
+└── W2-7B
+    └── 不纳入冻结矩阵；仅在 W4/B 路线失败时重新评估
+```
+
+它决定有限窗口重算是否具有理论和经验依据。
+
+---
+
+## 6. W3：失效边界预测
+
+**研究问题：能否通过低成本局部信号预测某个缓存块是否需要修复？**
+
+```text id="eaottm"
+W3 Boundary Predictor
+│
+├── 信号
+│   ├── local-boundary signal
+│   └── whole stale-suffix signal
+│
+├── 评估
+│   ├── sample-held-out split
+│   ├── false-safe
+│   ├── false-positive
+│   └── predictor calibration
+│
+├── W3-1.5B（W-F 冻结配置）
 │   ├── seed 7/17/29 均运行成功
 │   ├── metadata、原始边界记录和 version_summary.csv 齐全
 │   ├── 已生成逐 seed 的 boundary_metric_evaluation.csv 与 boundary_predictor_summary.csv
