@@ -144,6 +144,9 @@ def run_blockwise_exploration(
     compute_cache_surgery_oracles: bool = True,
     compute_downstream_splice_analysis: bool = False,
     compute_causal_pair_search: bool = False,
+    compute_executable_token_recompute: bool = False,
+    executable_boundary_policy_only: bool = False,
+    boundary_suffix_min_margin: float = 0.1,
     compute_structured_sparse_search: bool = True,
     sparse_policy_only: bool = False,
     sparse_policy_variant: str = "reference",
@@ -161,6 +164,8 @@ def run_blockwise_exploration(
         raise ValueError("task_generation_tokens must be nonnegative")
     if not budget_fractions or any(value <= 0.0 or value > 1.0 for value in budget_fractions):
         raise ValueError("budget fractions must be in (0, 1]")
+    if boundary_suffix_min_margin < 0.0:
+        raise ValueError("boundary_suffix_min_margin must be nonnegative")
     if oracle_candidate_limit < 1 or oracle_max_cells < 1:
         raise ValueError("oracle limits must be positive")
     if direct_oracle_max_blocks < 0:
@@ -396,6 +401,13 @@ def run_blockwise_exploration(
                             compute_downstream_splice_analysis
                         ),
                         compute_causal_pair_search=compute_causal_pair_search,
+                        compute_executable_token_recompute=(
+                            compute_executable_token_recompute
+                        ),
+                        executable_boundary_policy_only=(
+                            executable_boundary_policy_only
+                        ),
+                        boundary_suffix_min_margin=boundary_suffix_min_margin,
                         compute_structured_sparse_search=compute_structured_sparse_search,
                         sparse_policy_only=sparse_policy_only,
                         sparse_policy_variant=sparse_policy_variant,
@@ -457,6 +469,9 @@ def _explore_condition(
     compute_cache_surgery_oracles: bool,
     compute_downstream_splice_analysis: bool,
     compute_causal_pair_search: bool,
+    compute_executable_token_recompute: bool,
+    executable_boundary_policy_only: bool,
+    boundary_suffix_min_margin: float,
     compute_structured_sparse_search: bool,
     sparse_policy_only: bool,
     sparse_policy_variant: str,
@@ -725,7 +740,20 @@ def _explore_condition(
     )
     sparse_probe = getattr(backend, "probe_blockwise_lora_delta", None)
     sparse_score_fn = getattr(backend, "blockwise_lora_delta_scores", None)
+    boundary_score_fn = getattr(backend, "blockwise_lora_boundary_scores", None)
+    executable_probe = getattr(
+        backend,
+        "probe_blockwise_selected_token_recompute",
+        None,
+    )
+    exact_downstream_probe = getattr(
+        backend,
+        "probe_downstream_layer_recompute",
+        None,
+    )
     sparse_cache: dict[bytes, _Evaluation] = {}
+    executable_cache: dict[tuple[bytes, int], _Evaluation] = {}
+    exact_downstream_cache: dict[int, _Evaluation] = {}
 
     def probe_sparse(
         mask: np.ndarray,
@@ -762,8 +790,78 @@ def _explore_condition(
         sparse_cache[key] = value
         return value
 
+    def evaluate_executable(
+        mask: np.ndarray,
+        *,
+        depth: int | None,
+    ) -> _Evaluation:
+        if not callable(executable_probe):
+            raise RuntimeError(
+                "Backend does not implement selected-token downstream recomputation"
+            )
+        key = (
+            np.ascontiguousarray(mask, dtype=np.uint8).tobytes(),
+            -1 if depth is None else depth,
+        )
+        cached = executable_cache.get(key)
+        if cached is not None:
+            return cached
+        output = executable_probe(
+            baseline=baseline,
+            block_mask=mask,
+            block_size=block_size,
+            depth=depth,
+        )
+        enrich_local_attention_metrics(output)
+        enrich_reference_metrics(output)
+        value = _Evaluation(
+            output=_compact_evaluation_output(output),
+            logits_kl=kl_divergence(full.logits, output.logits),
+            top1_agreement=top1_agreement(full.logits, output.logits),
+            task_score=float(backend.score_answer(sample, output)),
+        )
+        del output
+        executable_cache[key] = value
+        return value
+
+    def evaluate_exact_downstream(start: int) -> _Evaluation:
+        if not callable(exact_downstream_probe):
+            raise RuntimeError("Backend does not implement downstream layer recompute")
+        cached = exact_downstream_cache.get(start)
+        if cached is not None:
+            return cached
+        output = exact_downstream_probe(
+            baseline=baseline,
+            start_layer=start,
+        )
+        enrich_local_attention_metrics(output)
+        enrich_reference_metrics(output)
+        value = _Evaluation(
+            output=_compact_evaluation_output(output),
+            logits_kl=kl_divergence(full.logits, output.logits),
+            top1_agreement=top1_agreement(full.logits, output.logits),
+            task_score=float(backend.score_answer(sample, output)),
+        )
+        del output
+        exact_downstream_cache[start] = value
+        return value
+
     sparse_scores: dict[str, np.ndarray] | None = None
-    if callable(sparse_score_fn) and callable(sparse_probe):
+    boundary_scores: dict[str, np.ndarray] | None = None
+    if executable_boundary_policy_only and callable(boundary_score_fn):
+        boundary_score_started = time.perf_counter()
+        try:
+            boundary_scores = boundary_score_fn(
+                baseline=baseline,
+                stale=stale.output,
+                block_size=block_size,
+            )
+        except ValueError:
+            boundary_scores = None
+        boundary_score_latency = time.perf_counter() - boundary_score_started
+        condition["boundary_score_latency"] = boundary_score_latency
+        condition["sparse_score_latency"] = boundary_score_latency
+    elif callable(sparse_score_fn) and callable(sparse_probe):
         sparse_score_started = time.perf_counter()
         try:
             sparse_scores = sparse_score_fn(
@@ -880,6 +978,130 @@ def _explore_condition(
             for fraction in budget_fractions
         }
     )
+    if (
+        executable_boundary_policy_only
+        and boundary_scores is not None
+        and callable(executable_probe)
+        and callable(exact_downstream_probe)
+        and target.kind is ModuleKind.LORA_V
+    ):
+        boundary_available = (
+            np.asarray(boundary_scores["available"], dtype=bool) & eligible
+        )
+        boundary_total = int(np.count_nonzero(boundary_available))
+        scores = np.asarray(
+            boundary_scores["signed_boundary_first_residual_gain"],
+            dtype=np.float64,
+        )
+        for count in desired_counts:
+            direct_count = min(count, boundary_total)
+            if direct_count != 1:
+                continue
+            direct_mask = _top_mask(
+                scores,
+                boundary_available,
+                direct_count,
+            )
+            selected_indices = np.argwhere(direct_mask)
+            selected_layer = int(selected_indices[0, 0])
+            selected_block = int(selected_indices[0, 1])
+            boundary_candidates = np.argwhere(boundary_available[selected_layer])
+            alternative_blocks = [
+                int(block)
+                for block in boundary_candidates.reshape(-1)
+                if int(block) != selected_block
+            ]
+            alternative_block = alternative_blocks[0] if alternative_blocks else -1
+            selected_boundary_score = float(scores[selected_layer, selected_block])
+            alternative_boundary_score = (
+                float(scores[selected_layer, alternative_block])
+                if alternative_block >= 0
+                else -math.inf
+            )
+            alignment_scores = np.asarray(
+                boundary_scores["signed_boundary_alignment"],
+                dtype=np.float64,
+            )
+            boundary_score_margin = (
+                selected_boundary_score - alternative_boundary_score
+            )
+            normalized_boundary_margin = _normalized_score_margin(
+                selected_boundary_score,
+                alternative_boundary_score,
+            )
+            suffix_selected = selected_block == block_count - 1
+            suffix_confident = (
+                suffix_selected
+                and normalized_boundary_margin >= boundary_suffix_min_margin
+            )
+            if suffix_confident:
+                action_mask = _expand_downstream_columns(
+                    direct_mask,
+                    eligible,
+                    depth=None,
+                )
+                evaluation = evaluate_executable(direct_mask, depth=None)
+                boundary_action = "suffix_vertical_recompute"
+            elif suffix_selected:
+                action_mask = empty.copy()
+                evaluation = stale
+                boundary_action = "suffix_stale_fallback"
+            else:
+                action_mask = eligible.copy()
+                evaluation = evaluate_exact_downstream(start_layer)
+                boundary_action = "prefix_exact_downstream_recompute"
+            selector = "hybrid_boundary_downstream_recompute"
+            records.append(
+                _record(
+                    condition,
+                    selector=selector,
+                    requested_budget_fraction=count / total_eligible,
+                    mask=action_mask,
+                    eligible=eligible,
+                    evaluation=evaluation,
+                    stale_kl=stale.logits_kl,
+                    selection_metadata={
+                        "selected_direct_cells": direct_count,
+                        "direct_selection_count": direct_count,
+                        "selected_boundary_layer": selected_layer,
+                        "selected_boundary_block": selected_block,
+                        "alternative_boundary_block": alternative_block,
+                        "selected_boundary_score": selected_boundary_score,
+                        "alternative_boundary_score": alternative_boundary_score,
+                        "boundary_score_margin": boundary_score_margin,
+                        "normalized_boundary_margin": normalized_boundary_margin,
+                        "boundary_suffix_min_margin": boundary_suffix_min_margin,
+                        "selected_boundary_alignment": float(
+                            alignment_scores[selected_layer, selected_block]
+                        ),
+                        "alternative_boundary_alignment": (
+                            float(alignment_scores[selected_layer, alternative_block])
+                            if alternative_block >= 0
+                            else math.nan
+                        ),
+                        "boundary_action": boundary_action,
+                        "downstream_recompute_depth": layer_count - start_layer,
+                        "analysis_oracle_action": False,
+                        "executable_selected_token_recompute": suffix_confident,
+                        "exact_downstream_fallback": not suffix_selected,
+                        "stale_confidence_fallback": (
+                            suffix_selected and not suffix_confident
+                        ),
+                        "boundary_policy_only": True,
+                        "boundary_score_latency": float(
+                            condition.get("boundary_score_latency", 0.0)
+                        ),
+                    },
+                )
+            )
+            mask_rows.extend(
+                _mask_rows(
+                    condition,
+                    selector,
+                    count / total_eligible,
+                    action_mask,
+                )
+            )
     random_scores = np.random.default_rng(
         _condition_seed(condition)
     ).random(eligible.shape)
@@ -1210,6 +1432,84 @@ def _explore_condition(
                                         causal_mask,
                                     )
                                 )
+            if (
+                compute_executable_token_recompute
+                and target.kind is ModuleKind.LORA_V
+                and callable(executable_probe)
+                and direct_total > 0
+            ):
+                executable_specs = {
+                    "signed_first_residual": (
+                        "signed_first_residual_gain",
+                        (2, 4, None),
+                    ),
+                    "predicted_delta_norm": (
+                        "predicted_delta_norm",
+                        (None,),
+                    ),
+                    "attention_mass": (
+                        "stale_attention_mass",
+                        (None,),
+                    ),
+                    "retrieval_headwise_gain": (
+                        "retrieval_headwise_gain",
+                        (None,),
+                    ),
+                }
+                for label, (score_name, depths) in executable_specs.items():
+                    candidate_scores = sparse_scores.get(score_name)
+                    if not isinstance(candidate_scores, np.ndarray):
+                        continue
+                    for count in desired_counts:
+                        direct_count = min(count, direct_total)
+                        direct_mask = _top_mask(
+                            np.asarray(candidate_scores, dtype=np.float64),
+                            direct_available,
+                            direct_count,
+                        )
+                        for depth in depths:
+                            expanded_mask = _expand_downstream_columns(
+                                direct_mask,
+                                eligible,
+                                depth=depth,
+                            )
+                            depth_label = "full" if depth is None else str(depth)
+                            selector = f"recompute_{label}_downstream_{depth_label}"
+                            evaluation = evaluate_executable(
+                                direct_mask,
+                                depth=depth,
+                            )
+                            actual_depth = (
+                                layer_count - start_layer
+                                if depth is None
+                                else min(depth, layer_count - start_layer)
+                            )
+                            records.append(
+                                _record(
+                                    condition,
+                                    selector=selector,
+                                    requested_budget_fraction=count / total_eligible,
+                                    mask=expanded_mask,
+                                    eligible=eligible,
+                                    evaluation=evaluation,
+                                    stale_kl=stale.logits_kl,
+                                    selection_metadata={
+                                        "selected_direct_cells": direct_count,
+                                        "direct_selection_count": direct_count,
+                                        "downstream_recompute_depth": actual_depth,
+                                        "analysis_oracle_action": False,
+                                        "executable_selected_token_recompute": True,
+                                    },
+                                )
+                            )
+                            mask_rows.extend(
+                                _mask_rows(
+                                    condition,
+                                    selector,
+                                    count / total_eligible,
+                                    expanded_mask,
+                                )
+                            )
             if (
                 compute_causal_pair_search
                 and target.kind is ModuleKind.LORA_K
@@ -4282,6 +4582,14 @@ def _top_mask(scores: np.ndarray, eligible: np.ndarray, count: int) -> np.ndarra
     for index in ordered[:count]:
         mask[index] = True
     return mask
+
+
+def _normalized_score_margin(selected: float, alternative: float) -> float:
+    """Return a scale-free confidence margin between two planner scores."""
+    return (selected - alternative) / max(
+        abs(selected) + abs(alternative),
+        1e-30,
+    )
 
 
 def _expand_downstream_columns(

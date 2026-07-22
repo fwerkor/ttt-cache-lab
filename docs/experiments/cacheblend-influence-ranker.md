@@ -281,6 +281,80 @@ baselines, not final task-independent planners. A deployable method still
 requires a bounded selected-token downstream-recomputation kernel and an
 answer-free rule for choosing both source blocks and propagation depth.
 
+### Executable V-cache boundary policy
+
+The later V-cache work replaces the fresh-cache splice analysis with an
+executable recovery path. `probe_blockwise_selected_token_recompute` invokes
+the actual decoder layers on the selected token block, supplies the mixed
+historical prefix KV to each layer, and writes the newly generated K/V entries
+back only at the selected positions. It never reads the fresh reference cache.
+Unselected token positions remain bitwise unchanged. The implementation was
+validated on a real tiny Llama model before the Qwen experiments.
+
+The first executable version replayed two token blocks through every downstream
+layer. On 16 Qwen2.5-1.5B synthetic conditions it reduced next-token KL by
+57.7%, but its 64.5 ms mean maintenance latency was comparable to the 70.0 ms
+full prefill. The main source of overhead was not arithmetic---the estimated
+FLOP fraction was 12.4%---but launching every decoder layer separately for two
+blocks. Reducing the budget to one block halved the layer-call count. The
+resulting full-depth replay reduced next-token KL by 42.1% and one- and
+two-token trajectory KL by about 40%. In steady state, planner scoring plus
+maintenance and decoding was 7.6% faster than fresh recomputation.
+
+Across 242 historical eight-block V conditions, the top-ranked
+`signed_first_residual_gain` block was always one of the two sequence
+boundaries. This permitted a specialized boundary scorer that computes only
+the first and last block corrections. For block correction vector $u_b$ and
+the total predicted correction $U$, its score is
+
+`2 <u_b, U> - ||u_b||^2`.
+
+The two boundary scores exactly match the corresponding entries from the full
+eight-block scorer. Their normalized decision margin is
+
+`(g_selected - g_alternative) / (|g_selected| + |g_alternative|)`.
+
+On the 16 synthetic conditions, the specialized scorer reproduced the full
+selector mask and all quality metrics exactly. Its steady-state latency fell
+from 13.9 ms to 2.1 ms, a 6.6x reduction. Combined with one-block full-depth
+replay, it reduced end-to-end latency by 15.4% in steady state while recovering
+42.0% of next-token KL and about 40% of the one- and two-token trajectory KL.
+
+Long-context Qwen2.5-7B experiments exposed an important action distinction.
+Changing an early V block changes the attention output of later prefix queries,
+so replaying only the same token column is not causally complete. The deployed
+policy therefore uses two actions:
+
+- when the first block wins, restart the model exactly at the updated layer and
+  recompute the complete downstream prefix;
+- when the last block wins with sufficient confidence, replay only that suffix
+  block through downstream layers.
+
+The first action reuses all layers before the updated layer and is exactly
+equivalent to fresh recomputation for the affected suffix. In the first eight
+real conditions, all six prefix selections reached zero KL. The two suffix
+selections had very small normalized margins (0.0037 and 0.0152) and local
+replay was harmful. Synthetic suffix selections, in contrast, had margins of
+at least 0.477. We therefore froze a conservative minimum suffix margin of
+0.1: lower-confidence suffix decisions retain the stale cache rather than
+executing local replay.
+
+The gate was then evaluated unchanged on 16 new Qwen2.5-7B conditions from
+2WikiMQA and HotpotQA. Fifteen selected the prefix exact restart and one
+selected the suffix but failed the confidence gate. The resulting policy:
+
+- reduced aggregate next-token KL by 98.5%;
+- had no observed harmful action;
+- reduced mean end-to-end latency by 20.8% in the direct gated rerun;
+- was faster than fresh recomputation on 14 of 16 conditions;
+- had a bootstrap 95% KL-recovery interval of 92.9%--100%.
+
+Across the combined 24 real conditions, 21 prefix restarts reached exactly zero
+KL. With the suffix gate, aggregate KL recovery was 98.5% and no condition was
+made worse. These results supersede the earlier conclusion that V-cache repair
+was limited to immediate next-token fidelity: the failure was primarily caused
+by an incomplete repair action, not by the absence of a useful planner signal.
+
 ### Cost
 
 Measured block-score extraction latency after the first invocation:
@@ -302,9 +376,9 @@ The first invocation was about 0.11 s because of accelerator warm-up. Runtime co
 5. The strongest current K analysis uses two source blocks plus downstream
    propagation; two direct blocks alone are not a sufficient operating point.
 6. A fitted percentile-rank fusion of delta magnitude and alignment improved calibration overlap but failed on held-out KL and was removed.
-7. For V-cache repair at the fixed two-block operating point,
-   `signed_first_residual_gain` is the current preferred zero-forward selector;
-   larger repair budgets and per-condition safety remain unresolved.
+7. The executable V path uses a one-block boundary selector, exact downstream
+   restart for prefix selections, confidence-gated vertical replay for suffix
+   selections, and stale fallback below a normalized margin of 0.1.
 
 ## Artifacts
 
@@ -352,3 +426,7 @@ The isolated NPU evaluation artifacts are stored under:
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_old_aggregation_200_201`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_qwen7b_2wikimqa_ctx4096_offset80_4`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_qwen7b_hotpotqa_ctx8192_offset80_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_gated_qwen7b_2wikimqa_ctx4096_offset84_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_gated_qwen7b_2wikimqa_ctx4096_offset88_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_gated_qwen7b_hotpotqa_ctx8192_offset84_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_gated_qwen7b_hotpotqa_ctx8192_offset88_4`

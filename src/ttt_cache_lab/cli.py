@@ -251,6 +251,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     blockwise.add_argument(
+        "--evaluate-executable-token-recompute",
+        action="store_true",
+        help=(
+            "Run selected token blocks through real downstream decoder layers "
+            "without reading the fresh cache"
+        ),
+    )
+    blockwise.add_argument(
+        "--executable-boundary-policy-only",
+        action="store_true",
+        help=(
+            "Compare only the prefix and suffix V blocks with the lightweight "
+            "first-residual scorer, then execute downstream recomputation"
+        ),
+    )
+    blockwise.add_argument(
+        "--boundary-suffix-min-margin",
+        type=float,
+        default=0.1,
+        help=(
+            "Minimum normalized boundary-score margin required for suffix-only "
+            "vertical recomputation; lower-confidence suffix choices reuse stale KV"
+        ),
+    )
+    blockwise.add_argument(
         "--skip-structured-sparse-search",
         action="store_true",
         help="Keep static sparse selectors but skip exhaustive, greedy, beam, swap, and joint searches",
@@ -525,6 +550,13 @@ def main(argv: list[str] | None = None) -> None:
                 args.evaluate_downstream_splice_analysis
             ),
             compute_causal_pair_search=args.evaluate_causal_pair_search,
+            compute_executable_token_recompute=(
+                args.evaluate_executable_token_recompute
+            ),
+            executable_boundary_policy_only=(
+                args.executable_boundary_policy_only
+            ),
+            boundary_suffix_min_margin=args.boundary_suffix_min_margin,
             compute_structured_sparse_search=not args.skip_structured_sparse_search,
             sparse_policy_only=args.sparse_policy_only,
             sparse_policy_variant=args.sparse_policy_variant,

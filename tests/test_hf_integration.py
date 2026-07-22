@@ -602,6 +602,11 @@ def test_block_sparse_lora_value_scores_emit_signed_corrections(
         stale=stale,
         block_size=4,
     )
+    boundary_scores = backend.blockwise_lora_boundary_scores(
+        baseline=baseline,
+        stale=stale,
+        block_size=4,
+    )
 
     assert scores["signed_correction_vectors"].shape[:2] == (
         backend.num_layers,
@@ -620,6 +625,101 @@ def test_block_sparse_lora_value_scores_emit_signed_corrections(
     )
     assert np.all(np.isfinite(scores["retrieval_headwise_gain"]))
     assert np.any(np.abs(scores["retrieval_headwise_gain"][1]) > 0.0)
+    assert boundary_scores["available"][1].tolist() == [True, False, False, True]
+    assert not boundary_scores["available"][0].any()
+    for block_index in (0, 3):
+        assert np.isclose(
+            boundary_scores["signed_boundary_alignment"][1, block_index],
+            scores["signed_total_alignment"][1, block_index],
+            rtol=1e-5,
+            atol=1e-7,
+        )
+        assert np.isclose(
+            boundary_scores["signed_boundary_first_residual_gain"][1, block_index],
+            scores["signed_first_residual_gain"][1, block_index],
+            rtol=1e-5,
+            atol=1e-7,
+        )
+
+
+def test_selected_token_downstream_recompute_updates_only_selected_columns(
+    tiny_llama_dir: Path,
+) -> None:
+    backend = _backend(tiny_llama_dir)
+    backend.configure_metrics(capture_attention=True)
+    sample = backend.prepare_sample(
+        TaskSample(
+            prompt="key is alpha Answer :",
+            answer="alpha",
+            metadata={"max_generation_tokens": 1},
+        ),
+        context_length=16,
+    )
+    target = parse_update_target("lora.v:1", num_layers=backend.num_layers)
+    backend.prepare_update_target(target, rank=2, alpha=4.0)
+    baseline = backend.prefill(sample.prompt)
+    backend.train_lora_step(
+        sample,
+        target,
+        rank=2,
+        alpha=4.0,
+        learning_rate=0.05,
+        target_update_norm=0.02,
+    )
+    full = backend.full_recompute(sample.prompt, baseline)
+    assert baseline.extras is not None and full.extras is not None
+    exact_downstream = backend.probe_downstream_layer_recompute(
+        baseline=baseline,
+        start_layer=1,
+    )
+    assert exact_downstream.extras is not None
+    assert exact_downstream.extras["cache_mode"] == "exact_downstream_layer_recompute"
+    assert exact_downstream.extras["exact_downstream_fallback"] is True
+    assert np.allclose(exact_downstream.logits, full.logits, rtol=1e-5, atol=1e-6)
+
+    mask = np.zeros((backend.num_layers, 4), dtype=bool)
+    mask[1, 1] = True
+    recomputed = backend.probe_blockwise_selected_token_recompute(
+        baseline=baseline,
+        block_mask=mask,
+        block_size=4,
+        depth=None,
+    )
+
+    assert recomputed.extras is not None
+    assert recomputed.extras["cache_mode"] == "selected_token_downstream_recompute"
+    assert recomputed.extras["selected_token_blocks"] == [1]
+    assert recomputed.extras["selected_source_layer"] == 1
+    assert recomputed.extras["recompute_depth"] == 2
+    assert recomputed.extras["selected_recomputed_cells"] == 2
+    assert recomputed.extras["executable_selected_token_recompute"] is True
+    assert recomputed.extras["cache_maintenance_latency"] >= 0.0
+
+    old_layers = backend._past_as_layers(baseline.extras["past_key_values"])
+    full_layers = backend._past_as_layers(full.extras["past_key_values"])
+    recomputed_layers = backend._past_as_layers(
+        recomputed.extras["past_key_values"]
+    )
+    for layer_index in range(backend.num_layers):
+        for item_index in (0, 1):
+            actual = recomputed_layers[layer_index][item_index]
+            old = old_layers[layer_index][item_index]
+            if layer_index < 1:
+                assert torch.equal(actual, old)
+                continue
+            assert torch.equal(actual[..., :4, :], old[..., :4, :])
+            assert torch.equal(actual[..., 8:, :], old[..., 8:, :])
+            if layer_index == 1 and item_index == 0:
+                assert torch.equal(actual[..., 4:8, :], old[..., 4:8, :])
+            else:
+                assert not torch.equal(actual[..., 4:8, :], old[..., 4:8, :])
+
+    assert torch.allclose(
+        recomputed_layers[1][1][..., 4:8, :],
+        full_layers[1][1][..., 4:8, :],
+        rtol=1e-5,
+        atol=1e-6,
+    )
 
 
 def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: Path) -> None:

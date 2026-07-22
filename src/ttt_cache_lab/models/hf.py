@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from ttt_cache_lab.cache.semantics import CacheAction
+from ttt_cache_lab.cache.semantics import CacheAction, CacheBlockState
 from ttt_cache_lab.cache.strategies import StrategyDecision, StrategyName
 from ttt_cache_lab.data.scoring import score_prediction
 from ttt_cache_lab.data.synthetic import TaskSample, neutral_background_sentences
@@ -2564,6 +2564,161 @@ class HuggingFaceBackend:
             )
         return result
 
+    def blockwise_lora_boundary_scores(
+        self,
+        *,
+        baseline: BackendOutput,
+        stale: BackendOutput,
+        block_size: int,
+    ) -> dict[str, np.ndarray]:
+        """Score only the first and last V-cache blocks.
+
+        The full first-residual score needs a block correction vector and the
+        sum of all block corrections. The latter can be computed directly over
+        the whole sequence, so an exact boundary comparison does not require
+        constructing scores for every interior block or the head-wise feature
+        family used by the exploratory scorer.
+        """
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        if not baseline.extras or not stale.extras:
+            raise ValueError("Boundary scoring requires cached baseline and stale state")
+        old_past = baseline.extras.get("past_key_values")
+        old_lora_cache = baseline.extras.get("lora_cache", {})
+        head_summary = stale.extras.get("attention_head_summary")
+        if (
+            old_past is None
+            or not isinstance(old_lora_cache, dict)
+            or not isinstance(head_summary, np.ndarray)
+            or head_summary.ndim != 3
+        ):
+            raise ValueError(
+                "Boundary scoring requires KV cache, LoRA state, and head attention"
+            )
+        layers = self._past_as_layers(old_past)
+        if not layers:
+            raise ValueError("Boundary scoring requires a non-empty cache")
+        sequence = int(layers[0][0].shape[-2])
+        block_count = math.ceil(sequence / block_size)
+        boundary_blocks = (0, block_count - 1)
+        available = np.zeros((len(layers), block_count), dtype=bool)
+        alignment = np.full((len(layers), block_count), -np.inf, dtype=np.float64)
+        first_residual_gain = np.full_like(alignment, -np.inf)
+        module_by_name = {
+            str(getattr(module, "lora_name", "")): module
+            for module in self._lora_modules
+            if getattr(module, "lora_name", "")
+        }
+        decoder_layers, _ = self._decoder_layers()
+        corrections: dict[int, Any] = {}
+
+        for name, old_state in old_lora_cache.items():
+            if not isinstance(old_state, dict):
+                continue
+            projection = str(old_state.get("projection", ""))
+            layer = old_state.get("layer")
+            cached_input = old_state.get("input")
+            module = module_by_name.get(str(name))
+            if (
+                projection != "v"
+                or not isinstance(layer, int)
+                or layer < 0
+                or layer >= len(layers)
+                or layer >= head_summary.shape[0]
+                or cached_input is None
+                or module is None
+                or not hasattr(module, "lora_delta_output")
+            ):
+                continue
+            target_tensor = layers[layer][1]
+            full_delta = module.lora_delta_output(cached_input, old_state)
+            projected = self._reshape_projection_delta(full_delta, target_tensor)
+            if projected is None:
+                continue
+            if int(projected.shape[2]) == sequence:
+                projected_heads = projected.detach().float()
+            elif int(projected.shape[1]) == sequence:
+                projected_heads = projected.transpose(1, 2).contiguous().detach().float()
+            else:
+                continue
+            query_attention = self.torch.as_tensor(
+                head_summary[layer],
+                device=projected_heads.device,
+                dtype=self.torch.float32,
+            )
+            if int(query_attention.shape[-1]) < sequence:
+                continue
+            query_attention = query_attention[:, :sequence]
+            kv_heads = int(projected_heads.shape[1])
+            query_heads = int(query_attention.shape[0])
+            if kv_heads <= 0 or query_heads % kv_heads != 0:
+                continue
+            repeats = query_heads // kv_heads
+            value_delta = projected_heads.mean(dim=0).repeat_interleave(
+                repeats,
+                dim=0,
+            )
+            weighted_delta = query_attention[..., None] * value_delta
+            boundary_ranges = (
+                (0, sequence),
+                (0, min(block_size, sequence)),
+                ((block_count - 1) * block_size, sequence),
+            )
+            correction = self.torch.stack(
+                [
+                    self.torch.sum(weighted_delta[:, start:end, :], dim=1)
+                    for start, end in boundary_ranges
+                ],
+                dim=0,
+            ).reshape(3, -1)
+            if decoder_layers is not None and layer < len(decoder_layers):
+                attention_module = getattr(
+                    decoder_layers[layer],
+                    "self_attn",
+                    None,
+                )
+                if attention_module is None:
+                    attention_module = getattr(decoder_layers[layer], "attn", None)
+                output_projection = getattr(attention_module, "o_proj", None)
+                if output_projection is None:
+                    output_projection = getattr(attention_module, "out_proj", None)
+                weight = getattr(output_projection, "weight", None)
+                if weight is not None and int(weight.shape[1]) == int(correction.shape[1]):
+                    correction = self.torch.nn.functional.linear(
+                        correction,
+                        weight.detach().float(),
+                        None,
+                    )
+            previous = corrections.get(layer)
+            corrections[layer] = correction if previous is None else previous + correction
+
+        for layer, correction in corrections.items():
+            total = correction[0]
+            boundary = correction[1:]
+            total_norm = self.torch.linalg.vector_norm(total)
+            boundary_norm = self.torch.linalg.vector_norm(boundary, dim=1)
+            dot = self.torch.sum(boundary * total[None, :], dim=1)
+            boundary_alignment = dot / (boundary_norm * total_norm).clamp_min(1e-12)
+            boundary_gain = 2.0 * dot - boundary_norm * boundary_norm
+            values = self.torch.stack(
+                [boundary_alignment, boundary_gain],
+                dim=1,
+            ).detach().float().cpu().numpy()
+            for boundary_index, block_index in enumerate(boundary_blocks):
+                available[layer, block_index] = True
+                alignment[layer, block_index] = float(values[boundary_index, 0])
+                first_residual_gain[layer, block_index] = float(
+                    values[boundary_index, 1]
+                )
+
+        if not np.any(available):
+            raise ValueError("No directly scoreable V-cache boundary blocks were found")
+        return {
+            "available": available,
+            "signed_boundary_alignment": alignment,
+            "signed_boundary_first_residual_gain": first_residual_gain,
+        }
+
     def probe_blockwise_lora_delta(
         self,
         *,
@@ -2719,6 +2874,297 @@ class HuggingFaceBackend:
             decode_s = float(result.extras.get("decode_latency", 0.0))
             result.extras["cache_maintenance_latency"] = maintenance_s
             result.extras["strategy_latency"] = maintenance_s + decode_s
+        return result
+
+    def probe_blockwise_selected_token_recompute(
+        self,
+        *,
+        baseline: BackendOutput,
+        block_mask: np.ndarray,
+        block_size: int,
+        depth: int | None = None,
+    ) -> BackendOutput:
+        """Recompute selected prefix token blocks through downstream layers.
+
+        The selected cells must belong to one source layer. Each selected token
+        block is replayed from that layer onward while all unselected token
+        positions retain their historical cache entries. Earlier selected
+        blocks are committed before later blocks, so later blocks attend to the
+        already refreshed prefix. This is an executable cache action and does
+        not read the fresh full-recompute cache.
+        """
+        if block_size <= 0:
+            raise ValueError("block_size must be positive")
+        if depth is not None and depth < 1:
+            raise ValueError("depth must be positive when provided")
+        if not baseline.extras:
+            raise ValueError("Selected-token recompute requires cached HF state")
+        state = baseline.extras.get("prompt_state")
+        hidden_states = baseline.extras.get("hidden_states")
+        old_past = baseline.extras.get("past_key_values")
+        if (
+            not isinstance(state, _PromptState)
+            or not isinstance(hidden_states, tuple)
+            or old_past is None
+        ):
+            raise ValueError(
+                "Selected-token recompute requires prompt state, hidden states, and KV cache"
+            )
+        old_layers = self._past_as_layers(old_past)
+        layer_container, family = self._decoder_layers()
+        if layer_container is None or family != "llama_like":
+            raise RuntimeError(
+                "Selected-token recompute currently supports Llama/Qwen-like decoders"
+            )
+        if len(old_layers) != len(layer_container):
+            raise ValueError("Decoder layer count and cache layer count differ")
+        if len(hidden_states) < len(layer_container) + 1:
+            raise ValueError("Selected-token recompute requires full hidden-state history")
+        if block_mask.ndim != 2 or block_mask.shape[0] != len(layer_container):
+            raise ValueError("block_mask must have shape [num_layers, num_token_blocks]")
+
+        token_count = int(old_layers[0][0].shape[-2])
+        block_count = math.ceil(token_count / block_size)
+        if block_mask.shape[1] != block_count:
+            raise ValueError(
+                f"block_mask has {block_mask.shape[1]} token blocks; expected {block_count}"
+            )
+        selected = np.argwhere(block_mask)
+        if selected.size == 0:
+            raise ValueError("Selected-token recompute requires at least one block")
+        source_layers = {int(layer) for layer, _ in selected}
+        if len(source_layers) != 1:
+            raise ValueError("All directly selected blocks must share one source layer")
+        start_layer = source_layers.pop()
+        end_layer = min(
+            len(layer_container),
+            start_layer + depth if depth is not None else len(layer_container),
+        )
+        selected_blocks = sorted({int(block) for _, block in selected})
+
+        backbone = getattr(self.model, "model", None)
+        language_model = getattr(backbone, "language_model", None)
+        if language_model is not None:
+            backbone = language_model
+        rotary_emb = getattr(backbone, "rotary_emb", None)
+        config = getattr(backbone, "config", None)
+        if backbone is None or not callable(rotary_emb) or config is None:
+            raise RuntimeError("Decoder backbone does not expose rotary embeddings")
+        try:
+            from transformers.cache_utils import DynamicCache, DynamicLayer
+            from transformers.masking_utils import create_causal_mask
+        except ImportError as exc:  # pragma: no cover - depends on optional HF version
+            raise RuntimeError(
+                "Selected-token recompute requires current Transformers cache APIs"
+            ) from exc
+
+        mixed_layers = [list(layer) for layer in old_layers]
+        for layer_index in range(start_layer, end_layer):
+            for item_index in (0, 1):
+                mixed_layers[layer_index][item_index] = (
+                    mixed_layers[layer_index][item_index].detach().clone()
+                )
+
+        def allocate_layer_cache(layer_index: int) -> Any:
+            cache = DynamicCache()
+            while len(cache.layers) <= layer_index:
+                cache.layers.append(DynamicLayer())
+            return cache
+
+        def set_layer_cache_prefix(
+            *,
+            cache: Any,
+            layer_index: int,
+            key_prefix: Any,
+            value_prefix: Any,
+        ) -> None:
+            cache_layers = getattr(cache, "layers", None)
+            if not isinstance(cache_layers, list) or layer_index >= len(cache_layers):
+                raise RuntimeError("Transformers cache does not expose decoder layers")
+
+            def initialize(index: int) -> None:
+                layer = cache_layers[index]
+                layer.keys = key_prefix
+                layer.values = value_prefix
+                layer.dtype = key_prefix.dtype
+                layer.device = key_prefix.device
+                layer.is_initialized = True
+
+            # Mask construction reads layer zero's sequence length, while the
+            # decoder attention writes to its own absolute layer index.
+            initialize(0)
+            if layer_index != 0:
+                initialize(layer_index)
+
+        mask_past = allocate_layer_cache(0)
+        layer_caches = {
+            layer_index: allocate_layer_cache(layer_index)
+            for layer_index in range(start_layer, end_layer)
+        }
+
+        selected_tokens = 0
+        reset_peak_memory(self.torch, self.devices)
+        synchronize(self.torch, self.devices)
+        started = time.perf_counter()
+        self._set_lora_capture(False)
+        with self.torch.no_grad():
+            for block_index in selected_blocks:
+                token_start = block_index * block_size
+                token_end = min(token_count, token_start + block_size)
+                selected_tokens += token_end - token_start
+                hidden = hidden_states[start_layer][
+                    :, token_start:token_end, :
+                ].detach()
+                position_ids = self.torch.arange(
+                    token_start,
+                    token_end,
+                    device=hidden.device,
+                    dtype=self.torch.long,
+                ).unsqueeze(0)
+                if int(hidden.shape[0]) > 1:
+                    position_ids = position_ids.expand(int(hidden.shape[0]), -1)
+                attention_mask = self.torch.ones(
+                    (int(hidden.shape[0]), token_end),
+                    device=hidden.device,
+                    dtype=self.torch.long,
+                )
+                set_layer_cache_prefix(
+                    cache=mask_past,
+                    layer_index=0,
+                    key_prefix=mixed_layers[start_layer][0][
+                        ..., :token_start, :
+                    ],
+                    value_prefix=mixed_layers[start_layer][1][
+                        ..., :token_start, :
+                    ],
+                )
+                position_embeddings = rotary_emb(hidden, position_ids)
+                causal_mask = create_causal_mask(
+                    config=config,
+                    inputs_embeds=hidden,
+                    attention_mask=attention_mask,
+                    past_key_values=mask_past,
+                    position_ids=position_ids,
+                )
+                for layer_index in range(start_layer, end_layer):
+                    layer_type = "full_attention"
+                    configured_types = getattr(config, "layer_types", None)
+                    if configured_types is not None:
+                        layer_type = str(configured_types[layer_index])
+                    if layer_type != "full_attention":
+                        raise RuntimeError(
+                            "Selected-token recompute does not yet support sliding attention"
+                        )
+                    working_past = layer_caches[layer_index]
+                    set_layer_cache_prefix(
+                        cache=working_past,
+                        layer_index=layer_index,
+                        key_prefix=mixed_layers[layer_index][0][
+                            ..., :token_start, :
+                        ],
+                        value_prefix=mixed_layers[layer_index][1][
+                            ..., :token_start, :
+                        ],
+                    )
+                    output = layer_container[layer_index](
+                        hidden,
+                        attention_mask=causal_mask,
+                        position_ids=position_ids,
+                        past_key_values=working_past,
+                        use_cache=True,
+                        position_embeddings=position_embeddings,
+                    )
+                    hidden = output[0] if isinstance(output, tuple | list) else output
+                    replayed_layers = self._past_as_layers(working_past)
+                    for item_index in (0, 1):
+                        source = replayed_layers[layer_index][item_index]
+                        if int(source.shape[-2]) != token_end:
+                            raise RuntimeError(
+                                "Selected-token replay produced an unexpected cache length"
+                            )
+                        mixed_layers[layer_index][item_index][
+                            ..., token_start:token_end, :
+                        ] = source[
+                            ..., token_start:token_end, :
+                        ]
+        synchronize(self.torch, self.devices)
+        maintenance_s = time.perf_counter() - started
+
+        corrected_past = self._restore_past_type(
+            old_past,
+            tuple(tuple(layer) for layer in mixed_layers),
+        )
+        recomputed_layers = end_layer - start_layer
+        selected_cells = recomputed_layers * len(selected_blocks)
+        eligible_cells = (len(layer_container) - start_layer) * block_count
+        full_flops = self._full_prefill_flops(token_count)
+        strategy_flops = (
+            full_flops
+            * selected_tokens
+            / max(1, token_count)
+            * recomputed_layers
+            / max(1, len(layer_container))
+        )
+        result = self._probe_with_past(
+            baseline=baseline,
+            past=corrected_past,
+            cache_tensor=self._summarize_past(corrected_past),
+            hidden_tensor=baseline.hidden_tensor,
+            extra_metadata={
+                "cache_mode": "selected_token_downstream_recompute",
+                "block_size": block_size,
+                "selected_source_layer": start_layer,
+                "selected_token_blocks": selected_blocks,
+                "selected_direct_cells": len(selected_blocks),
+                "selected_recomputed_cells": selected_cells,
+                "eligible_recomputed_cells": eligible_cells,
+                "selected_recompute_fraction": (
+                    selected_cells / eligible_cells if eligible_cells else 0.0
+                ),
+                "recompute_depth": recomputed_layers,
+                "selected_recompute_tokens": selected_tokens,
+                "cache_maintenance_latency": maintenance_s,
+                "strategy_flops": strategy_flops,
+                "physical_cache_bytes": self._past_nbytes(corrected_past),
+                "executable_selected_token_recompute": True,
+            },
+            reset_memory_stats=False,
+        )
+        if result.extras is not None:
+            decode_s = float(result.extras.get("decode_latency", 0.0))
+            result.extras["cache_maintenance_latency"] = maintenance_s
+            result.extras["strategy_latency"] = maintenance_s + decode_s
+        return result
+
+    def probe_downstream_layer_recompute(
+        self,
+        *,
+        baseline: BackendOutput,
+        start_layer: int,
+    ) -> BackendOutput:
+        """Exactly recompute the prefix from one decoder layer onward."""
+        if start_layer < 0 or start_layer >= self.num_layers:
+            raise ValueError("start_layer must identify a decoder layer")
+        decision = StrategyDecision(
+            strategy=StrategyName.LAYERWISE_RECOMPUTE,
+            action=CacheAction.PARTIAL_RECOMPUTE,
+            state=CacheBlockState.INVALID,
+            first_invalid_layer=start_layer,
+            reason="Exact downstream fallback for an early influential token block.",
+            last_recomputed_layer=self.num_layers,
+            recompute_fraction=(self.num_layers - start_layer) / self.num_layers,
+        )
+        result = self._native_partial_recompute_prefix_cache(
+            baseline=baseline,
+            decision=decision,
+        )
+        if result is None:
+            raise RuntimeError(
+                "The backend does not support exact downstream layer recomputation"
+            )
+        if result.extras is not None:
+            result.extras["cache_mode"] = "exact_downstream_layer_recompute"
+            result.extras["exact_downstream_fallback"] = True
         return result
 
     def _set_lora_capture(self, enabled: bool) -> None:

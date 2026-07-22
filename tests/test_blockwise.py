@@ -21,6 +21,7 @@ from ttt_cache_lab.experiments.blockwise import (
     _joint_sparse_search_point,
     _logit_selection_metrics,
     _mask_from_order,
+    _normalized_score_margin,
     _read_jsonl,
     _read_rows,
     _record,
@@ -36,6 +37,13 @@ from ttt_cache_lab.experiments.blockwise import (
 )
 from ttt_cache_lab.metrics.tensor import kl_divergence
 from ttt_cache_lab.models.interface import BackendOutput
+
+
+def test_normalized_score_margin_is_scale_free() -> None:
+    assert np.isclose(_normalized_score_margin(3.0, 1.0), 0.5)
+    assert np.isclose(_normalized_score_margin(0.003, 0.001), 0.5)
+    assert _normalized_score_margin(2.0, 2.0) == 0.0
+    assert np.isclose(_normalized_score_margin(-1.0, -3.0), 0.5)
 
 
 def test_signed_residual_greedy_uses_direction_and_tracks_energy() -> None:
