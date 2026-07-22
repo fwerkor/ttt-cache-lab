@@ -60,6 +60,7 @@ class _Evaluation:
     output: BackendOutput
     logits_kl: float
     top1_agreement: float
+    task_score: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,18 @@ def _compact_evaluation_output(output: BackendOutput) -> BackendOutput:
     )
 
 
+def _generated_text(output: BackendOutput) -> str:
+    extras = output.extras or {}
+    value = extras.get("generated_text", "")
+    return value if isinstance(value, str) else ""
+
+
+def _generated_tokens(output: BackendOutput) -> int:
+    extras = output.extras or {}
+    value = extras.get("generated_tokens", 0)
+    return int(value) if isinstance(value, int | float) else 0
+
+
 def _release_accelerator_cache(backend: ModelBackend) -> None:
     """Return released candidate buffers to the active accelerator allocator."""
     torch = getattr(backend, "torch", None)
@@ -116,6 +129,7 @@ def run_blockwise_exploration(
     block_sizes: tuple[int, ...],
     version_gap: int,
     budget_fractions: tuple[float, ...],
+    task_generation_tokens: int = 1,
     oracle_candidate_limit: int = 24,
     oracle_max_cells: int = 16,
     direct_oracle_max_blocks: int = 0,
@@ -141,6 +155,8 @@ def run_blockwise_exploration(
         raise ValueError("block sizes must be unique")
     if version_gap <= 0:
         raise ValueError("version_gap must be positive")
+    if task_generation_tokens < 0:
+        raise ValueError("task_generation_tokens must be nonnegative")
     if not budget_fractions or any(value <= 0.0 or value > 1.0 for value in budget_fractions):
         raise ValueError("budget fractions must be in (0, 1]")
     if oracle_candidate_limit < 1 or oracle_max_cells < 1:
@@ -245,7 +261,10 @@ def run_blockwise_exploration(
     run_configured_task_probe(config, backend=backend, samples=samples)
     try:
         for sample_id, raw_sample in enumerate(samples):
-            sample = _single_token_sample(raw_sample)
+            sample = _generation_sample(
+                raw_sample,
+                max_generation_tokens=task_generation_tokens,
+            )
             sample = backend.prepare_sample(sample, context_length=config.data.context_length)
             for target_name in config.updates.targets:
                 pending_block_sizes = tuple(
@@ -457,6 +476,12 @@ def _explore_condition(
     eligible = np.zeros((layer_count, block_count), dtype=bool)
     eligible[start_layer:, :] = True
     total_eligible = int(np.count_nonzero(eligible))
+    condition["baseline_task_score"] = float(backend.score_answer(sample, baseline))
+    condition["full_task_score"] = float(backend.score_answer(sample, full))
+    condition["baseline_generated_text"] = _generated_text(baseline)
+    condition["full_generated_text"] = _generated_text(full)
+    condition["baseline_generated_tokens"] = _generated_tokens(baseline)
+    condition["full_generated_tokens"] = _generated_tokens(full)
     reference_token_ids = _reference_token_ids(backend, sample)
     answer_dynamic_lengths = (
         dynamic_reference_probe_lengths if dynamic_probe_source == "answer" else ()
@@ -652,6 +677,7 @@ def _explore_condition(
             output=_compact_evaluation_output(output),
             logits_kl=kl_divergence(full.logits, output.logits),
             top1_agreement=top1_agreement(full.logits, output.logits),
+            task_score=float(backend.score_answer(sample, output)),
         )
         del output
         cache[key] = value
@@ -659,6 +685,9 @@ def _explore_condition(
 
     empty = np.zeros_like(eligible)
     stale = evaluate(empty)
+    condition["stale_task_score"] = stale.task_score
+    condition["stale_generated_text"] = _generated_text(stale.output)
+    condition["stale_generated_tokens"] = _generated_tokens(stale.output)
     stale_output_reference = stale.output
     router_feature_started = time.perf_counter()
     if sparse_policy_variant == "recompute":
@@ -711,6 +740,7 @@ def _explore_condition(
             output=_compact_evaluation_output(output),
             logits_kl=kl_divergence(full.logits, output.logits),
             top1_agreement=top1_agreement(full.logits, output.logits),
+            task_score=float(backend.score_answer(sample, output)),
         )
         del output
         return value
@@ -758,6 +788,7 @@ def _explore_condition(
                 output=full,
                 logits_kl=0.0,
                 top1_agreement=1.0,
+                task_score=float(condition["full_task_score"]),
             )
             action_latency = float(
                 condition.get("full_recompute_strategy_latency", 0.0)
@@ -1898,6 +1929,7 @@ def _explore_condition(
                                 output=full,
                                 logits_kl=0.0,
                                 top1_agreement=1.0,
+                                task_score=float(condition["full_task_score"]),
                             )
                             if baseline_reference_variant
                             else stale
@@ -3780,6 +3812,13 @@ def _record(
         "selected_fraction": selected / eligible_count if eligible_count else 0.0,
         "logits_kl": evaluation.logits_kl,
         "top1_agreement": evaluation.top1_agreement,
+        "task_score": evaluation.task_score,
+        "task_drop_vs_full": float(condition.get("full_task_score", math.nan))
+        - evaluation.task_score,
+        "task_gain_vs_stale": evaluation.task_score
+        - float(condition.get("stale_task_score", math.nan)),
+        "generated_text": _generated_text(evaluation.output),
+        "generated_tokens": _generated_tokens(evaluation.output),
         "reference_token_nll": reference_nll,
         "output_entropy": output_entropy,
         "output_max_probability": output_max_probability,
@@ -4192,9 +4231,17 @@ def _prepare_target(
     )
 
 
-def _single_token_sample(sample: TaskSample) -> TaskSample:
+def _generation_sample(
+    sample: TaskSample,
+    *,
+    max_generation_tokens: int,
+) -> TaskSample:
+    if max_generation_tokens < 0:
+        raise ValueError("max_generation_tokens must be nonnegative")
+    if max_generation_tokens == 0:
+        return sample
     metadata = dict(sample.metadata)
-    metadata["max_generation_tokens"] = 1
+    metadata["max_generation_tokens"] = max_generation_tokens
     return TaskSample(prompt=sample.prompt, answer=sample.answer, metadata=metadata)
 
 

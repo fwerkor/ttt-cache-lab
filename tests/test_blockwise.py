@@ -14,12 +14,14 @@ from ttt_cache_lab.experiments.blockwise import (
     _completed_condition_keys,
     _condition_seed,
     _Evaluation,
+    _generation_sample,
     _greedy_sparse_objective_masks,
     _joint_sparse_search_point,
     _logit_selection_metrics,
     _mask_from_order,
     _read_jsonl,
     _read_rows,
+    _record,
     _reference_token_id,
     _SearchPoint,
     _signed_residual_best_prefix,
@@ -422,6 +424,8 @@ def test_compact_evaluation_output_drops_heavy_state_and_keeps_probe_metrics() -
             "cache_mode": "oracle_layer_token_block_splice",
             "strategy_flops": 123.0,
             "reference_token_nll_2": 0.125,
+            "generated_text": "alpha beta",
+            "generated_tokens": 2,
         },
     )
 
@@ -435,11 +439,70 @@ def test_compact_evaluation_output_drops_heavy_state_and_keeps_probe_metrics() -
     assert compact.extras["cache_mode"] == "oracle_layer_token_block_splice"
     assert compact.extras["strategy_flops"] == 123.0
     assert compact.extras["reference_token_nll_2"] == 0.125
+    assert compact.extras["generated_text"] == "alpha beta"
+    assert compact.extras["generated_tokens"] == 2
     assert "attention_summary" in compact.extras
     assert "past_key_values" not in compact.extras
     assert "hidden_states" not in compact.extras
     assert "lora_cache" not in compact.extras
     assert "prompt_state" not in compact.extras
+
+
+def test_blockwise_record_includes_generated_task_metrics() -> None:
+    output = BackendOutput(
+        logits=np.asarray([[1.0, 2.0]], dtype=np.float64),
+        cache_tensor=np.empty((0,), dtype=np.float32),
+        hidden_tensor=np.empty((0,), dtype=np.float32),
+        parameter_version=1,
+        extras={
+            "generated_text": "answer",
+            "generated_tokens": 3,
+            "cache_mode": "test",
+        },
+    )
+    evaluation = _Evaluation(
+        output=output,
+        logits_kl=0.25,
+        top1_agreement=1.0,
+        task_score=0.75,
+    )
+
+    record = _record(
+        {
+            "full_task_score": 1.0,
+            "stale_task_score": 0.5,
+            "reference_token_id": -1,
+        },
+        selector="test",
+        requested_budget_fraction=0.25,
+        mask=np.asarray([[True, False]], dtype=bool),
+        eligible=np.asarray([[True, True]], dtype=bool),
+        evaluation=evaluation,
+        stale_kl=0.5,
+    )
+
+    assert record["task_score"] == 0.75
+    assert record["task_drop_vs_full"] == 0.25
+    assert record["task_gain_vs_stale"] == 0.25
+    assert record["generated_text"] == "answer"
+    assert record["generated_tokens"] == 3
+
+
+def test_generation_sample_preserves_or_overrides_task_limit() -> None:
+    sample = TaskSample(
+        prompt="question",
+        answer="answer",
+        metadata={"max_generation_tokens": 16, "other": "value"},
+    )
+
+    preserved = _generation_sample(sample, max_generation_tokens=0)
+    overridden = _generation_sample(sample, max_generation_tokens=4)
+
+    assert preserved is sample
+    assert overridden is not sample
+    assert overridden.metadata["max_generation_tokens"] == 4
+    assert overridden.metadata["other"] == "value"
+    assert sample.metadata["max_generation_tokens"] == 16
 
 
 def test_blockwise_checkpoint_round_trip_requires_all_artifacts(tmp_path: Path) -> None:

@@ -142,6 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
     blockwise.add_argument("--block-sizes", type=int, nargs="+", default=[64])
     blockwise.add_argument("--version-gap", type=int, default=4)
     blockwise.add_argument(
+        "--task-generation-tokens",
+        type=int,
+        default=1,
+        help=(
+            "Generation length for blockwise candidates; use 0 to preserve "
+            "the task-configured max_generation_tokens"
+        ),
+    )
+    blockwise.add_argument(
         "--budget-fractions",
         type=float,
         nargs="+",
@@ -481,6 +490,7 @@ def main(argv: list[str] | None = None) -> None:
             block_sizes=tuple(args.block_sizes),
             version_gap=args.version_gap,
             budget_fractions=tuple(args.budget_fractions),
+            task_generation_tokens=args.task_generation_tokens,
             oracle_candidate_limit=args.oracle_candidate_limit,
             oracle_max_cells=args.oracle_max_cells,
             direct_oracle_max_blocks=args.direct_oracle_max_blocks,
