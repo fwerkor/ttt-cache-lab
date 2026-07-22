@@ -66,7 +66,7 @@ Remaining work is paper-scale hardware validation rather than placeholder implem
   - W1/W2/W3：seed 7、17、29 均已验收
   - W4：seed 7 已验收；seed 17 与 seed 29 均已有 `.success` 和完整 blockwise 结果，但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前运行或待补齐验收条件：
-  - E2 real-task extension：HotpotQA 与 2WikiMQA 的 seed 7、17 均已完成并通过产物验收；每个 seed-run 均有 `.success`、有效 `run_metadata.json`、448 条有效 `records.jsonl`、448 行数据的 `summary.csv`、14 行数据的 `version_summary.csv`，task probe 分别为 0.0522 与 0.0850 且满足质量阈值，未发现 `run_failure.json` 或 `.failed`。该扩展不属于 51 配置 / 153 seed-run 的投稿必需冻结矩阵，因此不增加正式验收总数；seed 29 正在运行：HotpotQA 已完成 25/32 个 target（78.1%），已有有效 `run_metadata.json`、350 条增量 `records.jsonl` 与 350 行数据的 `summary.csv`；2WikiMQA 已完成 24/32 个 target（75.0%），已有有效 `run_metadata.json`、336 条增量 `records.jsonl` 与 336 行数据的 `summary.csv`。两项均未发现 `run_failure.json` 或 `.failed`，但仍缺 `.success` 和最终 `version_summary.csv`，不得标记完成
+  - E2 real-task extension：HotpotQA 与 2WikiMQA 的 seed 7、17、29 均已完成并通过产物验收；每个 seed-run 均有 `.success`、有效 `run_metadata.json`、448 条有效 `records.jsonl`、448 行数据的 `summary.csv`、14 行数据的 `version_summary.csv`，task probe 分别为 0.0522 与 0.0850 且满足质量阈值，未发现 `run_failure.json` 或 `.failed`。该扩展不属于 51 配置 / 153 seed-run 的投稿必需冻结矩阵，因此不增加正式验收总数
   - E3 1.5B needle_absent seed 29：运行已中断并停在 1,142/1,344（约 85.0%）；当前无对应进程，仅保留 task probe 与 `run_metadata.json`，缺少 `.success`、主结果和最终汇总产物，剩余 202 个 target，未计入正式验收
   - W4 seed 17：`.success` 返回码为 0，11,136 条 blockwise records 及 `block_frontier.csv`、`block_masks.csv`、`blockwise_records.csv`、`blockwise_report.md` 已生成，无 `run_failure.json` 或 `.failed`；但缺少验收必需的 `run_metadata.json`，不得计入正式结果
 - 当前失败且不得计入正式结果：
