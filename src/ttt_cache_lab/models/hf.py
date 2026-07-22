@@ -925,8 +925,11 @@ class HuggingFaceBackend:
         # Model sharding alone does not reduce training activations. Combine
         # non-reentrant checkpointing with answer-only output projection so a
         # long-context update stays below the per-device memory limit.
-        checkpointing = self.parallelism == "model_shard" and hasattr(
+        checkpointing = hasattr(
             self.model, "gradient_checkpointing_enable"
+        ) and (
+            self.parallelism == "model_shard"
+            or int(input_ids.shape[1]) >= 8192
         )
         if checkpointing:
             self.model.gradient_checkpointing_enable(
