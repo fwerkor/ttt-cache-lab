@@ -14,6 +14,8 @@ from ttt_cache_lab.experiments.blockwise import (
     _completed_condition_keys,
     _condition_seed,
     _Evaluation,
+    _expand_causal_wedge,
+    _expand_downstream_columns,
     _generation_sample,
     _greedy_sparse_objective_masks,
     _joint_sparse_search_point,
@@ -108,6 +110,48 @@ def test_signed_residual_greedy_is_layer_separable() -> None:
     assert order[0] in {(0, 0), (0, 1)}
     assert order[1] in {(0, 0), (0, 1)}
     assert order[0] != order[1]
+
+
+def test_expand_downstream_columns_respects_depth_and_eligibility() -> None:
+    eligible = np.zeros((5, 4), dtype=bool)
+    eligible[1:, :] = True
+    direct = np.zeros_like(eligible)
+    direct[1, 0] = True
+    direct[3, 2] = True
+
+    bounded = _expand_downstream_columns(direct, eligible, depth=2)
+    expected_bounded = np.zeros_like(eligible)
+    expected_bounded[1:3, 0] = True
+    expected_bounded[3:5, 2] = True
+    assert np.array_equal(bounded, expected_bounded)
+
+    full = _expand_downstream_columns(direct, eligible, depth=None)
+    expected_full = np.zeros_like(eligible)
+    expected_full[1:, 0] = True
+    expected_full[3:, 2] = True
+    assert np.array_equal(full, expected_full)
+
+
+def test_expand_causal_wedge_recomputes_later_tokens_downstream() -> None:
+    eligible = np.zeros((5, 5), dtype=bool)
+    eligible[1:, :] = True
+    direct = np.zeros_like(eligible)
+    direct[1, 2] = True
+    direct[1, 4] = True
+
+    bounded = _expand_causal_wedge(direct, eligible, depth=3)
+    expected_bounded = np.zeros_like(eligible)
+    expected_bounded[1, 2] = True
+    expected_bounded[1, 4] = True
+    expected_bounded[2:4, 2:] = True
+    assert np.array_equal(bounded, expected_bounded)
+
+    full = _expand_causal_wedge(direct, eligible, depth=None)
+    expected_full = np.zeros_like(eligible)
+    expected_full[1, 2] = True
+    expected_full[1, 4] = True
+    expected_full[2:, 2:] = True
+    assert np.array_equal(full, expected_full)
 
 
 def test_fast_zero_probe_kl_matches_reference_implementation() -> None:

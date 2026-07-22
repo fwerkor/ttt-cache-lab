@@ -41,7 +41,7 @@ from ttt_cache_lab.experiments.task_probe import run_configured_task_probe
 from ttt_cache_lab.metrics.tensor import kl_divergence, top1_agreement
 from ttt_cache_lab.models.factory import build_backend
 from ttt_cache_lab.models.interface import BackendOutput, ModelBackend
-from ttt_cache_lab.updates.targets import UpdateTarget, parse_update_target
+from ttt_cache_lab.updates.targets import ModuleKind, UpdateTarget, parse_update_target
 from ttt_cache_lab.updates.updater import build_updater
 
 
@@ -142,6 +142,8 @@ def run_blockwise_exploration(
     dynamic_trace_full_budget: bool = False,
     sparse_stale_margins: tuple[float, ...] = (0.0,),
     compute_cache_surgery_oracles: bool = True,
+    compute_downstream_splice_analysis: bool = False,
+    compute_causal_pair_search: bool = False,
     compute_structured_sparse_search: bool = True,
     sparse_policy_only: bool = False,
     sparse_policy_variant: str = "reference",
@@ -390,6 +392,10 @@ def run_blockwise_exploration(
                         dynamic_trace_full_budget=dynamic_trace_full_budget,
                         sparse_stale_margins=sparse_stale_margins,
                         compute_cache_surgery_oracles=compute_cache_surgery_oracles,
+                        compute_downstream_splice_analysis=(
+                            compute_downstream_splice_analysis
+                        ),
+                        compute_causal_pair_search=compute_causal_pair_search,
                         compute_structured_sparse_search=compute_structured_sparse_search,
                         sparse_policy_only=sparse_policy_only,
                         sparse_policy_variant=sparse_policy_variant,
@@ -449,6 +455,8 @@ def _explore_condition(
     dynamic_trace_full_budget: bool,
     sparse_stale_margins: tuple[float, ...],
     compute_cache_surgery_oracles: bool,
+    compute_downstream_splice_analysis: bool,
+    compute_causal_pair_search: bool,
     compute_structured_sparse_search: bool,
     sparse_policy_only: bool,
     sparse_policy_variant: str,
@@ -1016,6 +1024,251 @@ def _explore_condition(
                         mask_rows.extend(
                             _mask_rows(condition, selector, count / total_eligible, mask)
                         )
+                if (
+                    compute_downstream_splice_analysis
+                    and isinstance(
+                        sparse_scores.get("signed_first_residual_gain"),
+                        np.ndarray,
+                    )
+                ):
+                    scores = np.asarray(
+                        sparse_scores["signed_first_residual_gain"],
+                        dtype=np.float64,
+                    )
+                    for count in desired_counts:
+                        direct_count = min(count, direct_total)
+                        direct_mask = _top_mask(
+                            scores,
+                            direct_available,
+                            direct_count,
+                        )
+                        for depth in (1, 2, 4, None):
+                            expanded_mask = _expand_downstream_columns(
+                                direct_mask,
+                                eligible,
+                                depth=depth,
+                            )
+                            depth_label = "full" if depth is None else str(depth)
+                            selector = (
+                                "splice_signed_first_residual_"
+                                f"downstream_{depth_label}"
+                            )
+                            evaluation = evaluate(expanded_mask)
+                            records.append(
+                                _record(
+                                    condition,
+                                    selector=selector,
+                                    requested_budget_fraction=count / total_eligible,
+                                    mask=expanded_mask,
+                                    eligible=eligible,
+                                    evaluation=evaluation,
+                                    stale_kl=stale.logits_kl,
+                                    selection_metadata={
+                                        "selected_direct_cells": direct_count,
+                                        "direct_selection_count": direct_count,
+                                        "downstream_recompute_depth": (
+                                            layer_count - start_layer
+                                            if depth is None
+                                            else depth
+                                        ),
+                                        "analysis_oracle_action": True,
+                                    },
+                                )
+                            )
+                            mask_rows.extend(
+                                _mask_rows(
+                                    condition,
+                                    selector,
+                                    count / total_eligible,
+                                    expanded_mask,
+                                )
+                            )
+                        if target.kind is ModuleKind.LORA_K:
+                            for depth in (2, 4, None):
+                                causal_mask = _expand_causal_wedge(
+                                    direct_mask,
+                                    eligible,
+                                    depth=depth,
+                                )
+                                depth_label = "full" if depth is None else str(depth)
+                                selector = (
+                                    "splice_signed_first_residual_"
+                                    f"causal_{depth_label}"
+                                )
+                                evaluation = evaluate(causal_mask)
+                                records.append(
+                                    _record(
+                                        condition,
+                                        selector=selector,
+                                        requested_budget_fraction=count / total_eligible,
+                                        mask=causal_mask,
+                                        eligible=eligible,
+                                        evaluation=evaluation,
+                                        stale_kl=stale.logits_kl,
+                                        selection_metadata={
+                                            "selected_direct_cells": direct_count,
+                                            "direct_selection_count": direct_count,
+                                            "causal_recompute_depth": (
+                                                layer_count - start_layer
+                                                if depth is None
+                                                else depth
+                                            ),
+                                            "analysis_oracle_action": True,
+                                        },
+                                    )
+                                )
+                                mask_rows.extend(
+                                    _mask_rows(
+                                        condition,
+                                        selector,
+                                        count / total_eligible,
+                                        causal_mask,
+                                    )
+                                )
+                    alternative_scores = {
+                        "attention_mass": "stale_attention_mass",
+                        "predicted_delta_norm": "predicted_delta_norm",
+                        "retrieval_headwise_gain": "retrieval_headwise_gain",
+                    }
+                    for label, score_name in alternative_scores.items():
+                        candidate_scores = sparse_scores.get(score_name)
+                        if not isinstance(candidate_scores, np.ndarray):
+                            continue
+                        for count in desired_counts:
+                            direct_count = min(count, direct_total)
+                            direct_mask = _top_mask(
+                                np.asarray(candidate_scores, dtype=np.float64),
+                                direct_available,
+                                direct_count,
+                            )
+                            expanded_mask = _expand_downstream_columns(
+                                direct_mask,
+                                eligible,
+                                depth=None,
+                            )
+                            selector = f"splice_{label}_downstream_full"
+                            evaluation = evaluate(expanded_mask)
+                            records.append(
+                                _record(
+                                    condition,
+                                    selector=selector,
+                                    requested_budget_fraction=count / total_eligible,
+                                    mask=expanded_mask,
+                                    eligible=eligible,
+                                    evaluation=evaluation,
+                                    stale_kl=stale.logits_kl,
+                                    selection_metadata={
+                                        "selected_direct_cells": direct_count,
+                                        "direct_selection_count": direct_count,
+                                        "downstream_recompute_depth": (
+                                            layer_count - start_layer
+                                        ),
+                                        "analysis_oracle_action": True,
+                                    },
+                                )
+                            )
+                            mask_rows.extend(
+                                _mask_rows(
+                                    condition,
+                                    selector,
+                                    count / total_eligible,
+                                    expanded_mask,
+                                )
+                            )
+                            if target.kind is ModuleKind.LORA_K:
+                                causal_mask = _expand_causal_wedge(
+                                    direct_mask,
+                                    eligible,
+                                    depth=None,
+                                )
+                                causal_selector = f"splice_{label}_causal_full"
+                                causal_evaluation = evaluate(causal_mask)
+                                records.append(
+                                    _record(
+                                        condition,
+                                        selector=causal_selector,
+                                        requested_budget_fraction=count / total_eligible,
+                                        mask=causal_mask,
+                                        eligible=eligible,
+                                        evaluation=causal_evaluation,
+                                        stale_kl=stale.logits_kl,
+                                        selection_metadata={
+                                            "selected_direct_cells": direct_count,
+                                            "direct_selection_count": direct_count,
+                                            "causal_recompute_depth": (
+                                                layer_count - start_layer
+                                            ),
+                                            "analysis_oracle_action": True,
+                                        },
+                                    )
+                                )
+                                mask_rows.extend(
+                                    _mask_rows(
+                                        condition,
+                                        causal_selector,
+                                        count / total_eligible,
+                                        causal_mask,
+                                    )
+                                )
+            if (
+                compute_causal_pair_search
+                and target.kind is ModuleKind.LORA_K
+                and direct_total >= 2
+            ):
+                direct_indices = [
+                    (int(index[0]), int(index[1]))
+                    for index in np.argwhere(direct_available)
+                ]
+                if len(direct_indices) > 16:
+                    raise ValueError(
+                        "causal pair search supports at most 16 direct K blocks"
+                    )
+                for left, right in combinations(direct_indices, 2):
+                    direct_pair = np.zeros_like(direct_available)
+                    direct_pair[left] = True
+                    direct_pair[right] = True
+                    causal_mask = _expand_causal_wedge(
+                        direct_pair,
+                        eligible,
+                        depth=None,
+                    )
+                    selector = (
+                        f"splice_causal_pair_l{left[0]}b{left[1]}_"
+                        f"l{right[0]}b{right[1]}"
+                    )
+                    evaluation = evaluate(causal_mask)
+                    records.append(
+                        _record(
+                            condition,
+                            selector=selector,
+                            requested_budget_fraction=2 / total_eligible,
+                            mask=causal_mask,
+                            eligible=eligible,
+                            evaluation=evaluation,
+                            stale_kl=stale.logits_kl,
+                            selection_metadata={
+                                "selected_direct_cells": 2,
+                                "direct_selection_count": 2,
+                                "causal_recompute_depth": (
+                                    layer_count - start_layer
+                                ),
+                                "causal_pair_left_layer": left[0],
+                                "causal_pair_left_block": left[1],
+                                "causal_pair_right_layer": right[0],
+                                "causal_pair_right_block": right[1],
+                                "analysis_oracle_action": True,
+                                "analysis_pair_search": True,
+                            },
+                        )
+                    )
+                    mask_rows.extend(
+                        _mask_rows(
+                            condition,
+                            selector,
+                            2 / total_eligible,
+                            causal_mask,
+                        )
+                    )
             if (
                 not sparse_policy_only
                 and isinstance(
@@ -4029,6 +4282,53 @@ def _top_mask(scores: np.ndarray, eligible: np.ndarray, count: int) -> np.ndarra
     for index in ordered[:count]:
         mask[index] = True
     return mask
+
+
+def _expand_downstream_columns(
+    direct_mask: np.ndarray,
+    eligible: np.ndarray,
+    *,
+    depth: int | None,
+) -> np.ndarray:
+    if direct_mask.shape != eligible.shape:
+        raise ValueError("direct_mask and eligible must have the same shape")
+    if depth is not None and depth < 1:
+        raise ValueError("depth must be positive when provided")
+    expanded = np.zeros_like(eligible, dtype=bool)
+    layer_count = int(eligible.shape[0])
+    for layer_index, block_index in np.argwhere(direct_mask & eligible):
+        start = int(layer_index)
+        end = layer_count if depth is None else min(layer_count, start + depth)
+        expanded[start:end, int(block_index)] = eligible[
+            start:end,
+            int(block_index),
+        ]
+    return expanded
+
+
+def _expand_causal_wedge(
+    direct_mask: np.ndarray,
+    eligible: np.ndarray,
+    *,
+    depth: int | None,
+) -> np.ndarray:
+    if direct_mask.shape != eligible.shape:
+        raise ValueError("direct_mask and eligible must have the same shape")
+    if depth is not None and depth < 1:
+        raise ValueError("depth must be positive when provided")
+    expanded = np.zeros_like(eligible, dtype=bool)
+    layer_count, block_count = eligible.shape
+    for layer_index, block_index in np.argwhere(direct_mask & eligible):
+        layer = int(layer_index)
+        block = int(block_index)
+        expanded[layer, block] = True
+        end = layer_count if depth is None else min(layer_count, layer + depth)
+        if layer + 1 < end:
+            expanded[layer + 1 : end, block:block_count] |= eligible[
+                layer + 1 : end,
+                block:block_count,
+            ]
+    return expanded
 
 
 def _mask_rows(

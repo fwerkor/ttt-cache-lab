@@ -235,6 +235,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip splice baselines and frontier probes for sparse runtime benchmarks",
     )
     blockwise.add_argument(
+        "--evaluate-downstream-splice-analysis",
+        action="store_true",
+        help=(
+            "Evaluate top-ranked direct token blocks after expanding their "
+            "fresh-cache splice through downstream layers"
+        ),
+    )
+    blockwise.add_argument(
+        "--evaluate-causal-pair-search",
+        action="store_true",
+        help=(
+            "Exhaustively evaluate all two-block K-cache causal wedges for "
+            "cost-quality analysis"
+        ),
+    )
+    blockwise.add_argument(
         "--skip-structured-sparse-search",
         action="store_true",
         help="Keep static sparse selectors but skip exhaustive, greedy, beam, swap, and joint searches",
@@ -505,6 +521,10 @@ def main(argv: list[str] | None = None) -> None:
             dynamic_trace_full_budget=args.dynamic_trace_full_budget,
             sparse_stale_margins=tuple(args.sparse_stale_margins),
             compute_cache_surgery_oracles=not args.skip_cache_surgery_oracles,
+            compute_downstream_splice_analysis=(
+                args.evaluate_downstream_splice_analysis
+            ),
+            compute_causal_pair_search=args.evaluate_causal_pair_search,
             compute_structured_sparse_search=not args.skip_structured_sparse_search,
             sparse_policy_only=args.sparse_policy_only,
             sparse_policy_variant=args.sparse_policy_variant,

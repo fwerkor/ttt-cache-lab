@@ -222,6 +222,65 @@ fidelity and latency. A task-quality V planner requires a multi-token,
 answer-free influence objective rather than another refinement of the current
 single-step residual score.
 
+### K-cache causal propagation validation
+
+The direct K-cache experiments initially treated a selected block as an
+independent target-layer correction. This is incomplete: changing a prefix K
+block changes the attention outputs of later positions, and those changes
+propagate into downstream-layer K/V states. Two fresh-cache splice analyses
+were therefore added:
+
+- vertical propagation replaces the selected token columns in downstream
+  layers;
+- causal propagation replaces the selected target-layer K blocks and the
+  causally affected suffix blocks in downstream layers.
+
+These are analysis primitives using the full-fresh cache, not deployable
+selective-recomputation kernels.
+
+On 16 new Qwen2.5-1.5B synthetic conditions, the two-block
+`signed_first_residual_gain` selector always selected token blocks `(0, 7)`.
+Its direct K correction reduced aggregate KL by only 4.0%. Propagating the same
+columns through all downstream layers reduced KL by 71.8% while replacing 25%
+of eligible layer-token cells. A full causal wedge reduced KL by 84.8%, but it
+replaced 94.6% of eligible cells because selecting block 0 makes nearly the
+entire suffix causally dependent. Thus, the original selector-action pair is
+not computationally useful even though its full causal repair is accurate.
+
+An exhaustive search over all 28 two-block causal wedges revealed a much
+better cost-quality region. On the same 16 conditions:
+
+- fixed `(6, 7)` replaced 25.0% of eligible cells and reduced KL by 79.9%;
+- fixed `(5, 7)` replaced 36.6% of cells and reduced KL by 81.4%;
+- a per-condition oracle constrained to at most 50% of cells reduced KL by
+  93.1% and never increased KL.
+
+The `(5, 7)` pair was selected using only these 16 conditions and then frozen.
+On the independent original ten synthetic conditions, it reduced KL by 90.9%,
+improved nine of ten conditions, and reduced one- and two-token trajectory KL
+by 95.8%. Across all 26 synthetic conditions, `(5, 7)` reduced KL by 87.6%; its
+bootstrap 95% interval was 74.8%--92.0%. The cheaper `(6, 7)` pair reduced KL
+by 84.9% across the same 26 conditions.
+
+The real-task result is less uniform. Eight new Qwen2.5-7B conditions used a
+4096-token 2WikiMQA context and an 8192-token HotpotQA context. Direct
+two-block K correction increased aggregate next-token KL by 18.3%. Causal
+late-block repair substantially improved 2WikiMQA: `(4, 5)` reduced next-token
+KL by 96.3%. On HotpotQA, however, stale next-token KL was already very small,
+and every fixed late pair increased that metric. Despite this, `(4, 5)` reduced
+material one- and two-token trajectory KL on all HotpotQA conditions by 82.5%
+and 72.7%, respectively. Selecting a fixed pair on one real task did not
+transfer reliably to the other.
+
+The K-cache conclusion therefore changes in two ways. First, downstream causal
+propagation is the dominant missing component; direct target-layer correction
+is not a sufficient repair action. Second, the planner should trade source
+block value against causal recomputation cost and favor late blocks when their
+quality is comparable. Fixed `(5, 7)` or `(6, 7)` rules are strong synthetic
+baselines, not final task-independent planners. A deployable method still
+requires a bounded selected-token downstream-recomputation kernel and an
+answer-free rule for choosing both source blocks and propagation depth.
+
 ### Cost
 
 Measured block-score extraction latency after the first invocation:
@@ -234,11 +293,16 @@ The first invocation was about 0.11 s because of accelerator warm-up. Runtime co
 ## Conclusions
 
 1. The useful CacheBlend transfer is impact-based block ranking, not cache delta correction.
-2. Signed output alignment generalizes better than delta magnitude for K-cache repair.
-3. Exact oracle-mask overlap is not the only target: different masks can provide comparable KL recovery, so oracle-gain capture is the primary selector metric.
-4. The strongest current operating point is a very small K-block budget, especially two blocks.
-5. A fitted percentile-rank fusion of delta magnitude and alignment improved calibration overlap but failed on held-out KL and was removed.
-6. For V-cache repair at the fixed two-block operating point,
+2. Direct target-layer K correction is incomplete; selected K blocks require
+   bounded causal downstream propagation.
+3. Cost-aware late K blocks can recover most of the fresh distribution at a
+   fraction of the full causal-wedge cost, but no task-independent pair is yet
+   validated.
+4. Exact oracle-mask overlap is not the only target: different masks can provide comparable KL recovery, so oracle-gain capture is the primary selector metric.
+5. The strongest current K analysis uses two source blocks plus downstream
+   propagation; two direct blocks alone are not a sufficient operating point.
+6. A fitted percentile-rank fusion of delta magnitude and alignment improved calibration overlap but failed on held-out KL and was removed.
+7. For V-cache repair at the fixed two-block operating point,
    `signed_first_residual_gain` is the current preferred zero-forward selector;
    larger repair budgets and per-condition safety remain unresolved.
 
@@ -279,3 +343,12 @@ The isolated NPU evaluation artifacts are stored under:
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_refnll_qwen7b_2wikimqa_expanded_offset48_8`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_refnll_qwen7b_hotpotqa_expanded_offset40_8`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_refnll_qwen7b_hotpotqa_expanded_offset48_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_compare_multi_offset8_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_compare_aggregation_offset202_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_multi_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_aggregation_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_old_multi_0_3`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_old_multi_4_7`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_old_aggregation_200_201`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_qwen7b_2wikimqa_ctx4096_offset80_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/k_causal_pairs_qwen7b_hotpotqa_ctx8192_offset80_4`
