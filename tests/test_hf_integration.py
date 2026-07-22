@@ -614,6 +614,12 @@ def test_block_sparse_lora_value_scores_emit_signed_corrections(
     assert np.all(np.abs(scores["signed_total_alignment"][1]) <= 1.0 + 1e-9)
     assert np.all(scores["signed_cancellation_ratio"][1] >= 0.0)
     assert np.all(scores["signed_cancellation_ratio"][1] <= 1.0 + 1e-9)
+    assert scores["retrieval_headwise_gain"].shape == (
+        backend.num_layers,
+        4,
+    )
+    assert np.all(np.isfinite(scores["retrieval_headwise_gain"]))
+    assert np.any(np.abs(scores["retrieval_headwise_gain"][1]) > 0.0)
 
 
 def test_reference_sequence_scoring_matches_first_token_logits(tiny_llama_dir: Path) -> None:

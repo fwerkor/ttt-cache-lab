@@ -2140,6 +2140,8 @@ class HuggingFaceBackend:
         )
         decoder_layers, _ = self._decoder_layers()
         signed_corrections: dict[tuple[int, int], np.ndarray] = {}
+        head_signed_corrections: dict[tuple[int, int], np.ndarray] = {}
+        head_retrieval_weights: dict[int, np.ndarray] = {}
         for name, old_state in old_lora_cache.items():
             if not isinstance(old_state, dict):
                 continue
@@ -2332,6 +2334,34 @@ class HuggingFaceBackend:
                     else:
                         query_attention = None
 
+            if query_attention is not None:
+                attention_probability = query_attention.clamp_min(0.0)
+                attention_probability = attention_probability / attention_probability.sum(
+                    dim=-1,
+                    keepdim=True,
+                ).clamp_min(1e-12)
+                entropy = -self.torch.sum(
+                    attention_probability
+                    * self.torch.log(attention_probability.clamp_min(1e-12)),
+                    dim=-1,
+                ) / max(math.log(max(sequence, 2)), 1e-12)
+                interior_start = min(block_size, sequence)
+                interior_end = max(interior_start, sequence - block_size)
+                if interior_end > interior_start:
+                    interior_mass = attention_probability[
+                        :, interior_start:interior_end
+                    ].sum(dim=-1)
+                else:
+                    interior_mass = self.torch.ones_like(entropy)
+                retrieval_weights = interior_mass * self.torch.sqrt(
+                    (1.0 - entropy).clamp_min(0.0)
+                )
+                if float(retrieval_weights.sum().detach().cpu()) <= 1e-12:
+                    retrieval_weights = self.torch.ones_like(retrieval_weights)
+                head_retrieval_weights[layer] = (
+                    retrieval_weights.detach().float().cpu().numpy()
+                )
+
             for block_index in range(block_count):
                 start = block_index * block_size
                 end = min(sequence, start + block_size)
@@ -2393,6 +2423,7 @@ class HuggingFaceBackend:
                     )
                 if correction_heads is not None:
                     correction = correction_heads.reshape(-1)
+                    head_correction = correction_heads
                     if (
                         output_projection_weight is not None
                         and int(output_projection_weight.shape[1])
@@ -2403,13 +2434,34 @@ class HuggingFaceBackend:
                             output_projection_weight,
                             None,
                         ).squeeze(0)
+                        head_count = int(correction_heads.shape[0])
+                        head_dim = int(correction_heads.shape[1])
+                        output_by_head = output_projection_weight.reshape(
+                            int(output_projection_weight.shape[0]),
+                            head_count,
+                            head_dim,
+                        )
+                        head_correction = self.torch.einsum(
+                            "hd,ohd->ho",
+                            correction_heads,
+                            output_by_head,
+                        )
                     correction_np = correction.detach().float().cpu().numpy()
+                    head_correction_np = (
+                        head_correction.detach().float().cpu().numpy()
+                    )
                     key = (layer, block_index)
                     previous = signed_corrections.get(key)
                     signed_corrections[key] = (
                         correction_np
                         if previous is None
                         else previous + correction_np
+                    )
+                    previous_head = head_signed_corrections.get(key)
+                    head_signed_corrections[key] = (
+                        head_correction_np
+                        if previous_head is None
+                        else previous_head + head_correction_np
                     )
 
         result = {
@@ -2436,6 +2488,7 @@ class HuggingFaceBackend:
             total_projection = np.zeros_like(attention_mass)
             first_residual_gain = np.zeros_like(attention_mass)
             cancellation_ratio = np.zeros_like(attention_mass)
+            retrieval_headwise_gain = np.zeros_like(attention_mass)
             for layer in range(len(layers)):
                 layer_mask = correction_available[layer]
                 if not np.any(layer_mask):
@@ -2465,6 +2518,38 @@ class HuggingFaceBackend:
                     )
                     cancellation_ratio[layer, block_index] = cancellation
 
+                head_items = [
+                    (
+                        int(block_index),
+                        head_signed_corrections[(layer, int(block_index))],
+                    )
+                    for block_index in np.flatnonzero(layer_mask)
+                    if (layer, int(block_index)) in head_signed_corrections
+                ]
+                if head_items:
+                    head_total = np.sum(
+                        np.stack([value for _, value in head_items], axis=0),
+                        axis=0,
+                    )
+                    retrieval_weights = head_retrieval_weights.get(layer)
+                    if (
+                        retrieval_weights is None
+                        or retrieval_weights.shape[0] != head_total.shape[0]
+                    ):
+                        retrieval_weights = np.ones(
+                            head_total.shape[0],
+                            dtype=np.float64,
+                        )
+                    for block_index, head_vectors in head_items:
+                        head_norm = np.linalg.norm(head_vectors, axis=1)
+                        head_dot = np.sum(head_vectors * head_total, axis=1)
+                        retrieval_headwise_gain[layer, block_index] = float(
+                            np.sum(
+                                retrieval_weights
+                                * (2.0 * head_dot - head_norm * head_norm)
+                            )
+                        )
+
             result.update(
                 {
                     "signed_correction_available": correction_available,
@@ -2474,6 +2559,7 @@ class HuggingFaceBackend:
                     "signed_total_projection": total_projection,
                     "signed_first_residual_gain": first_residual_gain,
                     "signed_cancellation_ratio": cancellation_ratio,
+                    "retrieval_headwise_gain": retrieval_headwise_gain,
                 }
             )
         return result

@@ -934,6 +934,7 @@ def _explore_condition(
                 "signed_total_projection",
                 "signed_first_residual_gain",
                 "signed_cancellation_ratio",
+                "retrieval_headwise_gain",
             ):
                 signed_values = sparse_scores.get(signed_name)
                 if isinstance(signed_values, np.ndarray):
@@ -956,6 +957,9 @@ def _explore_condition(
                     "sparse_signed_total_alignment": "signed_total_alignment",
                     "sparse_signed_first_residual_gain": (
                         "signed_first_residual_gain"
+                    ),
+                    "sparse_retrieval_headwise_gain": (
+                        "retrieval_headwise_gain"
                     ),
                 }
             )
