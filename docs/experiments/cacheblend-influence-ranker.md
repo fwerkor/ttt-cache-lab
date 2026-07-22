@@ -174,6 +174,54 @@ positive fraction of the available two-versus-six oracle gain.
 Dynamic V-cache budgeting therefore remains a planner problem. The current
 method uses two blocks without a hand-written budget gate.
 
+### Task-quality and answer-trajectory validation
+
+The KL experiments above measure the next-token output distribution. A later
+validation added full autoregressive generation and task-score fields to the
+blockwise runner, then tested whether V-cache KL recovery transfers to answer
+quality.
+
+The usable real-task settings were Qwen2.5-7B with a 4096-token context for
+2WikiMQA and an 8192-token context for HotpotQA. Both used a middle-layer V
+LoRA update with configured norm 0.001. At version gap 4, the two-block
+`signed_first_residual_gain` selector reduced next-token KL by 36.8% on the
+first four 2WikiMQA conditions and 33.6% on the first four HotpotQA conditions.
+However, the fresh update itself changed mean token F1 by only 0.00285 on
+2WikiMQA and by zero on HotpotQA, so these conditions contained essentially no
+task-score gain to recover.
+
+Version-gap sweeps confirmed that this was not specific to gap 4. Across 40
+middle-layer V sample-gap conditions at gaps 0, 4, 8, 16, and 32, fresh
+recomputation, stale reuse, and the pre-update baseline produced identical
+token F1. Updating all V projections on 2WikiMQA also produced no F1 changes
+across 16 sample-gap conditions. The corresponding all-V HotpotQA run at an
+8192-token context exceeded single-NPU memory during LoRA training.
+
+Because exact generated-answer F1 was insensitive, a second evaluation used
+teacher-forced correct-answer probes. The selector remained answer-free; answer
+tokens were used only as an evaluation metric. On 32 new held-out real-task
+conditions, `signed_first_residual_gain` achieved:
+
+- next-token KL reduction: 27.9%;
+- first correct-answer-token NLL gain: 0.0326 on average, with a bootstrap
+  interval that included zero;
+- two-token answer NLL gain: -0.0354, with a 95% bootstrap interval entirely
+  below zero;
+- four-token answer NLL gain: -0.0203, also with a 95% bootstrap interval
+  below zero.
+
+Thus, the current first-residual selector improves the immediate output
+distribution but does not preserve the subsequent correct-answer trajectory.
+`predicted_delta_norm` was significantly less harmful than first-residual on
+the two- and four-token NLL probes, but its own mean gains remained negative
+and statistically indistinguishable from zero. No evaluated zero-forward
+selector demonstrated positive multi-token answer recovery.
+
+The V-cache claim must therefore remain limited to next-token distribution
+fidelity and latency. A task-quality V planner requires a multi-token,
+answer-free influence objective rather than another refinement of the current
+single-step residual score.
+
 ### Cost
 
 Measured block-score extraction latency after the first invocation:
@@ -222,3 +270,12 @@ The isolated NPU evaluation artifacts are stored under:
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_dynamic_cal6_multi_0_3`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_dynamic_cal6_hotpotqa_0_3`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_dynamic_cal6_2wikimqa_0_3`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_taskscore_qwen7b_2wikimqa_ctx4096_offset36_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_taskscore_qwen7b_hotpotqa_ctx8192_offset36_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_gap_screen_qwen7b_2wikimqa_ctx4096_offset36_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_gap_screen_qwen7b_hotpotqa_ctx8192_offset36_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_gap_screen_allv_qwen7b_2wikimqa_ctx4096_offset36_4`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_refnll_qwen7b_2wikimqa_expanded_offset40_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_refnll_qwen7b_2wikimqa_expanded_offset48_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_refnll_qwen7b_hotpotqa_expanded_offset40_8`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/v_refnll_qwen7b_hotpotqa_expanded_offset48_8`
