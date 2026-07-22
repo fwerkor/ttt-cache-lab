@@ -119,6 +119,43 @@ These larger results also show that individual V-cache repairs remain
 non-monotonic. The two-block operating point is an aggregate policy, not a
 per-condition safety guarantee.
 
+### V-cache budget sweep
+
+The fixed two-block operating point was checked against one, four, six, and
+eight repaired blocks. A complete five-budget sweep was run on 64 held-out
+conditions. Aggregate KL reductions were:
+
+- one block: 15.3%;
+- two blocks: 29.3%;
+- four blocks: 25.3%;
+- six blocks: 29.8%;
+- eight blocks: 26.3%.
+
+The small apparent advantage of six blocks on this split did not persist after
+adding the other 50 held-out conditions. On the full 114-condition comparison:
+
+- two blocks reduced KL by 29.9%;
+- six blocks reduced KL by 28.3%;
+- two blocks produced lower KL on 65 conditions, versus 49 for six blocks;
+- both budgets were beneficial on 67.5% of conditions;
+- mean cache-maintenance latency was 8.74 ms for two blocks and 13.88 ms for
+  six blocks;
+- worst absolute KL increase was 0.00499 for two blocks and 0.00575 for six
+  blocks.
+
+The paired bootstrap interval for the six-minus-two aggregate recovery
+difference included zero, so there is no evidence that the extra four blocks
+improve expected recovery. The six-block repair also added 5.13 ms of mean
+cache-maintenance cost.
+
+Budget effects were strongly non-monotonic. None of the 64 complete sweep
+conditions improved monotonically across one, two, four, six, and eight
+blocks. The per-condition best budget was distributed across all five choices:
+12, 17, 12, 10, and 13 conditions respectively. Two blocks therefore remain
+the preferred fixed operating point because they provide the best aggregate
+recovery-efficiency trade-off, not because additional repair is guaranteed to
+hurt.
+
 ### Cost
 
 Measured block-score extraction latency after the first invocation:
@@ -156,3 +193,11 @@ The isolated NPU evaluation artifacts are stored under:
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_borda_2wikimqa_offset4_16`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_borda_2wikimqa_offset20_16`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_rankers/v_mixed_cal16.json`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget_sweep_multi_16_31`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget_sweep_aggregation_210_225`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget_sweep_hotpotqa_offset20_16`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget_sweep_2wikimqa_offset20_16`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget6_multi_8_15`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget6_aggregation_200_209`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget6_hotpotqa_offset4_16`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget6_2wikimqa_offset4_16`
