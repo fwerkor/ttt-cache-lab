@@ -416,7 +416,7 @@ E3 Failure Map
     │   │   ├── `records.jsonl` 与 `summary.csv` 各 32,256 条，`version_summary.csv` 336 条；全部 JSON 有效
     │   │   ├── `.success` 返回码为 0
     │   │   └── 无 `run_failure.json` 或 `.failed`
-    │   └── seed 29：[运行中；997/1,344，约 74.2%；不得计入正式结果]
+    │   └── seed 29：[中断；1,142/1,344，约 85.0%；无对应进程，缺少 `.success`、主结果与最终汇总产物，剩余 202 个 target；不得计入正式结果]
     ├── 其他 1.5B 核心任务：[待做]
     ├── 7B aggregation
     │   ├── seed 7：[完成]
