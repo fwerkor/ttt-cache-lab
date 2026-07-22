@@ -156,6 +156,24 @@ the preferred fixed operating point because they provide the best aggregate
 recovery-efficiency trade-off, not because additional repair is guaranteed to
 hurt.
 
+The non-monotonic curves leave room for a dynamic budget policy. An oracle that
+chooses between two and six blocks independently for each of the 114 held-out
+conditions would reduce KL by 40.1%, improve 78.9% of conditions, and limit the
+worst KL increase to 0.00259. This is substantially better than either fixed
+budget.
+
+However, the available zero-forward features did not recover this upper bound.
+A grouped calibration procedure used 16 separate conditions and left out each
+task family in turn while selecting one-feature thresholds over score-tail,
+attention, correction-magnitude, cascade, and router features. Its selected
+rule thresholded the third-highest first-residual score. Applied unchanged to
+the 114 held-out conditions, it chose six blocks 45 times and reduced KL by
+29.5%, slightly below the fixed two-block result of 29.9%. It captured no
+positive fraction of the available two-versus-six oracle gain.
+
+Dynamic V-cache budgeting therefore remains a planner problem. The current
+method uses two blocks without a hand-written budget gate.
+
 ### Cost
 
 Measured block-score extraction latency after the first invocation:
@@ -201,3 +219,6 @@ The isolated NPU evaluation artifacts are stored under:
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget6_aggregation_200_209`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget6_hotpotqa_offset4_16`
 - `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_budget6_2wikimqa_offset4_16`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_dynamic_cal6_multi_0_3`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_dynamic_cal6_hotpotqa_0_3`
+- `/mnt/caoyuhang/cyh/ttt-cache-influence-eval/runs/influence_eval/b5_v_dynamic_cal6_2wikimqa_0_3`
